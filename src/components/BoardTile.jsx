@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowDown, ArrowUp, Coins, Flame } from "lucide-react";
+import { Coins, Dice5, Flame } from "lucide-react";
 import { TILE_EFFECT_KIND } from "../constants/gameBalance";
 
 /** すごろくマスの効果アイコン（スタート／ゴールは親で描画しない想定） */
@@ -9,15 +9,10 @@ export default function SugorokuTileEffectIcon({ effect, sizePx = 13 }) {
   const wrap = "anim-tile-effect-float pointer-events-none";
   switch (effect.kind) {
     case TILE_EFFECT_KIND.MOVE_FORWARD:
-      return (
-        <span className={wrap} title="進むマス">
-          <ArrowUp className="text-sky-300" aria-hidden strokeWidth={2.75} size={s} />
-        </span>
-      );
     case TILE_EFFECT_KIND.MOVE_BACKWARD:
       return (
-        <span className={wrap} title="戻りマス">
-          <ArrowDown className="text-rose-400" aria-hidden strokeWidth={2.75} size={s} />
+        <span className={wrap} title="移動マス">
+          <Dice5 className="text-sky-300" aria-hidden strokeWidth={2.35} size={s} />
         </span>
       );
     case TILE_EFFECT_KIND.GAIN_MONEY:

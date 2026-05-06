@@ -101,13 +101,15 @@ export function TaxiStandeeImage({
     minHeight: 48,
     objectFit: "contain",
     boxSizing: "border-box",
+    opacity: 1,
+    filter: "brightness(1)",
     ...imgStyle,
   };
 
   if (imgFailed) {
     return (
       <span
-        className={`inline-flex min-h-[48px] min-w-[48px] select-none items-center justify-center ${imgClassName}`}
+        className={`inline-flex min-h-[48px] min-w-[48px] select-none items-center justify-center opacity-100 brightness-100 ${imgClassName}`}
         style={imgStyle}
         title="taxi image failed — check Network tab for 404 URL"
       >
@@ -121,7 +123,7 @@ export function TaxiStandeeImage({
       src={resolvedSrc}
       alt=""
       draggable={false}
-      className={`select-none ${imgClassName}`}
+        className={`select-none opacity-100 brightness-100 ${imgClassName}`}
       style={antiCollapseStyle}
       onError={() => {
         setImgFailed(true);

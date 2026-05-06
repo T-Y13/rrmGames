@@ -36,7 +36,6 @@ import BoardViewport from "./BoardViewport";
   pieceHopping,
   onMoveAction,
   onGoalLandingConfirm,
-  onBeginSlotPhase,
 }) {
   if (!cpGs) return null;
 
@@ -94,40 +93,6 @@ import BoardViewport from "./BoardViewport";
           >
             確認してターンを終える →
           </button>
-        </div>
-      )}
-
-      {isMyTurn && gs.subPhase === "day8" && cpIsWaitingSlot && (
-        <div className="space-y-4">
-          <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4 text-center space-y-2">
-            <h2 className="text-lg font-bold text-emerald-200">8日目 ゴール到着済み</h2>
-            <p className="text-sm text-slate-300">あなたのターンです。開始時点の運・技量などがスロットに反映されます。</p>
-            <p className="text-emerald-300 font-bold tabular-nums">
-              <strong className="text-xl">{slotTurnReserve}</strong>ターンブン → 開始でスロット最大
-              <strong className="text-xl text-white"> {slotPullsWhenStarted} </strong>回
-            </p>
-          </div>
-          <div style={{ height: "min(720px, 80vh)", minHeight: "min(560px, 72vh)", overflow: "hidden", borderRadius: "12px" }}>
-            <BoardViewport
-              players={gs.players}
-              viewPos={sugorokuViewPos}
-              boardGoal={BOARD_GOAL}
-              isDiceRolling={false}
-              taxiPhase={null}
-              pieceHopping={false}
-              currentPlayer={cpGs}
-              tileEffects={gs?.sugorokuTileEffects}
-            />
-          </div>
-          <button
-            type="button"
-            onClick={onBeginSlotPhase}
-            disabled={(cpGs.reservedSlotTurns ?? 0) <= 0}
-            className="w-full rounded-xl bg-cyan-500 py-4 font-black text-slate-950 hover:bg-cyan-400 shadow-lg disabled:opacity-40 text-lg tracking-wide"
-          >
-            🎰 スロットを開始する
-          </button>
-          <p className="text-center text-[10px] text-slate-600">開始後は従来のスロット画面に切り替わります。</p>
         </div>
       )}
 
@@ -220,10 +185,6 @@ import BoardViewport from "./BoardViewport";
               </div>
             );
           })()}
-
-          {cpGs.lastMoveEvent && (
-            <p className="rounded-lg bg-slate-800/60 px-3 py-2 text-xs text-slate-300 text-center">{cpGs.lastMoveEvent}</p>
-          )}
 
           {isTaxiTrafficWaitTurn && (
             <div className="rounded-lg border border-amber-600/45 bg-amber-950/50 px-3 py-2 text-center">

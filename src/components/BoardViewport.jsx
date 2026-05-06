@@ -379,6 +379,7 @@ export default function BoardViewport({
 
   const tileW = laneTileW;
   const stepY = tileW + ROW_GAP_PX;
+  const traveling = Math.abs(viewPos - smoothPos) > TRAVEL_EPS;
   const laneDY = traveling ? laneOffsetY(smoothPos, travelDirRef.current, tileW, ROW_GAP_PX) : 0;
   const displayTileIndex = Math.floor(smoothPos + 1e-9);
 
@@ -793,6 +794,11 @@ export default function BoardViewport({
                     )}
                     {pos === boardGoal ? (
                       <GoalSlotRirimuImage deco={deco} iconPx={iconPx} tileW={tileW} />
+                    ) : showTileFx ? (
+                      <SugorokuTileEffectIcon
+                        effect={tileFx}
+                        sizePx={Math.max(16, Math.round(iconPx * 1.05))}
+                      />
                     ) : deco.icon ? (
                       <span
                         style={{ fontSize: `${iconPx}px` }}
@@ -804,11 +810,6 @@ export default function BoardViewport({
                       <span style={{ fontSize: `${numPx}px` }} className={`font-bold ${deco.text}`}>
                         {pos}
                       </span>
-                    )}
-                    {showTileFx && (
-                      <div className="pointer-events-none absolute right-0.5 top-0.5 z-[2] flex items-center justify-center">
-                        <SugorokuTileEffectIcon effect={tileFx} sizePx={Math.max(10, Math.round(iconPx * 0.55))} />
-                      </div>
                     )}
                     {pos === boardGoal && (
                       <span
@@ -835,6 +836,12 @@ export default function BoardViewport({
         className="absolute bottom-0 left-0 right-0 z-[15] h-5 rounded-b-xl pointer-events-none"
         style={{ background: "linear-gradient(to top, rgba(15,23,42,0.88), transparent)" }}
       />
+      <div className="pointer-events-none absolute right-2 top-1/2 z-[16] -translate-y-1/2 rounded-lg border border-cyan-400/50 bg-slate-900/85 px-2 py-1 text-right shadow-[0_4px_18px_rgba(0,0,0,0.45)]">
+        <div className="text-[10px] font-semibold tracking-wide text-cyan-300/90">現在マス</div>
+        <div className="text-sm font-black tabular-nums text-cyan-100 leading-tight">
+          {Math.max(0, displayTileIndex)}<span className="text-slate-500 font-semibold"> / </span>{boardGoal}
+        </div>
+      </div>
     </div>
   );
 }

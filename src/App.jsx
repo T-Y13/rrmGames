@@ -71,6 +71,14 @@ const LS_SE_VOL = "pons_se_vol";
 const LS_BGM_VOL = "pons_bgm_vol";
 const DEFAULT_SE_VOL = 0.82;
 const DEFAULT_BGM_VOL = 0.08;
+const STATUS_OVERVIEW_HINTS = {
+  money: "行動やスロットで増減する所持金です。マイナスになっても続行できますが、借金状態になります。",
+  luck: "運気の強さです。伸びるとすごろくのダイスなどで追い風になりやすくなります。一定値を超えるとダイスが増える！？",
+  skill: "腕前やコツのイメージです。スロットでは当たりやすさなどに効いてきます。",
+  virtue: "善行の蓄えです。ダイスや日常イベントで「最低限ここまで」が変わるなど、行動の土台に効きます。",
+  pon: "ストレスや無謀さの目安です。高まると荒れた展開に振れやすくなります。",
+  livingCost: "暮らしの固定費です。日が進むたびにこの負担がのしかかり、資金との攻防になります。",
+};
 
 function loadSoundVolume(key, fallback) {
   try {
@@ -216,6 +224,10 @@ export default function App() {
   const [workCutin, setWorkCutin] = useState(null);
   const workCutinTimerRef = useRef(null);
   const workFxChainTimeoutsRef = useRef([]);
+  const [turnChangeBannerTurns, setTurnChangeBannerTurns] = useState(null);
+  const [pendingTurnBannerTurns, setPendingTurnBannerTurns] = useState(null);
+  const prevDay8TurnKeyRef = useRef(null);
+  const turnChangeBannerTimerRef = useRef(null);
 
   // ─── 派生値 ──────────────────────────────────────────────────────────
   const myFullId    = myName.trim() ? `${myName.trim()}#${myTag}` : "";  // Name#1234 形式
@@ -241,6 +253,68 @@ export default function App() {
   const cpIsSlot     = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "arrived";
   const isDay8Moving = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "moving";
   const boardProgress = cpGs ? Math.min(100, (cpGs.position / BOARD_GOAL) * 100) : 0;
+
+  useEffect(() => {
+    if (!gs || gs.gamePhase !== "playing" || gs.subPhase !== "day8" || !Array.isArray(gs.players)) {
+      prevDay8TurnKeyRef.current = null;
+      setPendingTurnBannerTurns(null);
+      return;
+    }
+    const idx = gs.currentPlayerIdx;
+    if (!Number.isInteger(idx) || idx < 0 || idx >= gs.players.length) return;
+    const p = gs.players[idx];
+    const turnKey = `${idx}:${p?.id ?? ""}:${p?.moveTurns ?? -1}:${p?.movePhase ?? ""}:${p?.slotTurnsLeft ?? -1}`;
+    const prevKey = prevDay8TurnKeyRef.current;
+    prevDay8TurnKeyRef.current = turnKey;
+    if (prevKey == null || prevKey === turnKey) return;
+    const turnsLeft = Math.max(0, BAL.dice.maxTurns - (p?.moveTurns ?? 0));
+    setPendingTurnBannerTurns(turnsLeft);
+  }, [gs?.gamePhase, gs?.subPhase, gs?.currentPlayerIdx, gs?.players]);
+
+  useEffect(() => {
+    if (pendingTurnBannerTurns == null) return;
+    const idleNow =
+      !isDiceRolling &&
+      taxiPhase == null &&
+      !pieceHopping &&
+      !ponCutin &&
+      shrinePhase == null &&
+      !streamFailOverlay &&
+      !streamPonFireOverlay &&
+      !streamTypeCutin &&
+      !workCutin &&
+      !workPonHud;
+    if (!idleNow) return;
+
+    setTurnChangeBannerTurns(pendingTurnBannerTurns);
+    setPendingTurnBannerTurns(null);
+    if (turnChangeBannerTimerRef.current) {
+      clearTimeout(turnChangeBannerTimerRef.current);
+    }
+    turnChangeBannerTimerRef.current = setTimeout(() => {
+      setTurnChangeBannerTurns(null);
+      turnChangeBannerTimerRef.current = null;
+    }, 2000);
+  }, [
+    pendingTurnBannerTurns,
+    isDiceRolling,
+    taxiPhase,
+    pieceHopping,
+    ponCutin,
+    shrinePhase,
+    streamFailOverlay,
+    streamPonFireOverlay,
+    streamTypeCutin,
+    workCutin,
+    workPonHud,
+  ]);
+
+  useEffect(() => () => {
+    if (turnChangeBannerTimerRef.current) {
+      clearTimeout(turnChangeBannerTimerRef.current);
+      turnChangeBannerTimerRef.current = null;
+    }
+  }, []);
 
   const handleSeVolumeChange = useCallback((v) => {
     const n = Math.max(0, Math.min(1, Number(v)));
@@ -592,6 +666,19 @@ export default function App() {
     // boardViewPosOverride は書き込み反映まで維持（先に null にすると viewPos が旧マスに戻り、同期後に再度ホップする）
     if (pending?.nextGS) {
       try {
+        if (pending.intermediateGS && pending.tileSlideToPos != null) {
+          const midGS = pending.intermediateGS;
+          const midUpdates = { gameState: midGS };
+          if (midGS.gamePhase === "finalBattle") midUpdates.status = "FINAL_BATTLE";
+          if (midGS.gamePhase === "results") midUpdates.status = "completed";
+          await updateRoom(midUpdates);
+
+          setBoardViewPosOverride(pending.tileSlideToPos);
+          await new Promise((r) =>
+            setTimeout(r, computeSugorokuHopDurationMs(pending.tileSlideFromPos ?? pending.tileSlideToPos, pending.tileSlideToPos)),
+          );
+        }
+
         const newGS = pending.nextGS;
         const updates = { gameState: newGS };
         if (newGS.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
@@ -962,6 +1049,19 @@ export default function App() {
     await writeGS({ ...gs, players: newPlayers, log: prependLogs(logs, gs.log) });
   };
 
+  const autoBeginWaitingSlotRef = useRef(false);
+  useEffect(() => {
+    if (!isMyTurn || !cpIsWaitingSlot) {
+      autoBeginWaitingSlotRef.current = false;
+      return;
+    }
+    if (autoBeginWaitingSlotRef.current) return;
+    autoBeginWaitingSlotRef.current = true;
+    void handleBeginSlotPhase().finally(() => {
+      autoBeginWaitingSlotRef.current = false;
+    });
+  }, [isMyTurn, cpIsWaitingSlot, gs]);
+
   const dailySlotSpinStats = useMemo(() => {
     if (!cpGs) return null;
     const s = { ...cpGs.stats };
@@ -1249,10 +1349,15 @@ export default function App() {
         streamCutinTimerRef.current = null;
       }
 
-      const failRate = Math.max(
-        BAL.stream.minFailRate,
-        BAL.stream.baseFailRate - (s.skill - 50) * BAL.stream.skillFailReduce
-      );
+      const streamSkillLuck = s.skill + s.luck;
+      const failRate =
+        streamSkillLuck > BAL.stream.combinedStatNoFailThreshold
+          ? 0
+          : Math.max(
+            0,
+            BAL.stream.baseFailRate -
+              (streamSkillLuck / BAL.stream.combinedStatNoFailThreshold) * BAL.stream.baseFailRate
+          );
       const failed = Math.random() < failRate;
       streamRollFailed = failed;
       let streamCutinGold = 0;
@@ -1854,28 +1959,27 @@ export default function App() {
         setTaxiDriveCongested(false);
         setIsDiceRolling(false);
       } else if (ponFired) {
+        const intermediatePlayers = needsSugorokuTileSlide
+          ? buildDay8TileSlideMidpointPlayers(newPlayers, idx, landedDice)
+          : null;
+        const intermediateGS = intermediatePlayers
+          ? { ...gsWithDice, players: intermediatePlayers }
+          : null;
         ponCutinCommitRef.current = {
           nextGS,
           characterType: p.characterType ?? "salaryman",
           tileFxToast: rr.tileToast,
+          intermediateGS,
+          tileSlideFromPos: landedDice,
+          tileSlideToPos: needsSugorokuTileSlide ? newPosFinal : null,
         };
         ponHopGateRef.current = true;
         if (ponTileSlideTimerRef.current) {
           clearTimeout(ponTileSlideTimerRef.current);
           ponTileSlideTimerRef.current = null;
         }
-        if (!needsSugorokuTileSlide) {
-          setPonHopCompleteEnabled(true);
-          setBoardViewPosOverride(newPosFinal);
-        } else {
-          setPonHopCompleteEnabled(false);
-          setBoardViewPosOverride(landedDice);
-          ponTileSlideTimerRef.current = setTimeout(() => {
-            ponTileSlideTimerRef.current = null;
-            setBoardViewPosOverride(newPosFinal);
-            setPonHopCompleteEnabled(true);
-          }, computeSugorokuHopDurationMs(p.position, landedDice));
-        }
+        setBoardViewPosOverride(landedDice);
+        setPonHopCompleteEnabled(true);
         setIsDiceRolling(false);
       } else {
         if (!needsSugorokuTileSlide) {
@@ -2232,6 +2336,27 @@ export default function App() {
         <WorkCutin gold={workCutin.gold} stat={workCutin.stat} />
       )}
 
+      {turnChangeBannerTurns != null && (
+        <div
+          className="fixed inset-0 z-[260] flex items-center justify-center pointer-events-none bg-black/55 anim-fadein overflow-hidden"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="absolute inset-0 anim-stream-cutin-lines opacity-40" aria-hidden />
+          <div
+            className="pointer-events-none absolute inset-y-[-15%] left-[-45%] w-[190%] bg-gradient-to-r from-transparent via-cyan-200/25 to-transparent opacity-90 anim-stream-cutin-sweep"
+            aria-hidden
+          />
+          <div className="relative rounded-2xl border-2 border-cyan-300/80 bg-slate-950/95 px-12 py-8 text-center shadow-[0_18px_70px_rgba(0,0,0,0.78)] anim-pon-burst-impact">
+            <p className="text-cyan-200 text-2xl sm:text-3xl font-black tracking-wide">ーーーーーーーーー</p>
+            <p className="mt-3 text-white text-4xl sm:text-5xl font-black tracking-tight tabular-nums drop-shadow-[0_0_18px_rgba(125,211,252,0.6)] anim-stream-pon-text">
+              残り{turnChangeBannerTurns}ターン
+            </p>
+            <p className="mt-3 text-cyan-200 text-2xl sm:text-3xl font-black tracking-wide">ーーーーーーーーー</p>
+          </div>
+        </div>
+      )}
+
       {streamPonFireOverlay && (
         <div
           className="fixed inset-0 z-[230] cursor-default overflow-hidden bg-black/0 anim-fadein pointer-events-auto"
@@ -2439,7 +2564,7 @@ export default function App() {
                 const negMoney = key === "money" && cpGs.stats.money < 0;
                 const sizeCls = key === "money" ? "text-lg" : "text-2xl";
                 return (
-                  <div key={key} className="rounded-lg bg-slate-800 p-2.5 text-center">
+                  <div key={key} className="group/status-hint relative rounded-lg bg-slate-800 p-2.5 text-center">
                     <div className="text-xs text-slate-400 leading-tight">
                       {label}
                       {isLivingCost && (
@@ -2449,6 +2574,12 @@ export default function App() {
                     <div className={`mt-0.5 font-bold tabular-nums inline-flex items-baseline justify-center gap-0.5 ${negMoney ? "text-rose-400" : color} ${sizeCls}`}>
                       <span>{rawVal}</span>
                       {isLivingCost && <span className="text-xs font-semibold opacity-75">G</span>}
+                    </div>
+                    <div
+                      role="tooltip"
+                      className="pointer-events-none absolute left-1/2 top-full z-[120] mt-1 w-max max-w-[min(288px,calc(100vw-2rem))] -translate-x-1/2 rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-left text-[11px] leading-snug text-slate-100 shadow-[0_12px_40px_rgba(0,0,0,0.65)] opacity-0 transition-opacity duration-150 delay-75 invisible group-hover/status-hint:opacity-100 group-hover/status-hint:visible group-hover/status-hint:delay-0"
+                    >
+                      {STATUS_OVERVIEW_HINTS[key] ?? ""}
                     </div>
                   </div>
                 );
@@ -2562,7 +2693,6 @@ export default function App() {
             pieceHopping={pieceHopping}
             onMoveAction={handleMoveAction}
             onGoalLandingConfirm={handleGoalLandingConfirm}
-            onBeginSlotPhase={handleBeginSlotPhase}
           />
 
           {isMyTurn && cpIsSlot && cpGs && (
