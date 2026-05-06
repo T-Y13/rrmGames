@@ -1,0 +1,288 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: "Inter", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+}
+
+/* ロード中・fixed子のみなどで中身がなくても真っ白にならない */
+html,
+body,
+#root {
+  min-height: 100%;
+  background-color: #020617;
+}
+
+/* ── スロット筐体（表示安定版メモ）
+ * - 画像: App.jsx で slot-machine.png を import（Vite が URL 解決）
+ * - 窓の抜き: --slot-cabinet-mask は data URL（外部 SVG 取得に依存しない）
+ * - 影・オーラ: .slot-cabinet-img に filter を載せない（Chromium で筐体が消えることがある）
+ *   → filter は .slot-cabinet-img-wrap のみ
+ * - public/assets/images/slot-machine.png は img onError フォールバック用
+ * ── */
+:root {
+  /*
+   * --slot-window-* …public/images/slot-machine.png の装飾枠内の黒窓に合わせる（マスクと数値を常に一致）
+   * --slot-reel-gap …列間 3.5%（画像幅基準）÷ 窓幅 62% × 100 ≈ 5.64516129%
+   */
+  --slot-window-top: 25%;
+  --slot-window-left: 18%;
+  --slot-window-width: 60%;
+  --slot-window-height: 40%;
+  --slot-reel-gap: 5.64516129%;
+  --slot-reel-pad-x: 0;
+  --slot-reel-pad-y: 0;
+  /* SPIN：画像上はやや下・中央付近（円中心 90%前後想定） */
+  --slot-spin-top: 88%;
+  --slot-spin-left: 45%;
+  --slot-spin-w: 10%;
+  --slot-spin-h: 10%;
+  --slot-reel-face: #141922;
+  /* 3 窓帯: x=19 / 40.8333 / 62.6666, w=18.3333, y=46, h=32（slot-windows-mask.svg と同一） */
+  --slot-cabinet-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Crect width='100' height='100' fill='%23fff'/%3E%3Crect x='19' y='46' width='18.3333' height='32' fill='%23000'/%3E%3Crect x='40.8333' y='46' width='18.3333' height='32' fill='%23000'/%3E%3Crect x='62.6666' y='46' width='18.3333' height='32' fill='%23000'/%3E%3C/svg%3E");
+}
+
+/* 親に filter/transform を掛けない（マスク付き img の子が環境によって消えるため）。反動は margin のみ。 */
+.slot-cabinet-recoiling {
+  animation: slot-cabinet-recoil-kf 0.34s cubic-bezier(0.33, 1.18, 0.48, 1);
+}
+@keyframes slot-cabinet-recoil-kf {
+  0%,
+  100% {
+    margin-top: 0;
+  }
+  38% {
+    margin-top: 12px;
+  }
+}
+
+.slot-cabinet-img-wrap {
+  /* mask は子の img のみ。filter はマスクと同じレイヤに載せない（Chromium で筐体が消えるのを防ぐ） */
+  filter: drop-shadow(0 12px 40px rgba(0, 0, 0, 0.65));
+}
+.slot-cabinet-img {
+  -webkit-mask-image: var(--slot-cabinet-mask);
+  mask-image: var(--slot-cabinet-mask);
+  /* luminance は環境によってマスク全体が透明になることがあるため指定しない */
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+
+/* 窓: container-type を付けない（子の height:% / 絶対配置ストリップの 3 行表示を安定させる） */
+.slot-reel-window .slot-grid-3x3 {
+  min-height: 0;
+  align-items: stretch;
+}
+.slot-reel-window .slot-reel-col {
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: stretch;
+}
+/* 3 行とも窓の高さ H 内に収める（各マス ≈ H/3）。300%+top:-100% は中段だけ H になり上下が窓外に出る */
+.slot-reel-window .slot-reel-strip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  align-content: stretch;
+}
+.slot-reel-window .slot-cell {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(0.58rem, 2.4vmin, 1.72rem);
+  line-height: 1.08;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: clip;
+}
+.slot-reel-window .slot-cell--edge {
+  opacity: 0.4;
+  filter: brightness(0.72) blur(0.35px);
+  transition: opacity 0.25s ease, filter 0.25s ease;
+}
+.slot-reel-window .slot-cell--payline {
+  opacity: 1;
+  filter: none;
+  position: relative;
+  z-index: 1;
+}
+.slot-reel-window .slot-cell--payline.slot-cell--spinning {
+  opacity: 0.9;
+}
+
+@keyframes slot-payline-win-pop {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.12);
+  }
+}
+@keyframes slot-payline-win-blink {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1.15) drop-shadow(0 0 10px rgba(250, 204, 21, 0.55));
+  }
+  50% {
+    opacity: 0.82;
+    filter: brightness(1.45) drop-shadow(0 0 18px rgba(251, 191, 36, 0.85));
+  }
+}
+.slot-reel-window .slot-cell--payline.slot-cell--win-pulse {
+  animation: slot-payline-win-pop 0.5s ease-in-out infinite, slot-payline-win-blink 0.28s ease-in-out infinite;
+}
+
+/* 当選ライン：ヴィネットより手前に表示 */
+.slot-win-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  z-index: 5;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(248, 113, 113, 0.15) 12%,
+    rgba(239, 68, 68, 0.95) 50%,
+    rgba(248, 113, 113, 0.15) 88%,
+    transparent 100%
+  );
+  box-shadow:
+    0 0 10px rgba(239, 68, 68, 0.45),
+    0 0 2px rgba(254, 202, 202, 0.9);
+}
+.slot-payline-marker {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 6;
+  font-size: clamp(0.45rem, 2vmin, 0.65rem);
+  line-height: 1;
+  color: rgba(248, 113, 113, 0.95);
+  text-shadow: 0 0 8px rgba(239, 68, 68, 0.75);
+  pointer-events: none;
+}
+.slot-payline-marker--l {
+  left: 1px;
+}
+.slot-payline-marker--r {
+  right: 1px;
+}
+
+/* スピン中：オーラはラッパーのみ filter（img は mask のみ） */
+.slot-cabinet-stage--aura-luck1 .slot-cabinet-img-wrap {
+  filter: drop-shadow(0 12px 40px rgba(0, 0, 0, 0.65))
+    drop-shadow(0 0 10px rgba(234, 179, 8, 0.35))
+    drop-shadow(0 0 22px rgba(250, 204, 21, 0.2));
+}
+.slot-cabinet-stage--aura-luck2 .slot-cabinet-img-wrap {
+  filter: drop-shadow(0 12px 40px rgba(0, 0, 0, 0.65))
+    drop-shadow(0 0 14px rgba(251, 191, 36, 0.48))
+    drop-shadow(0 0 28px rgba(245, 158, 11, 0.28));
+}
+.slot-cabinet-stage--aura-luck3 .slot-cabinet-img-wrap {
+  filter: drop-shadow(0 12px 40px rgba(0, 0, 0, 0.65))
+    drop-shadow(0 0 16px rgba(253, 224, 71, 0.55))
+    drop-shadow(0 0 36px rgba(251, 191, 36, 0.32));
+}
+.slot-cabinet-stage--aura-skill1 .slot-cabinet-img-wrap {
+  filter: drop-shadow(0 12px 40px rgba(0, 0, 0, 0.65))
+    drop-shadow(0 0 12px rgba(74, 222, 128, 0.38))
+    drop-shadow(0 0 24px rgba(34, 197, 94, 0.2));
+}
+.slot-cabinet-stage--aura-skill2 .slot-cabinet-img-wrap {
+  filter: drop-shadow(0 12px 40px rgba(0, 0, 0, 0.65))
+    drop-shadow(0 0 14px rgba(52, 211, 153, 0.45))
+    drop-shadow(0 0 30px rgba(22, 163, 74, 0.28));
+}
+.slot-cabinet-stage--aura-combo .slot-cabinet-img-wrap {
+  filter: drop-shadow(0 12px 40px rgba(0, 0, 0, 0.65))
+    drop-shadow(0 0 14px rgba(251, 191, 36, 0.42))
+    drop-shadow(0 0 20px rgba(34, 197, 94, 0.36))
+    drop-shadow(0 0 32px rgba(250, 204, 21, 0.22));
+}
+
+/* 3×3 リール：1コマズレからのスライド演出 */
+@keyframes slot-slip-nudge {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(9px);
+  }
+}
+.slot-reel-strip--slip {
+  animation: slot-slip-nudge 0.56s ease-out;
+}
+
+/* preDay8：「決戦の日」短文オーバー（燃える金色のみ） */
+@keyframes fbPreday8GoldFlicker {
+  0%,
+  100% {
+    text-shadow:
+      0 0 8px #fbbf24,
+      0 0 18px rgba(251, 191, 36, 0.95),
+      0 0 32px rgba(245, 158, 11, 0.75),
+      0 0 48px rgba(234, 88, 12, 0.45);
+    filter: brightness(1.05);
+  }
+  50% {
+    text-shadow:
+      0 0 12px #fde047,
+      0 0 26px rgba(250, 204, 21, 1),
+      0 0 42px rgba(251, 146, 60, 0.9),
+      0 0 64px rgba(234, 88, 12, 0.55);
+    filter: brightness(1.18);
+  }
+}
+.fb-preday8-burn-title {
+  font-family: "Yuji Syuku", "Noto Sans JP", sans-serif;
+  font-weight: 900;
+  line-height: 1.05;
+  letter-spacing: 0.06em;
+  font-size: clamp(2.75rem, 12vw, 5.5rem);
+  color: #fffbeb;
+  -webkit-text-fill-color: #fffbeb;
+  animation: fbPreday8GoldFlicker 0.42s ease-in-out infinite;
+}
+
+/* リール窓：端をごく弱く（中段の減光は .slot-cell--edge で行う。ここで上段まで潰さない） */
+.slot-reel-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.2) 0%,
+    rgba(0, 0, 0, 0.05) 16%,
+    transparent 30%,
+    transparent 70%,
+    rgba(0, 0, 0, 0.05) 84%,
+    rgba(0, 0, 0, 0.2) 100%
+  );
+}
