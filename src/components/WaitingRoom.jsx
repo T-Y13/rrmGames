@@ -240,9 +240,35 @@ const LOBBY_ANIM_CSS = `
 .ririm-secret-card {
   animation: ririm-secret-shimmer 1.65s ease-in-out infinite;
 }
+@keyframes ririm-secret-glitter {
+  0% { transform: translateY(8px) scale(0.82); opacity: 0; }
+  24% { opacity: 0.95; }
+  62% { transform: translateY(-10px) scale(1.08); opacity: 0.8; }
+  100% { transform: translateY(-24px) scale(1.22); opacity: 0; }
+}
+.ririm-secret-glitter {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.ririm-secret-glitter span {
+  position: absolute;
+  color: rgba(253, 224, 71, 0.95);
+  text-shadow: 0 0 10px rgba(250, 204, 21, 0.72);
+  animation: ririm-secret-glitter 1.8s ease-in-out infinite;
+}
+.ririm-secret-glitter span:nth-child(1) { left: 10%; bottom: 8%; animation-delay: 0s; }
+.ririm-secret-glitter span:nth-child(2) { left: 36%; bottom: 12%; animation-delay: 0.35s; }
+.ririm-secret-glitter span:nth-child(3) { left: 62%; bottom: 10%; animation-delay: 0.75s; }
+.ririm-secret-glitter span:nth-child(4) { left: 84%; bottom: 14%; animation-delay: 1.1s; }
 @media (prefers-reduced-motion: reduce) {
   .ririm-secret-card {
     animation: none;
+  }
+  .ririm-secret-glitter span {
+    animation: none;
+    opacity: 0.6;
   }
 }
 `;
@@ -256,6 +282,7 @@ function CharacterLobbyPrep({
   soundRef,
   waitingSessionKey,
   unlockPlayerNameForSecret,
+  onSecretCharacterSelected,
 }) {
   const mySlot = playerSlots.find((s) => s.id === myId);
   const selectedKey = mySlot?.character ?? null;
@@ -347,6 +374,9 @@ function CharacterLobbyPrep({
 
   const handlePickCharacter = async (charKey) => {
     if (isRolling) return;
+    if (charKey === SECRET_RIRIMU_CHARACTER_KEY) {
+      onSecretCharacterSelected?.();
+    }
     const alreadySynced = normalizeSlotInitialRolls(mySlot?.initialRolls) != null;
     if (!alreadySynced) {
       const raw = lockedRawRolls ?? localRawRolls;
@@ -586,6 +616,14 @@ function CharacterLobbyPrep({
                   Secret
                 </span>
               )}
+              {isSecretCard && (
+                <span className="ririm-secret-glitter" aria-hidden>
+                  <span>✦</span>
+                  <span>✧</span>
+                  <span>✦</span>
+                  <span>✧</span>
+                </span>
+              )}
               <div className="mb-1 flex min-h-[2.5rem] items-center justify-center">
                 <CharacterIcon characterType={c.key} imgClassName="h-10 w-10 object-contain" spanClassName="text-2xl" />
               </div>
@@ -626,6 +664,7 @@ export default function WaitingRoom({
   onSeVolumeChange,
   onBgmVolumeChange,
   unlockPlayerNameForSecret,
+  onSecretCharacterSelected,
 }) {
   const mySlot = playerSlots.find((s) => s.id === myId);
   const myStatsReady = !!normalizeSlotInitialRolls(mySlot?.initialRolls);
@@ -663,6 +702,7 @@ export default function WaitingRoom({
             onCommitInitialRolls={onCommitInitialRolls}
             soundRef={soundRef}
             unlockPlayerNameForSecret={unlockPlayerNameForSecret}
+            onSecretCharacterSelected={onSecretCharacterSelected}
           />
 
           <button
@@ -744,6 +784,7 @@ export default function WaitingRoom({
             onCommitInitialRolls={onCommitInitialRolls}
             soundRef={soundRef}
             unlockPlayerNameForSecret={unlockPlayerNameForSecret}
+            onSecretCharacterSelected={onSecretCharacterSelected}
           />
 
           <div className="rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2">

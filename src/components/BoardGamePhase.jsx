@@ -42,10 +42,6 @@ import BoardViewport from "./BoardViewport";
   const pendingTaxiSteps = cpGs.pendingTaxiSteps ?? 0;
   const isTaxiTrafficWaitTurn = pendingTaxiSteps > 0;
 
-  const slotTurnReserve = cpGs.reservedSlotTurns ?? 0;
-  /** 開始ボタン押下後に実際に回せる総回（ターンブン × Per手番） */
-  const slotPullsWhenStarted = slotTurnReserve * BAL.dice.slotsPerSugorokuTurn;
-
   const sugorokuViewPos = typeof boardViewPos === "number" ? boardViewPos : cpGs.position;
 
   /** メニューにタクシーを出すか（常時フラグ or 各ターンの taxiAvailable） */
@@ -57,19 +53,8 @@ import BoardViewport from "./BoardViewport";
         <div className="space-y-4">
           <div className="rounded-2xl border-2 border-amber-400/60 bg-gradient-to-br from-amber-500/20 to-yellow-900/30 p-5 text-center space-y-3">
             <p className="text-4xl animate-bounce">🏁</p>
+            <p className="text-lg font-bold text-amber-100">{cpGs.name}</p>
             <h2 className="text-2xl font-black text-amber-200 tracking-wide">GOAL!</h2>
-            <p className="text-amber-100/90 font-semibold">{cpGs.name} が 8日目ゴールへ到着しました。</p>
-            <p className="text-sm text-amber-200/80">
-              このターンを終えるとスロットは<span className="font-bold text-white">あなたの次のターン開始時</span>に始まります。
-              （残り道中のプレイヤーは移動を続行します）
-            </p>
-            <p className="text-xs text-yellow-400/70">
-              獲得<strong className="text-white">{slotTurnReserve}</strong>ターンブン（すごろく1手番＝スロット
-              <strong className="text-white">{BAL.dice.slotsPerSugorokuTurn}</strong>回・計<strong className="text-white">{slotPullsWhenStarted}</strong>回）
-              <span className="block mt-1 text-yellow-400/55">
-                ターン終了まで他プレイヤーとの効果で運・善行・資金が変わっても、開始直前まで反映されます。
-              </span>
-            </p>
           </div>
           <div style={{ height: "min(720px, 80vh)", minHeight: "min(560px, 72vh)", overflow: "hidden", borderRadius: "12px" }}>
             <BoardViewport

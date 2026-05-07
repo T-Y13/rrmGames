@@ -71,6 +71,12 @@ const LS_SE_VOL = "pons_se_vol";
 const LS_BGM_VOL = "pons_bgm_vol";
 const DEFAULT_SE_VOL = 0.82;
 const DEFAULT_BGM_VOL = 0.08;
+const RIRIMU_UNLOCK_VOICE_FILES = [
+  "/sounds/ohayo.mp3",
+  "/sounds/yumemitano.mp3",
+  "/sounds/full_name.mp3",
+];
+const RIRIMU_SELECT_SE_FILE = "/sounds/start_rrm.mp3";
 const STATUS_OVERVIEW_HINTS = {
   money: "行動やスロットで増減する所持金です。マイナスになっても続行できますが、借金状態になります。",
   luck: "運気の強さです。伸びるとすごろくのダイスなどで追い風になりやすくなります。一定値を超えるとダイスが増える！？",
@@ -166,6 +172,8 @@ export default function App() {
   const [isLuckyRoll,   setIsLuckyRoll]    = useState(false);      // アドバンテージロール判定
   const [showDiceTotal, setShowDiceTotal]  = useState(false);      // 合計表示フラグ
   const soundRef           = useRef(null);
+  const managedAudioRef = useRef({ unlock: null, select: null });
+  const ririmuUnlockVoicePlayedRef = useRef(false);
   const [taxiPhase, setTaxiPhase] = useState(null); // null|"taxiHail"|"enter"|"boarding"|"ride"|"driveBeforeJam"|"trafficJam"|"driveAfterJam"|"drive"|"arrive"
   /** 渋滞カットイン直後の「のろのろドライブ」で背景・演出を遅くする */
   const [taxiDriveCongested, setTaxiDriveCongested] = useState(false);
@@ -229,6 +237,55 @@ export default function App() {
   const prevDay8TurnKeyRef = useRef(null);
   const turnChangeBannerTimerRef = useRef(null);
 
+  const stopManagedAudio = useCallback((key) => {
+    const audio = managedAudioRef.current[key];
+    if (!audio) return;
+    audio.pause();
+    audio.currentTime = 0;
+    managedAudioRef.current[key] = null;
+  }, []);
+
+  const playManagedAudio = useCallback(
+    (key, src) => {
+      stopManagedAudio(key);
+      const audio = new Audio(publicAssetUrl(src));
+      audio.preload = "auto";
+      audio.volume = Math.max(0, Math.min(1, seVolume));
+      audio.onended = () => {
+        if (managedAudioRef.current[key] === audio) managedAudioRef.current[key] = null;
+      };
+      audio.onerror = () => {
+        if (managedAudioRef.current[key] === audio) managedAudioRef.current[key] = null;
+      };
+      managedAudioRef.current[key] = audio;
+      void audio.play().catch(() => {
+        if (managedAudioRef.current[key] === audio) managedAudioRef.current[key] = null;
+      });
+    },
+    [seVolume, stopManagedAudio],
+  );
+
+  const playRirimuSelectionSe = useCallback(() => {
+    playManagedAudio("select", RIRIMU_SELECT_SE_FILE);
+  }, [playManagedAudio]);
+
+  useEffect(() => {
+    const isUnlockedNow = isSecretRirimuUnlockedByTrimmedPlayerName(myName);
+    if (!isUnlockedNow || ririmuUnlockVoicePlayedRef.current) return;
+    const idx = Math.floor(Math.random() * RIRIMU_UNLOCK_VOICE_FILES.length);
+    const pick = RIRIMU_UNLOCK_VOICE_FILES[idx] ?? RIRIMU_UNLOCK_VOICE_FILES[0];
+    ririmuUnlockVoicePlayedRef.current = true;
+    playManagedAudio("unlock", pick);
+  }, [myName, playManagedAudio]);
+
+  useEffect(
+    () => () => {
+      stopManagedAudio("unlock");
+      stopManagedAudio("select");
+    },
+    [stopManagedAudio],
+  );
+
   // ─── 派生値 ──────────────────────────────────────────────────────────
   const myFullId    = myName.trim() ? `${myName.trim()}#${myTag}` : "";  // Name#1234 形式
   const roomGs      = roomData?.gameState ?? null;
@@ -263,11 +320,31 @@ export default function App() {
     const idx = gs.currentPlayerIdx;
     if (!Number.isInteger(idx) || idx < 0 || idx >= gs.players.length) return;
     const p = gs.players[idx];
-    const turnKey = `${idx}:${p?.id ?? ""}:${p?.moveTurns ?? -1}:${p?.movePhase ?? ""}:${p?.slotTurnsLeft ?? -1}`;
+    const firstPlayerId = gs.players[0]?.id ?? null;
+    const turnKey = `${idx}:${p?.id ?? ""}:${p?.moveTurns ?? -1}:${p?.movePhase ?? ""}`;
     const prevKey = prevDay8TurnKeyRef.current;
     prevDay8TurnKeyRef.current = turnKey;
     if (prevKey == null || prevKey === turnKey) return;
-    const turnsLeft = Math.max(0, BAL.dice.maxTurns - (p?.moveTurns ?? 0));
+
+    // 「全員の行動完了後 → 先頭プレイヤーの新ターン開始」時のみ表示する。
+    // ソロ（1人）の場合は moveTurns が進むたびに同条件を満たす。
+    const [prevIdxRaw, , prevMoveTurnsRaw] = String(prevKey).split(":");
+    const prevIdx = Number(prevIdxRaw);
+    const prevMoveTurns = Number(prevMoveTurnsRaw);
+    const nowMoveTurns = Number(p?.moveTurns ?? 0);
+    const isFirstPlayerTurn = firstPlayerId != null && p?.id === firstPlayerId;
+    const wrappedToFirstInMulti =
+      gs.players.length > 1 &&
+      Number.isFinite(prevIdx) &&
+      prevIdx !== idx &&
+      idx === 0;
+    const advancedSoloTurn =
+      gs.players.length === 1 &&
+      Number.isFinite(prevMoveTurns) &&
+      nowMoveTurns > prevMoveTurns;
+
+    if (!isFirstPlayerTurn || (!wrappedToFirstInMulti && !advancedSoloTurn)) return;
+    const turnsLeft = Math.max(0, BAL.dice.maxTurns - nowMoveTurns);
     setPendingTurnBannerTurns(turnsLeft);
   }, [gs?.gamePhase, gs?.subPhase, gs?.currentPlayerIdx, gs?.players]);
 
@@ -1328,6 +1405,7 @@ export default function App() {
       setWorkCutin({
         gold: workTotal,
         stat: workVirtueGain ? { label: "善行", delta: workVirtueGain } : null,
+        characterType: p.characterType,
       });
       workCutinTimerRef.current = window.setTimeout(() => {
         setWorkCutin(null);
@@ -2141,6 +2219,7 @@ export default function App() {
       onSeVolumeChange={handleSeVolumeChange}
       onBgmVolumeChange={handleBgmVolumeChange}
       unlockPlayerNameForSecret={myName}
+      onSecretCharacterSelected={playRirimuSelectionSe}
     />
   );
 
@@ -2333,7 +2412,11 @@ export default function App() {
         />
       )}
       {workCutin && (
-        <WorkCutin gold={workCutin.gold} stat={workCutin.stat} />
+        <WorkCutin
+          gold={workCutin.gold}
+          stat={workCutin.stat}
+          characterType={workCutin.characterType}
+        />
       )}
 
       {turnChangeBannerTurns != null && (

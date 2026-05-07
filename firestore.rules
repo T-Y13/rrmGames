@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isPlayerListValid(slots) {
+      return slots is list && slots.size() >= 1 && slots.size() <= 4;
+    }
+
+    function hasValidPlayerIds(ids) {
+      return ids is list && ids.size() >= 1 && ids.size() <= 4;
+    }
+
+    function actorInPlayerIds() {
+      return request.auth.uid in resource.data.playerIds;
+    }
+
+    function actorInNextPlayerIds() {
+      return request.auth.uid in request.resource.data.playerIds;
+    }
+
+    // Main game room documents.
+    match /rooms/{roomId} {
+      // Signed-in players can read room state.
+      allow get, list: if isSignedIn();
+
+      // Create only by authenticated user and include creator in playerIds.
+      allow create: if isSignedIn()
+        && hasValidPlayerIds(request.resource.data.playerIds)
+        && request.auth.uid in request.resource.data.playerIds
+        && isPlayerListValid(request.resource.data.playerSlots);
+
+      // Update only by existing or resulting room participant.
+      allow update: if isSignedIn()
+        && hasValidPlayerIds(request.resource.data.playerIds)
+        && isPlayerListValid(request.resource.data.playerSlots)
+        && (actorInPlayerIds() || actorInNextPlayerIds());
+
+      // Delete only by current host.
+      allow delete: if isSignedIn()
+        && resource.data.hostId is string
+        && request.auth.uid == resource.data.hostId;
+    }
+
+    // Deny everything else by default.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

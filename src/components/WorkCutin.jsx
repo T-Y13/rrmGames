@@ -2,8 +2,9 @@ import { publicAssetUrl } from "../lib/publicAssetUrl";
 import { WORK_CUTIN_IMAGE } from "../constants/branding";
 
 /** 日常「仕事」の画像カットイン（親が一定時間後にオフにする） */
-export default function WorkCutin({ gold, stat }) {
-  const src = publicAssetUrl(WORK_CUTIN_IMAGE);
+export default function WorkCutin({ gold, stat, characterType }) {
+  const isRirimu = characterType === "vtuber" || characterType === "ririm";
+  const src = publicAssetUrl(isRirimu ? "/images/work_ririmu.png" : WORK_CUTIN_IMAGE);
 
   return (
     <div
