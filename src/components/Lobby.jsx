@@ -1,6 +1,6 @@
 import React from "react";
 
-import { Loader2, X } from "lucide-react";
+import { Coins, Loader2, X } from "lucide-react";
 
 import {
 
@@ -548,7 +548,14 @@ export default function Lobby({
 
         <div className="rounded-xl bg-slate-800/50 border border-slate-800 p-3 text-xs leading-relaxed text-slate-400 space-y-2.5">
 
-          <p className="font-semibold text-slate-300">ゲーム概要</p>
+          <p className="flex items-center gap-2 font-semibold text-slate-300">
+            <span>ゲーム概要</span>
+            <span className="inline-flex items-center gap-1 text-yellow-300 font-bold">
+              <Coins size={14} aria-hidden={true} />
+              お金をたくさん稼いだら勝ち！
+              <Coins size={14} aria-hidden={true} />
+            </span>
+          </p>
 
           <p>
 

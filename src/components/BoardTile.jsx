@@ -1,5 +1,5 @@
 import React from "react";
-import { Coins, Dice5, Flame } from "lucide-react";
+import { Coins, Dice5, Flame, Skull } from "lucide-react";
 import { TILE_EFFECT_KIND } from "../constants/gameBalance";
 
 /** すごろくマスの効果アイコン（スタート／ゴールは親で描画しない想定） */
@@ -31,6 +31,12 @@ export default function SugorokuTileEffectIcon({ effect, sizePx = 13 }) {
       return (
         <span className={wrap} title="燃えマス">
           <Flame className="text-orange-400" aria-hidden strokeWidth={2.35} size={s} />
+        </span>
+      );
+    case TILE_EFFECT_KIND.DEBT_TRAP:
+      return (
+        <span className={wrap} title="借金トラップ">
+          <Skull className="text-rose-400" aria-hidden strokeWidth={2.35} size={s} />
         </span>
       );
     default:

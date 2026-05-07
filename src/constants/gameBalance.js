@@ -22,6 +22,7 @@ export const TILE_EFFECT_KIND = Object.freeze({
   GAIN_MONEY: "GAIN_MONEY",
   LOSE_MONEY: "LOSE_MONEY",
   INCREASE_PON: "INCREASE_PON",
+  DEBT_TRAP: "DEBT_TRAP",
 });
 export const LAST_DAILY_DAY = 7;
 export const FINAL_GAME_DAY = 8;
@@ -110,7 +111,7 @@ export const BAL = {
     luckSmallDrainAtLuck100: 0.03,
     luckToJp: 0.3,
     luckToBig: 0.7,
-    heatTransferPerSpin: 0.015,
+    heatTransferPerSpin: 0.01,
     heatWeightJp: 1 / 15,
     heatWeightBig: 3 / 15,
     heatWeightMid: 5 / 15,
@@ -128,8 +129,10 @@ export const BAL = {
   },
   /** 8日目：スタート／ゴール除く効果マス（生成時は NEUTRAL を約35%） */
   sugorokuTiles: {
-    neutralRatioMin: 0.3,
-    neutralRatioMax: 0.4,
+    neutralRatio: 0.2,
+    goodRatio: 0.35,
+    badRatio: 0.35,
+    debtTrapRatio: 0.1,
     moveForwardMin: 1,
     moveForwardMax: 3,
     moveBackwardMin: 1,
@@ -162,7 +165,8 @@ export const SLOT_MACHINES = {
     color: "text-amber-300",
     border: "border-amber-500/50 bg-amber-500/10",
     symbols: ["7", "BAR", "🍒", "⭐", "🔔", "💎"],
-    baseRates: { jp: 0.005, big: 0.02, mid: 0.05, atari: 0.08, small: 0.145 },
+    // 初期（素の勝率）を 35% にして、ハズレを 65% にする
+    baseRates: { jp: 0.005, big: 0.02, mid: 0.05, atari: 0.08, small: 0.195 },
     basePayout: { miss: 0, small: 80, atari: 150, mid: 300, big: 1000, jackpot: 3000 },
   },
 };

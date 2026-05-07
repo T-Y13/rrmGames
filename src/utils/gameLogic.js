@@ -309,7 +309,7 @@ export function isDailySlotTrainingWin(slotResult) {
   return Boolean(slotResult && slotResult.tier && slotResult.tier !== "miss");
 }
 
-/** 善行に応じたスロット連続ハズレ天井（同一値以上ハズレたら次スピンは必ず役） */
+/** 善行に応じたスロット天井（当たり/ハズレ問わず同一回数到達で次スピン強制救済） */
 export function slotPityMaxThreshold(virtue) {
   const v = Number(virtue) || 0;
   return Math.max(10, 15 - Math.floor(v / 20));
@@ -445,28 +445,48 @@ export function spinSlot(
   const pityCounterBefore = pityOpts?.pityCounter ?? 0;
   const maxPity = slotPityMaxThreshold(stats?.virtue);
   const pityForced = pityCounterBefore >= maxPity;
+  let ratesForRoll = r;
+
+  // 天井発動スピン：ハズレ率を 0% にして、削れた miss を当たり各役へ比率再配分
+  if (pityForced && r.miss > 0) {
+    const winSum = r.jp + r.big + r.mid + r.atari + r.small;
+    if (winSum > 0) {
+      const bonus = r.miss;
+      ratesForRoll = {
+        ...r,
+        miss: 0,
+        jp: r.jp + bonus * (r.jp / winSum),
+        big: r.big + bonus * (r.big / winSum),
+        mid: r.mid + bonus * (r.mid / winSum),
+        atari: r.atari + bonus * (r.atari / winSum),
+        small: r.small + bonus * (r.small / winSum),
+      };
+    } else {
+      ratesForRoll = { ...r, miss: 0, small: 1 };
+    }
+  }
 
   const scale = bet / SLOT_COST;
   const pay = (base) => Math.round(base * scale);
 
   let tier;
   if (pityForced) {
-    tier = rollWinTierFromRates(r, Math.random());
+    tier = rollWinTierFromRates(ratesForRoll, Math.random());
   } else {
     const roll = Math.random();
-    let acc = r.miss;
+    let acc = ratesForRoll.miss;
     if (roll < acc) tier = "miss";
     else {
-      acc += r.jp;
+      acc += ratesForRoll.jp;
       if (roll < acc) tier = "jackpot";
       else {
-        acc += r.big;
+        acc += ratesForRoll.big;
         if (roll < acc) tier = "big";
         else {
-          acc += r.mid;
+          acc += ratesForRoll.mid;
           if (roll < acc) tier = "mid";
           else {
-            acc += r.atari;
+            acc += ratesForRoll.atari;
             tier = roll < acc ? "atari" : "small";
           }
         }
@@ -474,12 +494,12 @@ export function spinSlot(
     }
   }
 
-  const pityCounterAfter = tier === "miss" ? pityCounterBefore + 1 : 0;
+  const pityCounterAfter = pityForced ? 0 : pityCounterBefore + 1;
   return buildSlotSpinResult(tier, {
     machine,
     bp,
     sym,
-    r,
+    r: ratesForRoll,
     bet,
     machineKey,
     pay,
@@ -719,24 +739,46 @@ export function generateSugorokuTileEffects() {
   const innerCount = BOARD_GOAL - 1;
   if (innerCount <= 0) return tiles;
 
-  const fracSpan = Math.max(0, SG.neutralRatioMax - SG.neutralRatioMin);
-  const neutralFrac = SG.neutralRatioMin + Math.random() * fracSpan;
-  let nNeutral = Math.round(innerCount * neutralFrac);
-  nNeutral = Math.max(0, Math.min(innerCount, nNeutral));
+  const ratioNeutral = SG.neutralRatio ?? 0.2;
+  const ratioGood = SG.goodRatio ?? 0.35;
+  const ratioBad = SG.badRatio ?? 0.35;
+  const ratioDebtTrap = SG.debtTrapRatio ?? 0.1;
+
+  let nNeutral = Math.round(innerCount * ratioNeutral);
+  let nGood = Math.round(innerCount * ratioGood);
+  let nBad = Math.round(innerCount * ratioBad);
+  let nDebtTrap = Math.round(innerCount * ratioDebtTrap);
+  let sum = nNeutral + nGood + nBad + nDebtTrap;
+  while (sum > innerCount) {
+    if (nBad > 0) nBad -= 1;
+    else if (nGood > 0) nGood -= 1;
+    else if (nDebtTrap > 0) nDebtTrap -= 1;
+    else if (nNeutral > 0) nNeutral -= 1;
+    sum = nNeutral + nGood + nBad + nDebtTrap;
+  }
+  while (sum < innerCount) {
+    nBad += 1;
+    sum = nNeutral + nGood + nBad + nDebtTrap;
+  }
 
   const kindsBag = [];
   for (let i = 0; i < nNeutral; i++) kindsBag.push(TILE_EFFECT_KIND.NEUTRAL);
-  const activePool = [
-    TILE_EFFECT_KIND.MOVE_FORWARD,
-    TILE_EFFECT_KIND.MOVE_BACKWARD,
-    TILE_EFFECT_KIND.GAIN_MONEY,
-    TILE_EFFECT_KIND.LOSE_MONEY,
-    TILE_EFFECT_KIND.INCREASE_PON,
-  ];
-  while (kindsBag.length < innerCount) {
-    kindsBag.push(activePool[rand(0, activePool.length - 1)]);
-  }
-  shuffleSugorokuTileKinds(kindsBag);
+  for (let i = 0; i < nDebtTrap; i++) kindsBag.push(TILE_EFFECT_KIND.DEBT_TRAP);
+  // Good 35%: money:move = 5:5
+  const nGoodMoney = Math.floor(nGood / 2);
+  const nGoodMove = nGood - nGoodMoney;
+  for (let i = 0; i < nGoodMoney; i++) kindsBag.push(TILE_EFFECT_KIND.GAIN_MONEY);
+  for (let i = 0; i < nGoodMove; i++) kindsBag.push(TILE_EFFECT_KIND.MOVE_FORWARD);
+  // Bad 35%: money:move:pon = 4:5:1
+  const nBadMoney = Math.round(nBad * 0.4);
+  const nBadMove = Math.round(nBad * 0.5);
+  const nBadPon = Math.max(0, nBad - nBadMoney - nBadMove);
+  for (let i = 0; i < nBadMoney; i++) kindsBag.push(TILE_EFFECT_KIND.LOSE_MONEY);
+  for (let i = 0; i < nBadMove; i++) kindsBag.push(TILE_EFFECT_KIND.MOVE_BACKWARD);
+  for (let i = 0; i < nBadPon; i++) kindsBag.push(TILE_EFFECT_KIND.INCREASE_PON);
+  while (kindsBag.length < innerCount) kindsBag.push(TILE_EFFECT_KIND.NEUTRAL);
+  while (kindsBag.length > innerCount) kindsBag.pop();
+  const shuffledBag = shuffleSugorokuTileKinds(kindsBag);
 
   const rollValue = (kind) => {
     switch (kind) {
@@ -757,8 +799,8 @@ export function generateSugorokuTileEffects() {
 
   let bi = 0;
   for (let pos = 1; pos <= BOARD_GOAL - 1; pos++) {
-    const kind = kindsBag[bi++];
-    if (kind === TILE_EFFECT_KIND.NEUTRAL) {
+    const kind = shuffledBag[bi++];
+    if (kind === TILE_EFFECT_KIND.NEUTRAL || kind === TILE_EFFECT_KIND.DEBT_TRAP) {
       tiles[pos] = { kind };
     } else {
       tiles[pos] = { kind, value: rollValue(kind) };
@@ -991,13 +1033,13 @@ export function applySugorokuTileLandingChain(tiles, startPosIn, moverStatsIn, p
   };
 
   if (pos <= 0 || pos >= BOARD_GOAL) {
-    return { finalPos: pos, stats, popupTitles };
+    return { finalPos: pos, stats, popupTitles, debtTrapTriggered: false };
   }
 
   const def = tiles[pos];
   const kind = def?.kind ?? TILE_EFFECT_KIND.NEUTRAL;
   if (kind === TILE_EFFECT_KIND.NEUTRAL) {
-    return { finalPos: pos, stats, popupTitles };
+    return { finalPos: pos, stats, popupTitles, debtTrapTriggered: false };
   }
 
   const vRaw = typeof def?.value === "number" && Number.isFinite(def.value) ? def.value : null;
@@ -1032,11 +1074,19 @@ export function applySugorokuTileLandingChain(tiles, startPosIn, moverStatsIn, p
       pushFx(`  🔰 マス効果 (${pos})：炎上予約で +PON ${n}%→${stats.pon}`, `Fire +${n} PON`);
       break;
     }
+    case TILE_EFFECT_KIND.DEBT_TRAP: {
+      if ((stats.money ?? 0) < 0) {
+        pushFx(`  ☠ 借金トラップ発動！借金中で破産…`, "Debt Trap: GAME OVER");
+        return { finalPos: pos, stats, popupTitles, debtTrapTriggered: true };
+      }
+      pushFx(`  ☠ 借金トラップだったが、借金していなかったから何もなかった...`, "借金していなかったから何もなかった...");
+      break;
+    }
     default:
       break;
   }
 
-  return { finalPos: pos, stats, popupTitles };
+  return { finalPos: pos, stats, popupTitles, debtTrapTriggered: false };
 }
 
 /**
@@ -1064,7 +1114,17 @@ export function resolveDay8LandingWithTiles(gs, moverIdx, landedPosDice, moverSt
       ? { title: "Tile effect / マス効果", lines: chain.popupTitles }
       : null;
 
-  return { gsWithTiles: ensured, players: playersOut, tileToast };
+  return {
+    gsWithTiles: ensured,
+    players: playersOut,
+    tileToast,
+    gameOverByDebt: chain.debtTrapTriggered
+      ? {
+          triggered: true,
+          message: `${mover.name} は借金トラップを踏み、破産してゲームオーバー…`,
+        }
+      : null,
+  };
 }
 
 /** タクシー走行カメラ補間など用（t を 0〜1 にクランプ） */

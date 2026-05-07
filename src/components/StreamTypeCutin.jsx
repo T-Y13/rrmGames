@@ -7,6 +7,7 @@ import { STREAM_CUTIN_CHAT, STREAM_CUTIN_GAME } from "../constants/branding";
 export default function StreamTypeCutin({ mode, gold, stat }) {
   if (mode !== "chat" && mode !== "game") return null;
   const src = publicAssetUrl(mode === "chat" ? STREAM_CUTIN_CHAT : STREAM_CUTIN_GAME);
+  const streamLabel = mode === "game" ? "ゲーム配信" : "雑談配信";
 
   return (
     <div
@@ -15,7 +16,10 @@ export default function StreamTypeCutin({ mode, gold, stat }) {
       role="presentation"
     >
       <div className="relative z-[2] flex flex-col items-center justify-center px-5">
-        <div className="rounded-2xl border-2 border-cyan-400 bg-slate-900 p-4 sm:p-5">
+        <div className="relative rounded-2xl border-2 border-cyan-400 bg-slate-900 p-4 sm:p-5">
+          <p className="absolute left-1/2 top-2 z-[3] -translate-x-1/2 rounded-full border border-cyan-300/70 bg-slate-950/75 px-3 py-1 text-xs font-black tracking-wide text-cyan-100 sm:text-sm">
+            {streamLabel}
+          </p>
           <img
             src={src}
             alt=""

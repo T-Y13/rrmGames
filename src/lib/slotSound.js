@@ -305,7 +305,8 @@ export function createSlotSoundManager() {
   return {
     async init() {
       await Promise.allSettled([
-        Promise.all(["start", "spin", "stop", "reach", "win", "jackpot", "final_battle", "war_horn"].map((k) => preload(k))),
+        // NOTE: public/sounds/ に存在しない SFX mp3 はプリロードしない（404 ノイズ防止）。
+        // SFX は playFile が失敗したら synth/arp のフォールバックで鳴るので問題なし。
         preloadUrl("daily_bgm", "View_from_the_Fifth_Floor.mp3"),
         preloadUrl("day8_bgm", "Morning_of_the_Stand.mp3"),
         preloadUrl("menu_bgm", "Velvet_Current.mp3"),

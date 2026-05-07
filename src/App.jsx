@@ -29,9 +29,15 @@ import {
   SECRET_RIRIMU_CHARACTER_KEY,
   SECRET_RIRIMU_UNLOCK_PLAYER_NAME,
   STAT_META,
+  TILE_EFFECT_KIND,
   isSecretRirimuUnlockedByTrimmedPlayerName,
 } from "./constants/gameBalance";
-import { GAME_TITLE_FULL, GAME_TITLE_SHORT, GAME_TITLE_WITH_ACRONYM, TITLE_LOGO_PATH } from "./constants/branding";
+import {
+  GAME_TITLE_FULL,
+  GAME_TITLE_SHORT,
+  GAME_TITLE_WITH_ACRONYM,
+  TITLE_LOGO_PATH,
+} from "./constants/branding";
 import { useFirebaseGame } from "./hooks/useFirebaseGame";
 import { createSlotSoundManager } from "./lib/slotSound";
 import {
@@ -64,6 +70,7 @@ import {
 } from "./utils/gameLogic";
 import { publicAssetUrl } from "./lib/publicAssetUrl";
 import { formatFriendlyError } from "./lib/formatFriendlyError";
+import { GAME_ASSET_PRELOAD_PATHS, preloadImages } from "./utils/assetLoader";
 /* 筐体が消えない組み合わせ: PNG は SlotMachine import、マスクは index.css の data URL、
    drop-shadow／オーラは .slot-cabinet-img-wrap の filter のみ（img に mask+filter 併用しない） */
 
@@ -163,6 +170,22 @@ export default function App() {
   const [multiOpen, setMultiOpen]         = useState(false);
   const [multiAction, setMultiAction]     = useState(null); // null|"create"|"join"
   const [allowQuickMatch, setAllowQuickMatch] = useState(true); // 公開ルームでクイックマッチを受け入れるか
+  const [assetsReady, setAssetsReady] = useState(false);
+  const [assetsProgress, setAssetsProgress] = useState({ loaded: 0, total: GAME_ASSET_PRELOAD_PATHS.length });
+
+  useEffect(() => {
+    let cancelled = false;
+    void preloadImages(GAME_ASSET_PRELOAD_PATHS, ({ loaded, total }) => {
+      if (cancelled) return;
+      setAssetsProgress({ loaded, total });
+    }).finally(() => {
+      if (cancelled) return;
+      setAssetsReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ─── アニメーション（ローカルのみ）────────────────────────────────────
   const [isDiceRolling, setIsDiceRolling] = useState(false);
@@ -236,6 +259,9 @@ export default function App() {
   const [pendingTurnBannerTurns, setPendingTurnBannerTurns] = useState(null);
   const prevDay8TurnKeyRef = useRef(null);
   const turnChangeBannerTimerRef = useRef(null);
+  const turnChangeBannerDelayTimerRef = useRef(null);
+  const [gameOverSplashMsg, setGameOverSplashMsg] = useState(null);
+  const gameOverSplashTimerRef = useRef(null);
 
   const stopManagedAudio = useCallback((key) => {
     const audio = managedAudioRef.current[key];
@@ -310,6 +336,15 @@ export default function App() {
   const cpIsSlot     = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "arrived";
   const isDay8Moving = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "moving";
   const boardProgress = cpGs ? Math.min(100, (cpGs.position / BOARD_GOAL) * 100) : 0;
+  const day8DiceRollCount = Array.isArray(gs?.lastDiceRolls) ? gs.lastDiceRolls.length : 0;
+  const day8ActionLocked =
+    isDiceRolling ||
+    taxiPhase != null ||
+    pieceHopping ||
+    !!ponCutin ||
+    !!sugorokuTileFxToast ||
+    turnChangeBannerTurns != null ||
+    pendingTurnBannerTurns != null;
 
   useEffect(() => {
     if (!gs || gs.gamePhase !== "playing" || gs.subPhase !== "day8" || !Array.isArray(gs.players)) {
@@ -320,41 +355,42 @@ export default function App() {
     const idx = gs.currentPlayerIdx;
     if (!Number.isInteger(idx) || idx < 0 || idx >= gs.players.length) return;
     const p = gs.players[idx];
-    const firstPlayerId = gs.players[0]?.id ?? null;
-    const turnKey = `${idx}:${p?.id ?? ""}:${p?.moveTurns ?? -1}:${p?.movePhase ?? ""}`;
+    const turnKey = `${idx}:${p?.id ?? ""}:${p?.moveTurns ?? -1}`;
     const prevKey = prevDay8TurnKeyRef.current;
     prevDay8TurnKeyRef.current = turnKey;
     if (prevKey == null || prevKey === turnKey) return;
-
-    // 「全員の行動完了後 → 先頭プレイヤーの新ターン開始」時のみ表示する。
-    // ソロ（1人）の場合は moveTurns が進むたびに同条件を満たす。
     const [prevIdxRaw, , prevMoveTurnsRaw] = String(prevKey).split(":");
     const prevIdx = Number(prevIdxRaw);
     const prevMoveTurns = Number(prevMoveTurnsRaw);
     const nowMoveTurns = Number(p?.moveTurns ?? 0);
-    const isFirstPlayerTurn = firstPlayerId != null && p?.id === firstPlayerId;
-    const wrappedToFirstInMulti =
-      gs.players.length > 1 &&
-      Number.isFinite(prevIdx) &&
-      prevIdx !== idx &&
-      idx === 0;
-    const advancedSoloTurn =
-      gs.players.length === 1 &&
-      Number.isFinite(prevMoveTurns) &&
-      nowMoveTurns > prevMoveTurns;
 
-    if (!isFirstPlayerTurn || (!wrappedToFirstInMulti && !advancedSoloTurn)) return;
-    const turnsLeft = Math.max(0, BAL.dice.maxTurns - nowMoveTurns);
+    // 「次ターンへ進んだ」事実だけで予約する（マス効果の追い移動やPON演出の有無に依存しない）。
+    // マルチ: currentPlayerIdx が変わったら次ターン
+    // ソロ  : moveTurns が進んだら次ターン
+    const isMultiTurnSwitch = gs.players.length > 1 && Number.isFinite(prevIdx) && prevIdx !== idx;
+    const isSoloTurnSwitch = gs.players.length === 1 && Number.isFinite(prevMoveTurns) && nowMoveTurns > prevMoveTurns;
+    if (!isMultiTurnSwitch && !isSoloTurnSwitch) return;
+
+    const turnsLeft = Math.max(0, BAL.dice.maxTurns - Number(p?.moveTurns ?? 0));
     setPendingTurnBannerTurns(turnsLeft);
   }, [gs?.gamePhase, gs?.subPhase, gs?.currentPlayerIdx, gs?.players]);
 
   useEffect(() => {
     if (pendingTurnBannerTurns == null) return;
+    // 次ターンが実際に開始（移動フェーズ）してからカットインを出す。
+    // これで前プレイヤーの移動/スロット/カットイン完了前に表示されるのを防ぐ。
+    const mp = cpGs?.movePhase;
+    const turnStarted =
+      gs?.gamePhase === "playing" &&
+      gs?.subPhase === "day8" &&
+      (mp === "moving" || mp === "arrived" || mp === "waitingSlot");
+    if (!turnStarted) return;
     const idleNow =
       !isDiceRolling &&
       taxiPhase == null &&
       !pieceHopping &&
       !ponCutin &&
+      !sugorokuTileFxToast &&
       shrinePhase == null &&
       !streamFailOverlay &&
       !streamPonFireOverlay &&
@@ -363,33 +399,62 @@ export default function App() {
       !workPonHud;
     if (!idleNow) return;
 
-    setTurnChangeBannerTurns(pendingTurnBannerTurns);
-    setPendingTurnBannerTurns(null);
-    if (turnChangeBannerTimerRef.current) {
-      clearTimeout(turnChangeBannerTimerRef.current);
+    const showTurnBanner = () => {
+      setTurnChangeBannerTurns(pendingTurnBannerTurns);
+      setPendingTurnBannerTurns(null);
+      if (turnChangeBannerTimerRef.current) {
+        clearTimeout(turnChangeBannerTimerRef.current);
+      }
+      turnChangeBannerTimerRef.current = setTimeout(() => {
+        setTurnChangeBannerTurns(null);
+        turnChangeBannerTimerRef.current = null;
+      }, 2000);
+    };
+
+    const currentPos = Number(cpGs?.position ?? -1);
+    const tileFx =
+      Array.isArray(gs?.sugorokuTileEffects) && currentPos >= 0 && currentPos <= BOARD_GOAL
+        ? gs.sugorokuTileEffects[currentPos]
+        : null;
+    const noEffectTile = !tileFx || tileFx.kind === TILE_EFFECT_KIND.NEUTRAL;
+    const isInnerTile = currentPos > 0 && currentPos < BOARD_GOAL;
+    if (noEffectTile && isInnerTile) {
+      if (turnChangeBannerDelayTimerRef.current) return;
+      turnChangeBannerDelayTimerRef.current = setTimeout(() => {
+        turnChangeBannerDelayTimerRef.current = null;
+        showTurnBanner();
+      }, 1000);
+      return;
     }
-    turnChangeBannerTimerRef.current = setTimeout(() => {
-      setTurnChangeBannerTurns(null);
-      turnChangeBannerTimerRef.current = null;
-    }, 2000);
+    showTurnBanner();
   }, [
     pendingTurnBannerTurns,
+    gs?.gamePhase,
+    gs?.subPhase,
+    cpGs?.movePhase,
     isDiceRolling,
     taxiPhase,
     pieceHopping,
     ponCutin,
+    sugorokuTileFxToast,
     shrinePhase,
     streamFailOverlay,
     streamPonFireOverlay,
     streamTypeCutin,
     workCutin,
     workPonHud,
+    cpGs?.position,
+    gs?.sugorokuTileEffects,
   ]);
 
   useEffect(() => () => {
     if (turnChangeBannerTimerRef.current) {
       clearTimeout(turnChangeBannerTimerRef.current);
       turnChangeBannerTimerRef.current = null;
+    }
+    if (turnChangeBannerDelayTimerRef.current) {
+      clearTimeout(turnChangeBannerDelayTimerRef.current);
+      turnChangeBannerDelayTimerRef.current = null;
     }
   }, []);
 
@@ -452,7 +517,15 @@ export default function App() {
   useEffect(() => {
     if (!roomGs?.gamePhase) return;
     if (roomGs.gamePhase === "results"  && screen !== "results")  setScreen("results");
-    if (roomGs.gamePhase === "gameOver" && screen !== "gameover") setScreen("gameover");
+    if (roomGs.gamePhase === "gameOver" && screen !== "gameover" && !gameOverSplashMsg) {
+      setGameOverSplashMsg(roomGs.gameOverMsg ?? "ゲームオーバー");
+      if (gameOverSplashTimerRef.current) clearTimeout(gameOverSplashTimerRef.current);
+      gameOverSplashTimerRef.current = setTimeout(() => {
+        setGameOverSplashMsg(null);
+        setScreen("gameover");
+        gameOverSplashTimerRef.current = null;
+      }, 1800);
+    }
   }, [roomGs?.gamePhase]); // eslint-disable-line
 
   useEffect(() => {
@@ -550,6 +623,10 @@ export default function App() {
       if (workCutinTimerRef.current) {
         clearTimeout(workCutinTimerRef.current);
         workCutinTimerRef.current = null;
+      }
+      if (gameOverSplashTimerRef.current) {
+        clearTimeout(gameOverSplashTimerRef.current);
+        gameOverSplashTimerRef.current = null;
       }
       setStreamTypeCutin(null);
       setWorkCutin(null);
@@ -1582,11 +1659,10 @@ export default function App() {
       workFxChainTimeoutsRef.current = [];
       if (deferWorkPonOverlay) {
         const turnDelta =
-          workIncomeForHud - livingCostForHud - workPenaltyForHud;
+          workIncomeForHud - workPenaltyForHud;
         const hudPayload = {
           penalty: workPenaltyForHud,
           workIncome: workIncomeForHud,
-          livingCost: livingCostForHud,
           balanceAfter: s.money,
           turnDelta,
           moneyBefore: moneyBeforeAction,
@@ -1640,6 +1716,7 @@ export default function App() {
   // ─── 8日目：移動行動 ─────────────────────────────────────────────────
   const handleMoveAction = async (actionType) => {
     if (!isMyTurn || !gs) return;
+    if (day8ActionLocked) return;
     const idx = gs.currentPlayerIdx;
     const p = gs.players[idx];
     if (p.movePhase !== "moving") return;
@@ -1675,6 +1752,15 @@ export default function App() {
       const rrWait = resolveDay8LandingWithTiles(gs, idx, landedDiceWait, sWait, logsWait, {
         ponSplashDamage: false,
       });
+      if (rrWait.gameOverByDebt?.triggered) {
+        await writeGS({
+          ...gs,
+          gamePhase: "gameOver",
+          gameOverMsg: rrWait.gameOverByDebt.message,
+          log: prependLogs([`💀 GAME OVER: ${rrWait.gameOverByDebt.message}`], gs.log),
+        });
+        return;
+      }
       const moverWait = rrWait.players[idx];
       const newPosFinal = moverWait.position;
       const statsFinal = moverWait.stats;
@@ -1820,7 +1906,12 @@ export default function App() {
       eventMsg   = `タクシー！${taxiRollStep}マス予定 / 資金-${BAL.dice.taxiCost}G`;
       // 渋滞：今ターンは前半のみ進行・残マスは次の自分ターンで継続（firstHalf + remaining === taxiRollStep）
       // 前半だけでゴールに届く場合は渋滞演出・2ターン化しない（そのままゴール）
-      if (s.virtue <= BAL.dice.taxiCongestThresh && Math.random() < BAL.dice.taxiCongestChance) {
+      const taxiCongestBaseChance = Math.max(0, Math.min(1, BAL.dice.taxiCongestChance));
+      const taxiCongestDynChance =
+        s.virtue >= BAL.dice.taxiCongestThresh
+          ? 0
+          : taxiCongestBaseChance * ((BAL.dice.taxiCongestThresh - s.virtue) / BAL.dice.taxiCongestThresh);
+      if (Math.random() < taxiCongestDynChance) {
         const firstHalf = Math.ceil(taxiRollStep / 2);
         if (p.position + firstHalf >= BOARD_GOAL) {
           /* step は既に taxiRollStep のまま */
@@ -1908,6 +1999,16 @@ export default function App() {
       const rr = resolveDay8LandingWithTiles(gs, idx, landedDice, s, logs, {
         ponSplashDamage: ponFired,
       });
+      if (rr.gameOverByDebt?.triggered) {
+        await writeGS({
+          ...gs,
+          gamePhase: "gameOver",
+          gameOverMsg: rr.gameOverByDebt.message,
+          log: prependLogs([`💀 GAME OVER: ${rr.gameOverByDebt.message}`], gs.log),
+        });
+        setIsDiceRolling(false);
+        return;
+      }
       const moverOut = rr.players[idx];
       const newPosFinal = moverOut.position;
       const statsFinal = moverOut.stats;
@@ -2088,12 +2189,40 @@ export default function App() {
   };
 
   // ════════════════════════════════════════════════════════════════════════
+  // アセット読み込み待ち
+  // ════════════════════════════════════════════════════════════════════════
+  if (!assetsReady) return (
+    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center gap-3 text-slate-300 px-6">
+      <Loader2 size={32} className="animate-spin text-cyan-400" />
+      <p className="text-sm font-semibold">Loading Assets...</p>
+      <div className="w-full max-w-sm rounded-full bg-slate-800 h-2 overflow-hidden">
+        <div
+          className="h-full bg-cyan-400 transition-all duration-200"
+          style={{ width: `${assetsProgress.total > 0 ? (assetsProgress.loaded / assetsProgress.total) * 100 : 0}%` }}
+        />
+      </div>
+      <p className="text-xs text-slate-400 tabular-nums">
+        {assetsProgress.loaded} / {assetsProgress.total}
+      </p>
+    </div>
+  );
+
+  // ════════════════════════════════════════════════════════════════════════
   // 認証待ち
   // ════════════════════════════════════════════════════════════════════════
   if (!authReady) return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center gap-3 text-slate-400">
       <Loader2 size={32} className="animate-spin text-cyan-400" />
       <p className="text-sm">接続中…</p>
+    </div>
+  );
+
+  if (gameOverSplashMsg) return (
+    <div className="min-h-screen bg-black flex flex-col items-center justify-center px-6 text-center anim-fadein">
+      <p className="text-[min(18vw,7rem)] font-black tracking-tight text-rose-200 drop-shadow-[0_0_30px_rgba(244,63,94,0.65)]">
+        ゲームオーバー
+      </p>
+      <p className="mt-4 text-sm sm:text-base text-slate-300 max-w-xl leading-relaxed">{gameOverSplashMsg}</p>
     </div>
   );
 
@@ -2498,7 +2627,7 @@ export default function App() {
               <span className="font-bold tabular-nums text-rose-300">-{workPonHud.penalty}G</span>
             </p>
             <p>
-              このターンの収支（仕事 − 生活費 − 弁償）{" "}
+              このターンの収支（仕事 − 弁償）{" "}
               <span
                 className={`font-bold tabular-nums ${workPonHud.turnDelta >= 0 ? "text-cyan-300" : "text-rose-300"}`}
               >
@@ -2774,6 +2903,7 @@ export default function App() {
             taxiDriveSegmentMs={taxiDriveActiveMs}
             taxiJamMidPos={taxiJamMidPos}
             pieceHopping={pieceHopping}
+            interactionLocked={day8ActionLocked}
             onMoveAction={handleMoveAction}
             onGoalLandingConfirm={handleGoalLandingConfirm}
           />
@@ -2787,6 +2917,7 @@ export default function App() {
               commitPendingGameState={commitPendingGameState}
               soundRef={soundRef}
               roomId={roomId}
+              interactionLocked={day8ActionLocked}
             />
           )}
 

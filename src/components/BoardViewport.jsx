@@ -559,7 +559,12 @@ export default function BoardViewport({
               showTileFx &&
               (tileFx.kind === TILE_EFFECT_KIND.MOVE_BACKWARD ||
                 tileFx.kind === TILE_EFFECT_KIND.LOSE_MONEY ||
-                tileFx.kind === TILE_EFFECT_KIND.INCREASE_PON);
+                tileFx.kind === TILE_EFFECT_KIND.INCREASE_PON ||
+                tileFx.kind === TILE_EFFECT_KIND.DEBT_TRAP);
+            const tileFxIsGood =
+              showTileFx &&
+              (tileFx.kind === TILE_EFFECT_KIND.MOVE_FORWARD ||
+                tileFx.kind === TILE_EFFECT_KIND.GAIN_MONEY);
 
             const bgSolid = opaqueTw(deco.bg);
             const borderSolid = opaqueTw(deco.border);
@@ -765,6 +770,8 @@ export default function BoardViewport({
                         ? "bg-yellow-400 border-yellow-600 text-amber-950"
                         : tileFxIsBad
                           ? "border-rose-500 bg-gradient-to-br from-red-950 to-red-900 text-rose-50"
+                          : tileFxIsGood
+                            ? "border-sky-400 bg-gradient-to-br from-sky-900 to-blue-900 text-sky-100"
                           : `${bgSolid} ${borderSolid}`
                     }
                     ${isCurrent ? (tileFxIsBad ? "ring-2 ring-rose-300/95" : pos === boardGoal ? "ring-2 ring-amber-700/90" : "ring-2 ring-cyan-400/90") : ""}`}
@@ -779,6 +786,8 @@ export default function BoardViewport({
                       className={`absolute top-0 left-0 right-0 h-1 rounded-t-xl pointer-events-none ${
                         tileFxIsBad
                           ? "bg-rose-400/50"
+                          : tileFxIsGood
+                            ? "bg-sky-300/45"
                           : pos === boardGoal
                             ? "bg-yellow-500/80"
                             : "bg-white/25"
@@ -799,7 +808,7 @@ export default function BoardViewport({
                         effect={tileFx}
                         sizePx={Math.max(16, Math.round(iconPx * 1.05))}
                       />
-                    ) : deco.icon ? (
+                    ) : pos > 0 && pos < boardGoal ? null : deco.icon ? (
                       <span
                         style={{ fontSize: `${iconPx}px` }}
                         className={`leading-none ${deco.text}`}

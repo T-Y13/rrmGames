@@ -15,7 +15,6 @@ import {
   rollReachCutInDisplay,
   spinSlot,
   stripTripleForMiddleColumn,
-  slotPityMaxThreshold,
   rand,
 } from "../utils/gameLogic";
 
@@ -68,6 +67,7 @@ export default function SlotMachine({
   commitPendingGameState,
   soundRef,
   roomId,
+  interactionLocked = false,
 }) {
   const [isSpinning, setIsSpinning] = useState(false);
   const [localReels, setLocalReels] = useState(["?", "?", "?"]);
@@ -108,6 +108,7 @@ export default function SlotMachine({
     isMyTurn &&
     cpIsSlot &&
     !!(cpGs?.slotTurnsLeft > 0) &&
+    !interactionLocked &&
     !isSpinning &&
     !awaitingConfirm;
 
@@ -134,6 +135,7 @@ export default function SlotMachine({
   }, [awaitingConfirm, confirmCountdown, roomId, commitPendingGameState]);
 
   const handleConfirm = async () => {
+    if (interactionLocked) return;
     const pending = pendingGSRef.current;
     pendingGSRef.current = null;
     setAwaitingConfirm(false);
@@ -142,7 +144,7 @@ export default function SlotMachine({
   };
 
   const skipSlot = async () => {
-    if (!gs || !isMyTurn || isSpinning) return;
+    if (!gs || !isMyTurn || isSpinning || interactionLocked) return;
     const idx = gs.currentPlayerIdx;
     const p = gs.players[idx];
     const logs = [`${p.name} スロット終了 / 資金${p.stats.money}G / ランク${rankLabel(p.stats.money)}`];
@@ -153,7 +155,7 @@ export default function SlotMachine({
   };
 
   const handleSpin = async (bet = SLOT_COST) => {
-    if (isSpinning || !isMyTurn || !gs) return;
+    if (isSpinning || !isMyTurn || !gs || interactionLocked) return;
     const p = gs.players[gs.currentPlayerIdx];
     if (p.slotTurnsLeft <= 0) return;
     const machine = SLOT_MACHINES[selectedMachineKey] ?? SLOT_MACHINES.standard;
@@ -456,8 +458,6 @@ export default function SlotMachine({
             const heatLabel = isBurning ? "🔥 BURNING!!" : isWarm ? "🌡️ 熱い！" : heat >= 3 ? "🌀 温まってきた" : "❄️ 冷";
             const heatPct = Math.min(100, (heat / 15) * 100);
             const heatBarColor = isBurning ? "bg-red-500" : isWarm ? "bg-orange-500" : heat >= 3 ? "bg-yellow-500" : "bg-slate-600";
-            const pityN = cpGs.slotPityCounter ?? 0;
-            const pityMax = slotPityMaxThreshold(cpGs.stats?.virtue);
             return (
               <div className="rounded-lg bg-slate-800/50 p-3 text-xs space-y-2">
                 {isMyTurn && !awaitingConfirm && (
@@ -495,18 +495,6 @@ export default function SlotMachine({
                       {(heat * 0.6).toFixed(1)}%
                     </span>
                   </div>
-                </div>
-
-                <div className="rounded-lg border border-emerald-700/45 bg-emerald-950/25 px-3 py-2 space-y-0.5">
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-semibold text-emerald-200/95">善行ピティ（連続ハズレ天井）</span>
-                    <span className="tabular-nums text-emerald-100 font-bold">
-                      {pityN} / {pityMax}
-                    </span>
-                  </div>
-                  <p className="text-slate-500" style={{ fontSize: "10px" }}>
-                    ハズレるたび +1。{pityMax}回ハズレで次スピンは当たり確定（役は通常抽選）。当たり後 0 にリセット。善行が高いほど天井までが短い。
-                  </p>
                 </div>
 
                 <p className="text-slate-300">
@@ -859,6 +847,7 @@ export default function SlotMachine({
               <button
                 type="button"
                 onClick={handleConfirm}
+                disabled={interactionLocked}
                 className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-6 py-2.5 font-bold text-slate-950 hover:bg-cyan-400 animate-pulse"
               >
                 <ChevronRight size={18} />
@@ -899,7 +888,7 @@ export default function SlotMachine({
                 <button
                   type="button"
                   onClick={skipSlot}
-                  disabled={isSpinning}
+                  disabled={isSpinning || interactionLocked}
                   className="inline-flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600 transition-colors disabled:opacity-40"
                 >
                   <ChevronRight size={16} />

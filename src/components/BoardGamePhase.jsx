@@ -34,6 +34,7 @@ import BoardViewport from "./BoardViewport";
   taxiJamMidPos = null,
   taxiDriveDurationMs = 2600,
   pieceHopping,
+  interactionLocked = false,
   onMoveAction,
   onGoalLandingConfirm,
 }) {
@@ -76,7 +77,7 @@ import BoardViewport from "./BoardViewport";
             onClick={onGoalLandingConfirm}
             className="w-full rounded-xl bg-amber-500 py-4 font-black text-slate-950 hover:bg-amber-400 shadow-lg animate-pulse"
           >
-            確認してターンを終える →
+            スロットを始める →
           </button>
         </div>
       )}
@@ -207,7 +208,7 @@ import BoardViewport from "./BoardViewport";
                 <button
                   type="button"
                   onClick={() => onMoveAction("normal")}
-                  disabled={isDiceRolling || !!taxiPhase || cpGs.skipTurns > 0}
+                  disabled={interactionLocked || isDiceRolling || !!taxiPhase || cpGs.skipTurns > 0}
                   className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-5 py-2.5 font-semibold text-slate-950 hover:bg-cyan-400 transition-colors disabled:opacity-40 shadow-lg"
                 >
                   <ArrowRight size={18} />
@@ -217,7 +218,7 @@ import BoardViewport from "./BoardViewport";
                   <button
                     type="button"
                     onClick={() => onMoveAction("shop")}
-                    disabled={isDiceRolling || !!taxiPhase || cpGs.stats.money < BAL.dice.shopCost || cpGs.skipTurns > 0}
+                    disabled={interactionLocked || isDiceRolling || !!taxiPhase || cpGs.stats.money < BAL.dice.shopCost || cpGs.skipTurns > 0}
                     className="inline-flex items-center gap-2 rounded-xl bg-lime-500 px-5 py-2.5 font-semibold text-slate-950 hover:bg-lime-400 transition-colors disabled:opacity-40 shadow-lg"
                   >
                     <Coins size={18} />
@@ -234,7 +235,7 @@ import BoardViewport from "./BoardViewport";
                   <button
                     type="button"
                     onClick={() => onMoveAction("taxi")}
-                    disabled={isDiceRolling || !!taxiPhase || cpGs.stats.money < BAL.dice.taxiCost || cpGs.skipTurns > 0}
+                    disabled={interactionLocked || isDiceRolling || !!taxiPhase || cpGs.stats.money < BAL.dice.taxiCost || cpGs.skipTurns > 0}
                     className="inline-flex items-center gap-1.5 rounded-xl bg-yellow-400 px-5 py-2.5 font-semibold text-slate-950 hover:bg-yellow-300 transition-colors disabled:opacity-40 shadow-lg"
                   >
                     <TaxiStandeeImage imgClassName="h-[2.25rem] w-[2.25rem] object-contain shrink-0 opacity-100" />
@@ -256,7 +257,7 @@ import BoardViewport from "./BoardViewport";
                   <button
                     type="button"
                     onClick={() => onMoveAction("help")}
-                    disabled={isDiceRolling || !!taxiPhase || cpGs.skipTurns > 0}
+                    disabled={interactionLocked || isDiceRolling || !!taxiPhase || cpGs.skipTurns > 0}
                     className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 font-semibold transition-colors disabled:opacity-40 shadow-lg ${cpGs.stats.pon >= BAL.pon.deathThreshold ? "bg-rose-600 text-white hover:bg-rose-500" : "bg-emerald-500 text-slate-950 hover:bg-emerald-400"}`}
                   >
                     <HandCoins size={18} />
@@ -268,7 +269,7 @@ import BoardViewport from "./BoardViewport";
                 <button
                   type="button"
                   onClick={() => onMoveAction("taxiTrafficWait")}
-                  disabled={isDiceRolling || !!taxiPhase || cpGs.skipTurns > 0}
+                  disabled={interactionLocked || isDiceRolling || !!taxiPhase || cpGs.skipTurns > 0}
                   className="mx-auto flex w-full max-w-md flex-col items-center rounded-2xl border-2 border-amber-200/70 bg-gradient-to-b from-amber-300 via-amber-400 to-amber-600 px-6 py-5 font-black text-slate-950 shadow-[0_0_36px_rgba(251,191,36,0.45)] transition-[filter] hover:brightness-[1.05] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <span className="flex items-center gap-2 text-2xl leading-tight tracking-tight">🚧 渋滞を待つ</span>
