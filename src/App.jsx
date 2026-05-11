@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { db } from "./lib/firebase";
-import { arrayUnion, collection, query, where, limit, getDocs } from "firebase/firestore";
+import { arrayUnion, collection, doc, query, where, limit, getDocs, runTransaction } from "firebase/firestore";
 import { Loader2, TrendingUp, TrendingDown, Trophy, Users } from "lucide-react";
 
 import { CharacterIcon } from "./components/CharacterPieces";
@@ -12,7 +12,8 @@ import DailySlotTrainingModal from "./components/DailySlotTrainingModal";
 import FinalBattleStage from "./components/FinalBattleStage";
 import Lobby from "./components/Lobby";
 import SSRainParticles from "./components/SSRainParticles";
-import SlotMachine from "./components/SlotMachine";
+import SlotContainer from "./components/SlotContainer";
+import TurnManager from "./components/TurnManager";
 import WaitingRoom from "./components/WaitingRoom";
 import TopRightHud from "./components/TopRightHud";
 import StreamTypeCutin from "./components/StreamTypeCutin";
@@ -36,9 +37,14 @@ import {
   GAME_TITLE_FULL,
   GAME_TITLE_SHORT,
   GAME_TITLE_WITH_ACRONYM,
+  SOLO_PRERELEASE_NOTICE,
   TITLE_LOGO_PATH,
 } from "./constants/branding";
 import { useFirebaseGame } from "./hooks/useFirebaseGame";
+import {
+  isActorTurnOnGameState,
+  isHostFinalBattleScheduledWrite,
+} from "./lib/multiplayerGameStateAuth";
 import { createSlotSoundManager } from "./lib/slotSound";
 import {
   applyRimiruDailyEnd,
@@ -55,6 +61,7 @@ import {
   enterDay8AfterFinalBattleCue,
   finalizeToResults,
   genQuickName,
+  isGhostPickTargetPhase,
   genRoomId,
   initialGameState,
   livingCostForPlayer,
@@ -93,6 +100,21 @@ const STATUS_OVERVIEW_HINTS = {
   livingCost: "暮らしの固定費です。日が進むたびにこの負担がのしかかり、資金との攻防になります。",
 };
 
+const PLAYER_FRAME_COLORS = [
+  { border: "border-rose-500/70", activeBorder: "border-rose-400", activeBg: "bg-rose-500/10" },   // red
+  { border: "border-sky-500/70", activeBorder: "border-sky-400", activeBg: "bg-sky-500/10" },      // blue
+  { border: "border-amber-500/75", activeBorder: "border-amber-400", activeBg: "bg-amber-500/10" }, // yellow
+  { border: "border-emerald-500/70", activeBorder: "border-emerald-400", activeBg: "bg-emerald-500/10" }, // green
+];
+
+const DAILY_ACTION_LABELS = {
+  work: "Training",
+  stream: "Rest",
+  shrine: "Pray",
+  dailySlot: "Slot",
+  unknown: "Thinking...",
+};
+
 function loadSoundVolume(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -122,6 +144,81 @@ function buildDay8TileSlideMidpointPlayers(playersArr, moverIdx, midPos) {
   );
 }
 
+function normalizeCompletedPlayers(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((id) => typeof id === "string" && id.length > 0);
+}
+
+function deriveDay8RoundStateFromRoom(roomDoc) {
+  const remainingRaw = Number(roomDoc?.remainingTurns);
+  const remaining =
+    Number.isFinite(remainingRaw) && remainingRaw >= 0
+      ? Math.floor(remainingRaw)
+      : BAL.dice.maxTurns;
+  return {
+    remainingTurns: remaining,
+    completedPlayers: normalizeCompletedPlayers(roomDoc?.completedPlayers),
+  };
+}
+
+function applyDay8RoundTracking(roomDoc, nextGs, actorUid) {
+  const prevGs = roomDoc?.gameState;
+  let trackedGs = nextGs;
+  let { remainingTurns, completedPlayers } = deriveDay8RoundStateFromRoom(roomDoc);
+
+  const entersDay8 =
+    nextGs?.gamePhase === "playing" &&
+    nextGs?.subPhase === "day8" &&
+    !(prevGs?.gamePhase === "playing" && prevGs?.subPhase === "day8");
+  if (entersDay8) {
+    remainingTurns = BAL.dice.maxTurns;
+    completedPlayers = [];
+  }
+
+  const inDay8Before = prevGs?.gamePhase === "playing" && prevGs?.subPhase === "day8";
+  const actorIdx = prevGs?.currentPlayerIdx;
+  const actorIdBefore =
+    Number.isInteger(actorIdx) && Array.isArray(prevGs?.players) ? prevGs.players[actorIdx]?.id : null;
+  const actorPrev =
+    Number.isInteger(actorIdx) && Array.isArray(prevGs?.players) ? prevGs.players[actorIdx] : null;
+  const actorNext =
+    Number.isInteger(actorIdx) && Array.isArray(nextGs?.players) ? nextGs.players[actorIdx] : null;
+  const actorMoveTurnsIncreased =
+    Number(actorNext?.moveTurns ?? -1) > Number(actorPrev?.moveTurns ?? -1);
+  const turnAdvanced =
+    inDay8Before &&
+    ((nextGs?.gamePhase !== "playing" || nextGs?.subPhase !== "day8") ||
+      Number(nextGs?.currentPlayerIdx) !== Number(prevGs?.currentPlayerIdx));
+  const actionCompleted = turnAdvanced || actorMoveTurnsIncreased;
+
+  if (inDay8Before && actionCompleted && actorIdBefore && actorIdBefore === actorUid) {
+    if (!completedPlayers.includes(actorUid)) completedPlayers = [...completedPlayers, actorUid];
+    const aliveIds = (prevGs.players ?? [])
+      .filter((p) => p?.alive !== false && typeof p?.id === "string")
+      .map((p) => p.id);
+    const completedAliveCount = aliveIds.filter((id) => completedPlayers.includes(id)).length;
+    if (aliveIds.length > 0 && completedAliveCount >= aliveIds.length) {
+      remainingTurns = Math.max(0, remainingTurns - 1);
+      completedPlayers = [];
+      const roundsUsed = Math.max(0, BAL.dice.maxTurns - remainingTurns);
+      if (Array.isArray(trackedGs?.players)) {
+        trackedGs = {
+          ...trackedGs,
+          players: trackedGs.players.map((pl) =>
+            pl?.alive !== false ? { ...pl, moveTurns: Math.max(Number(pl.moveTurns) || 0, roundsUsed) } : pl,
+          ),
+        };
+      }
+    }
+  }
+
+  return {
+    gameState: trackedGs,
+    remainingTurns,
+    completedPlayers,
+  };
+}
+
 /** 7日目ラスト→決戦直前：書き込み前に育成画面のままステータス・ログだけ反映（決戦UIへは即切り替えない） */
 function buildDay7DailyOptimisticGs(nextGs, sourceGs, advancesToSugoroku) {
   if (!advancesToSugoroku) return nextGs;
@@ -146,11 +243,16 @@ export default function App() {
     roomId,
     setRoomId,
     roomData,
+    roomPlayers,
     updateRoom,
     updateRoomById,
     createRoom,
     fetchRoom,
+    updateCurrentAction,
   } = useFirebaseGame(setUiError);
+  const roomDataRef = useRef(null);
+  /** タクシー／決戦ホスト等、定義より前に登録された effect から gameState 更新へ */
+  const performGameStateUpdateRef = useRef(async () => false);
   const [myName, setMyName]     = useState("");
   // 4桁タグ（アプリ起動ごとに生成、セッション中は固定）
   const [myTag]                 = useState(() => String(Math.floor(1000 + Math.random() * 9000)));
@@ -218,6 +320,7 @@ export default function App() {
   const taxiSecondLegMsRef = useRef(0);
   /** 今回のタクシー操作で渋滞2ターン化したか（ride→trafficJam→drive の分岐用） */
   const pendingTaxiCongestionRef = useRef(false);
+  const prevRoomGsForTaxiSyncRef = useRef(null);
   /** PON転倒カットイン後に書き込む gameState（転倒時のみ） */
   const ponCutinCommitRef = useRef(null);
   const ponCutinFinalizeRef = useRef(async () => {});
@@ -319,11 +422,23 @@ export default function App() {
   const playerSlots = roomData?.playerSlots ?? [];
   const isHost      = roomData?.hostId === myId;
   const day7DailyWritePending = day7DailyOptimisticGs != null;
-  const isMyTurn =
+  roomDataRef.current = roomData;
+  const rawIsMyTurn =
     !!roomGs &&
-    roomGs.players[roomGs.currentPlayerIdx]?.id === myId &&
+    roomGs.players?.[roomGs.currentPlayerIdx]?.id === myId &&
     !day7DailyWritePending;
-  const cpGs        = gs?.players[gs?.currentPlayerIdx] ?? null;
+  const roomCompletedPlayers = normalizeCompletedPlayers(roomData?.completedPlayers);
+  const isMyDay8RoundCompleted =
+    roomGs?.gamePhase === "playing" &&
+    roomGs?.subPhase === "day8" &&
+    !!myId &&
+    roomCompletedPlayers.includes(myId);
+  const isMyTurn = rawIsMyTurn && !isMyDay8RoundCompleted;
+  const cpGs        = gs?.players?.[gs?.currentPlayerIdx] ?? null;
+  const day8RemainingTurns =
+    Number.isFinite(Number(roomData?.remainingTurns)) && Number(roomData?.remainingTurns) >= 0
+      ? Math.floor(Number(roomData?.remainingTurns))
+      : Math.max(0, BAL.dice.maxTurns - Number(cpGs?.moveTurns ?? 0));
   const gsRef       = useRef(roomGs);
   gsRef.current     = roomGs;
   const displayDice  = isDiceRolling ? localDice : (gs?.lastDiceRolls ?? []);
@@ -334,9 +449,25 @@ export default function App() {
   const cpIsGoalLanding =
     playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "goalLanding";
   const cpIsSlot     = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "arrived";
-  const isDay8Moving = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "moving";
+  const cpIsGhostPick = playingMain && gs?.subPhase === "day8" && isGhostPickTargetPhase(cpGs);
+  const isDay8Moving =
+    playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "moving" && cpGs?.alive !== false;
   const boardProgress = cpGs ? Math.min(100, (cpGs.position / BOARD_GOAL) * 100) : 0;
   const day8DiceRollCount = Array.isArray(gs?.lastDiceRolls) ? gs.lastDiceRolls.length : 0;
+  const dailyPlayersForGrid = useMemo(() => {
+    if (!gs?.players?.length || gs.subPhase !== "daily") return [];
+    return gs.players.map((p, idx) => {
+      const pd = roomPlayers?.[p.id] ?? {};
+      const typeRaw = pd?.currentAction?.type;
+      const type = typeof typeRaw === "string" && typeRaw.length > 0 ? typeRaw : "unknown";
+      return {
+        idx,
+        ...p,
+        actionType: type,
+        actionLabel: DAILY_ACTION_LABELS[type] ?? DAILY_ACTION_LABELS.unknown,
+      };
+    });
+  }, [gs?.players, gs?.subPhase, roomPlayers]);
   const day8ActionLocked =
     isDiceRolling ||
     taxiPhase != null ||
@@ -576,14 +707,23 @@ export default function App() {
     const tid = setTimeout(async () => {
       try {
         const snap = await fetchRoom(roomId);
-        const cur = snap.data()?.gameState;
+        const rdSnap = snap.data();
+        const cur = rdSnap?.gameState;
         if (!cur || cur.gamePhase !== "finalBattle") return;
         if (cur.finalBattleEntry === "preDay8") {
           const next = enterDay8AfterFinalBattleCue(cur);
-          await updateRoom({ gameState: next, status: "playing" });
+          await performGameStateUpdateRef.current(next, "hostFinalBattle", {
+            gameState: cur,
+            roomData: rdSnap,
+            setStatus: "playing",
+          });
         } else {
           const next = finalizeToResults(cur, cur.players);
-          await updateRoom({ gameState: next, status: "completed" });
+          await performGameStateUpdateRef.current(next, "hostFinalBattle", {
+            gameState: cur,
+            roomData: rdSnap,
+            setStatus: "completed",
+          });
         }
       } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
     }, delay);
@@ -649,6 +789,38 @@ export default function App() {
     if (!roomGs) setDay7DailyOptimisticGs(null);
   }, [roomGs]);
 
+  // ─── マルチ観戦側: タクシー演出同期（スナップ差分からローカル再生） ─────────────────
+  useEffect(() => {
+    const prev = prevRoomGsForTaxiSyncRef.current;
+    prevRoomGsForTaxiSyncRef.current = roomGs;
+    if (!roomGs || !prev) return;
+    if (isMyTurn) return;
+    if (taxiPhase != null) return;
+    if (roomGs.gamePhase !== "playing" || roomGs.subPhase !== "day8") return;
+    if (prev.gamePhase !== "playing" || prev.subPhase !== "day8") return;
+
+    const idx = roomGs.currentPlayerIdx;
+    const cur = roomGs.players?.[idx];
+    if (!cur) return;
+    const prevCur = prev.players?.find((p) => p.id === cur.id);
+    if (!prevCur) return;
+
+    const moved = Math.abs((cur.position ?? 0) - (prevCur.position ?? 0)) > 0;
+    const looksTaxi = String(cur.lastMoveEvent ?? "").includes("タクシー");
+    if (!moved || !looksTaxi) return;
+
+    const driveMs = computeTaxiDriveDurationMs(Math.abs((cur.position ?? 0) - (prevCur.position ?? 0)));
+    taxiDriveDurationMsRef.current = driveMs;
+    setTaxiDriveDurationMs(driveMs);
+    setTaxiDriveEndPos(cur.position ?? null);
+    setTaxiJamMidPos(null);
+    taxiSecondLegMsRef.current = 0;
+    setTaxiDriveActiveMs(driveMs);
+    pendingTaxiCongestionRef.current = false;
+    setTaxiDriveCongested(false);
+    setTaxiPhase("drive");
+  }, [roomGs, isMyTurn, taxiPhase]);
+
   // ─── タクシーカットイン アニメーション シーケンス ────────────────────
   useEffect(() => {
     if (!taxiPhase) return;
@@ -706,8 +878,8 @@ export default function App() {
         const followUp = taxiGSFollowUpRef.current;
         let taxiWriteOk = false;
         try {
-          await updateRoom({ gameState: taxiGSRef.current });
-          taxiWriteOk = true;
+          const tg = taxiGSRef.current;
+          taxiWriteOk = await performGameStateUpdateRef.current(tg, "actorTurn");
         } catch (e) {
           setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
         }
@@ -729,7 +901,8 @@ export default function App() {
             const ms = computeSugorokuHopDurationMs(followUp.fromPos, followUp.toPos);
             setTimeout(async () => {
               try {
-                await updateRoom({ gameState: followUp.finalGS });
+                const fg = followUp.finalGS;
+                await performGameStateUpdateRef.current(fg, "actorTurn");
                 const toastPending = pendingSugorokuTileFxToastRef.current;
                 pendingSugorokuTileFxToastRef.current = null;
                 applySugorokuToast(toastPending);
@@ -790,25 +963,72 @@ export default function App() {
   /** PON用オーバーライド解除：Firestore の自分の position が表示マスに追いついた後だけ null にする（解除が早いと古いマスへ戻り二次ホップする） */
   useEffect(() => {
     if (typeof boardViewPosOverride !== "number" || !roomGs || !myId) return;
-    const mine = roomGs.players.find((pl) => pl.id === myId);
+    const mine = roomGs.players?.find((pl) => pl.id === myId);
     if (mine && mine.position === boardViewPosOverride) {
       setBoardViewPosOverride(null);
     }
   }, [roomGs, boardViewPosOverride, myId]);
 
-  // ─── Firestore書き込みヘルパー ────────────────────────────────────────
-  const writeGS = async (newGS) => {
-    try {
-      const updates = { gameState: newGS };
-      if (newGS.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
-      if (newGS.gamePhase === "results") updates.status = "completed";
-      await updateRoom(updates);
-      return true;
-    } catch (e) {
-      setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
-      return false;
-    }
-  };
+  // ─── Firestore gameState 書き込み（手番ガード／ホスト決戦進行） ─────────────────
+  const performGameStateUpdate = useCallback(
+    async (newGS, writeMode = "actorTurn", authCtx = {}) => {
+      const { gameState: authGOverride, roomData: authRdOverride, setStatus } = authCtx;
+      const authG = authGOverride ?? gsRef.current;
+      const authRd = authRdOverride ?? roomDataRef.current;
+      if (writeMode === "actorTurn") {
+        if (!isActorTurnOnGameState(authG, myId)) {
+          setUiError("手番が変わったため、同期を送信できませんでした。最新の状態を確認してください。");
+          return false;
+        }
+      } else if (writeMode === "hostFinalBattle") {
+        if (!isHostFinalBattleScheduledWrite(authRd, authG, myId)) {
+          setUiError("この更新はホストのみが実行できます。");
+          return false;
+        }
+      }
+      try {
+        if (
+          writeMode === "actorTurn" &&
+          roomId &&
+          authG?.gamePhase === "playing" &&
+          authG?.subPhase === "day8"
+        ) {
+          const ref = doc(db, "rooms", roomId);
+          await runTransaction(db, async (transaction) => {
+            const snap = await transaction.get(ref);
+            if (!snap.exists()) throw new Error("ROOM_MISSING");
+            const liveRoom = snap.data();
+            const liveGs = liveRoom?.gameState;
+            if (!isActorTurnOnGameState(liveGs, myId)) throw new Error("TURN_CHANGED");
+            const tracked = applyDay8RoundTracking(liveRoom, newGS, myId);
+            const updates = {
+              gameState: tracked.gameState,
+              remainingTurns: tracked.remainingTurns,
+              completedPlayers: tracked.completedPlayers,
+            };
+            if (typeof setStatus === "string") updates.status = setStatus;
+            else if (tracked.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
+            else if (tracked.gameState.gamePhase === "results") updates.status = "completed";
+            transaction.update(ref, updates);
+          });
+          return true;
+        }
+        const updates = { gameState: newGS };
+        if (typeof setStatus === "string") updates.status = setStatus;
+        else if (newGS.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
+        else if (newGS.gamePhase === "results") updates.status = "completed";
+        await updateRoom(updates);
+        return true;
+      } catch (e) {
+        setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
+        return false;
+      }
+    },
+    [updateRoom, myId, roomId],
+  );
+  performGameStateUpdateRef.current = performGameStateUpdate;
+
+  const writeGS = async (newGS) => performGameStateUpdate(newGS, "actorTurn");
 
   ponCutinFinalizeRef.current = async () => {
     const pending = ponCutinCommitRef.current;
@@ -822,10 +1042,12 @@ export default function App() {
       try {
         if (pending.intermediateGS && pending.tileSlideToPos != null) {
           const midGS = pending.intermediateGS;
-          const midUpdates = { gameState: midGS };
-          if (midGS.gamePhase === "finalBattle") midUpdates.status = "FINAL_BATTLE";
-          if (midGS.gamePhase === "results") midUpdates.status = "completed";
-          await updateRoom(midUpdates);
+          const okMid = await performGameStateUpdate(midGS, "actorTurn");
+          if (!okMid) {
+            setBoardViewPosOverride(null);
+            setIsDiceRolling(false);
+            return;
+          }
 
           setBoardViewPosOverride(pending.tileSlideToPos);
           await new Promise((r) =>
@@ -834,10 +1056,12 @@ export default function App() {
         }
 
         const newGS = pending.nextGS;
-        const updates = { gameState: newGS };
-        if (newGS.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
-        if (newGS.gamePhase === "results") updates.status = "completed";
-        await updateRoom(updates);
+        const okFin = await performGameStateUpdate(newGS, "actorTurn");
+        if (!okFin) {
+          setBoardViewPosOverride(null);
+          setIsDiceRolling(false);
+          return;
+        }
         if (tileToast?.lines?.length) {
           if (sugorokuTileFxToastTimerRef.current) clearTimeout(sugorokuTileFxToastTimerRef.current);
           setSugorokuTileFxToast(tileToast);
@@ -869,14 +1093,44 @@ export default function App() {
     setPonCutin({ characterType: pending.characterType ?? "salaryman" });
   }, []);
 
-  const commitPendingGameState = useCallback(async (pending) => {
-    try {
-      const patch = { gameState: pending };
-      if (pending.gamePhase === "finalBattle") patch.status = "FINAL_BATTLE";
-      if (pending.gamePhase === "results") patch.status = "completed";
-      await updateRoom(patch);
-    } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
-  }, [updateRoom]);
+  const commitPendingGameState = useCallback(
+    async (pending) => {
+      await performGameStateUpdate(pending, "actorTurn");
+    },
+    [performGameStateUpdate],
+  );
+
+  /** マルチ代理スロット：最新 gameState を読んでからマージ（金額レース回避） */
+  const commitGameStateTransaction = useCallback(
+    async (mutator) => {
+      if (!roomId) return null;
+      const ref = doc(db, "rooms", roomId);
+      try {
+        return await runTransaction(db, async (transaction) => {
+          const snap = await transaction.get(ref);
+          if (!snap.exists()) return null;
+          const prevGs = snap.data().gameState;
+          if (!isActorTurnOnGameState(prevGs, myId)) return null;
+          const next = mutator(prevGs);
+          if (!next) return null;
+          const tracked = applyDay8RoundTracking(snap.data(), next, myId);
+          const updates = {
+            gameState: tracked.gameState,
+            remainingTurns: tracked.remainingTurns,
+            completedPlayers: tracked.completedPlayers,
+          };
+          if (tracked.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
+          if (tracked.gameState.gamePhase === "results") updates.status = "completed";
+          transaction.update(ref, updates);
+          return tracked.gameState;
+        });
+      } catch (e) {
+        setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
+        return null;
+      }
+    },
+    [roomId, myId],
+  );
 
   // ─── ロビー操作 ──────────────────────────────────────────────────────
   const handleCreateRoom = async () => {
@@ -891,6 +1145,8 @@ export default function App() {
         status: "lobby",
         playerSlots: [{ id: myId, name: useName, fullId: useFullId }],
         playerIds: [myId],
+        completedPlayers: [],
+        remainingTurns: BAL.dice.maxTurns,
         gameState: null,
         isPrivate: isPrivateRoom,
         allowedPlayers: isPrivateRoom ? [useFullId] : [],
@@ -937,7 +1193,7 @@ export default function App() {
   };
 
   const handleStartGame = async () => {
-    if (!isHost || playerSlots.length < 1) return;
+    if (!isHost || !roomId || !myId || playerSlots.length < 1) return;
     const missingCharacter = playerSlots.some((s) => !s.character);
     if (missingCharacter) {
       setUiError("全員がキャラクターを選択してから開始してください");
@@ -949,10 +1205,38 @@ export default function App() {
       return;
     }
     setLoading(true);
+    setUiError("");
     try {
-      const initGS = initialGameState(playerSlots);
-      await updateRoom({ status: "playing", gameState: initGS });
-    } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
+      const ref = doc(db, "rooms", roomId);
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error("ROOM_MISSING");
+        const d = snap.data();
+        if (d.hostId !== myId) throw new Error("NOT_HOST");
+        if (d.status !== "lobby") throw new Error("ALREADY_STARTED");
+        const slots = d.playerSlots ?? [];
+        if (slots.length < 1) throw new Error("NO_PLAYERS");
+        if (slots.some((s) => !s.character)) throw new Error("MISSING_CHAR");
+        if (slots.some((s) => !normalizeSlotInitialRolls(s.initialRolls))) throw new Error("MISSING_ROLLS");
+        const initGS = initialGameState(slots);
+        tx.update(ref, {
+          status: "playing",
+          gameState: initGS,
+          completedPlayers: [],
+          remainingTurns: BAL.dice.maxTurns,
+        });
+      });
+    } catch (e) {
+      const code = e?.message;
+      if (code === "ALREADY_STARTED") setUiError("このルームはすでに開始されています。");
+      else if (code === "NOT_HOST") setUiError("ホストのみがゲームを開始できます。");
+      else if (code === "ROOM_MISSING") setUiError("ルームが見つかりません。");
+      else if (code === "NO_PLAYERS" || code === "MISSING_CHAR" || code === "MISSING_ROLLS") {
+        setUiError("開始条件を満たしていません。全員のキャラとステータス抽選を確認してください。");
+      } else {
+        setUiError(formatFriendlyError(e, "ゲーム開始に失敗しました。しばらくしてから再度お試しください。"));
+      }
+    }
     setLoading(false);
   };
 
@@ -1061,6 +1345,8 @@ export default function App() {
           status: "lobby",
           playerSlots: [{ id: myId, name: useName, fullId: useFullId }],
           playerIds: [myId],
+          completedPlayers: [],
+          remainingTurns: BAL.dice.maxTurns,
           gameState: null,
           isPrivate: false,
           allowedPlayers: [],
@@ -1117,6 +1403,8 @@ export default function App() {
         status: "lobby",
         playerSlots: [{ id: myId, name: useName, fullId: useFullId }],
         playerIds: [myId],
+        completedPlayers: [],
+        remainingTurns: BAL.dice.maxTurns,
         gameState: null,
         isPrivate: true,
         isSolo: true,
@@ -1246,6 +1534,9 @@ export default function App() {
     async (spinResults) => {
       const g = gsRef.current;
       if (!g || g.subPhase !== "daily") return;
+      try {
+        await updateCurrentAction("dailySlot");
+      } catch (_) {}
       const idx = g.currentPlayerIdx;
       const p = g.players[idx];
       let s = { ...p.stats };
@@ -1374,12 +1665,15 @@ export default function App() {
       const ok = await writeGS(nextGs);
       if (!ok) setDay7DailyOptimisticGs(null);
     },
-    [writeGS],
+    [writeGS, updateCurrentAction],
   );
 
   // ─── 1〜7日目行動 ────────────────────────────────────────────────────
   const handleDailyAction = async (actionType) => {
     if (!isMyTurn || !roomGs) return;
+    try {
+      await updateCurrentAction(actionType);
+    } catch (_) {}
     if (
       workCutin != null ||
       streamTypeCutin != null ||
@@ -1742,7 +2036,8 @@ export default function App() {
       sWait.pon = clamp(sWait.pon + pendingTraffic);
 
       const landedDiceWait = Math.min(BOARD_GOAL, p.position + pendingTraffic);
-      const newTurnsWait = p.moveTurns + 1;
+      const roundsUsedNow = Math.max(0, BAL.dice.maxTurns - day8RemainingTurns);
+      const newTurnsWait = roundsUsedNow + 1;
 
       const logsWait = [];
       if (p.characterType === "vtuber") {
@@ -1869,7 +2164,15 @@ export default function App() {
     // PON≥deathThreshold + 人助け → 50%即死（すごろく）
     if (actionType === "help" && p.stats.pon >= BAL.pon.deathThreshold) {
       if (Math.random() < BAL.pon.deathChance) {
-        const newPlayers = gs.players.map((pl, i) => i === gs.currentPlayerIdx ? { ...pl, alive: false } : pl);
+        const isMulti = gs.players.length > 1;
+        const newPlayers = gs.players.map((pl, i) =>
+          i === gs.currentPlayerIdx ? { ...pl, alive: false, movePhase: "spectating" } : pl,
+        );
+        if (isMulti && gs.subPhase === "day8") {
+          const logs = [`💀 ${p.name} / PON${p.stats.pon}で人助け失敗！（脱落 — 代理スロットで他プレイヤーに干渉可能）`];
+          await writeGS(computeAdvanceDay8Turn({ ...gs, players: newPlayers }, newPlayers, logs));
+          return;
+        }
         await writeGS({
           ...gs,
           players: newPlayers,
@@ -1994,7 +2297,8 @@ export default function App() {
     setTimeout(async () => {
       const stumbleCells = ponFired ? Math.ceil(origStep / 2) : step;
       const landedDice = Math.min(BOARD_GOAL, p.position + stumbleCells);
-      const newTurns = p.moveTurns + 1 + extraTurns;
+      const roundsUsedNow = Math.max(0, BAL.dice.maxTurns - day8RemainingTurns);
+      const newTurns = roundsUsedNow + 1 + extraTurns;
 
       const rr = resolveDay8LandingWithTiles(gs, idx, landedDice, s, logs, {
         ponSplashDamage: ponFired,
@@ -2246,10 +2550,8 @@ export default function App() {
               {GAME_TITLE_SHORT} · {GAME_TITLE_FULL}
             </p>
             <div className="rounded-xl border border-slate-700/80 bg-slate-900/50 px-3 py-2.5 text-left">
-              <p className="text-[11px] font-bold text-amber-200/95 mb-1">ソロ先行プレイ版</p>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                マルチプレイ（オンライン）はロック中です。まず一人でゲームシステムをお楽しみください。
-              </p>
+              <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-cyan-400/90 mb-1">News · ひとこと</p>
+              <p className="text-xs text-slate-400 leading-relaxed">{SOLO_PRERELEASE_NOTICE}</p>
             </div>
           </div>
         </div>
@@ -2469,11 +2771,26 @@ export default function App() {
   // ════════════════════════════════════════════════════════════════════════
   // ゲーム中（gamePhase === "playing"）
   // ════════════════════════════════════════════════════════════════════════
-  if (!gs) return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-      <Loader2 size={32} className="animate-spin text-cyan-400" />
-    </div>
-  );
+  const hasRenderableGameState =
+    gs && Array.isArray(gs.players) && gs.players.length > 0;
+  const awaitingPeerStateSync =
+    screen === "playing" &&
+    authReady &&
+    roomId &&
+    roomData &&
+    ["playing", "FINAL_BATTLE"].includes(roomData.status) &&
+    !hasRenderableGameState;
+
+  if (!hasRenderableGameState) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center gap-4 p-8 text-slate-200">
+        <Loader2 size={36} className="animate-spin text-cyan-400" aria-hidden />
+        <p className="text-center text-sm sm:text-base max-w-md leading-relaxed" role="status">
+          {awaitingPeerStateSync ? "Waiting for other players..." : "読み込み中…"}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className={`min-h-screen bg-slate-950 p-4 text-slate-100 md:p-8 ${shakeScreen ? "anim-shake" : ""}`}>
@@ -2697,8 +3014,8 @@ export default function App() {
                 {GAME_TITLE_FULL}
               </p>
               <p className="text-xs text-slate-400 mt-1.5 leading-relaxed space-y-0.5">
-                {gs.subPhase === "daily" && `${gs.currentDay}日目 / ${cpGs?.name}のターン`}
-                {gs.subPhase === "day8" && cpGs && (
+                {gs?.subPhase === "daily" && `${gs.currentDay}日目 / ${cpGs?.name}のターン`}
+                {gs?.subPhase === "day8" && cpGs && (
                   <>
                     <span className="block">
                       {cpGs.movePhase === "missed" &&
@@ -2709,8 +3026,8 @@ export default function App() {
                       {cpIsSlot && `【8日目・決戦】スロット／${cpGs.name}`}
                     </span>
                     <span className="block tabular-nums font-semibold text-amber-200/90 mt-1 sm:mt-0.5">
-                      残りターンバースト{" "}
-                      <strong>{Math.max(0, BAL.dice.maxTurns - cpGs.moveTurns)}</strong>
+                      残りラウンド{" "}
+                      <strong>{day8RemainingTurns}</strong>
                       {" / "}
                       {BAL.dice.maxTurns}ターン{" "}
                       <span className="font-normal text-slate-500">（すごろく／スロット共通）</span>
@@ -2721,7 +3038,7 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
               {/* 8日目：補助HUD（タイトル下に残りターンバースト／上限 を常時表示） */}
-              {gs.subPhase === "day8" && cpGs && (
+              {gs?.subPhase === "day8" && cpGs && (
                 <div className="flex flex-col items-end gap-0.5">
                   <span className="text-[10px] font-bold uppercase tracking-wide text-amber-400/90 leading-none">8日目 HUD</span>
                   <span className="text-xs font-bold text-slate-200 tabular-nums leading-none">
@@ -2730,7 +3047,7 @@ export default function App() {
                     ) : cpGs.movePhase === "arrived" ? (
                       <>🎰 スロット</>
                     ) : cpGs.movePhase === "moving" ? (
-                      <>移動手番 <strong>{cpGs.moveTurns}</strong><span className="text-slate-600">/</span><strong>{BAL.dice.maxTurns}</strong></>
+                      <>移動手番 <strong>{BAL.dice.maxTurns - day8RemainingTurns}</strong><span className="text-slate-600">/</span><strong>{BAL.dice.maxTurns}</strong></>
                     ) : (
                       <>{cpGs.movePhase === "missed" ? "すごろくタイムアウト済" : "—"}</>
                     )}
@@ -2744,7 +3061,8 @@ export default function App() {
               </div>
               {!isMyTurn && (
                 <span className="flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">
-                  <Loader2 size={10} className="animate-spin" />{cpGs?.name}のターン待ち
+                  <Loader2 size={10} className="animate-spin" />
+                  {isMyDay8RoundCompleted ? "Waiting for others..." : `${cpGs?.name}のターン待ち`}
                 </span>
               )}
             </div>
@@ -2831,6 +3149,43 @@ export default function App() {
           </section>
         )}
 
+        {gs?.subPhase === "daily" && dailyPlayersForGrid.length > 0 && (
+          <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-slate-400">Daily Live View</h2>
+              <span className="text-[11px] text-slate-500">1-7日目の行動をリアルタイム表示</span>
+            </div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {dailyPlayersForGrid.map((p) => {
+                const frame = PLAYER_FRAME_COLORS[p.idx % PLAYER_FRAME_COLORS.length];
+                const isCurrent = p.id === gs.players?.[gs.currentPlayerIdx]?.id;
+                return (
+                  <div
+                    key={p.id}
+                    className={`rounded-xl border px-3 py-2 ${isCurrent ? frame.activeBorder : frame.border} ${
+                      isCurrent ? frame.activeBg : "bg-slate-800/30"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <CharacterIcon
+                          characterType={p.characterType}
+                          imgClassName="h-5 w-5 shrink-0 object-contain"
+                          spanClassName="text-base leading-none"
+                        />
+                        <span className="text-sm font-semibold text-slate-100">{p.name}</span>
+                      </div>
+                      <span className={`text-[11px] rounded px-2 py-0.5 border ${isCurrent ? "text-cyan-200 border-cyan-400/50" : "text-slate-300 border-slate-600"}`}>
+                        {p.actionLabel}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {/* ── アクションエリア ──────────────────────────────────────── */}
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 space-y-4">
 
@@ -2839,7 +3194,9 @@ export default function App() {
             <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-5 text-center space-y-2">
               <Loader2 size={24} className="animate-spin text-slate-500 mx-auto" />
               <p className="text-slate-400 text-sm">
-                {cpIsGoalLanding
+                {isMyDay8RoundCompleted
+                  ? "Waiting for others..."
+                  : cpIsGoalLanding
                   ? `${cpGs?.name} がゴール到着！終了確認を待っています…`
                   : cpIsWaitingSlot
                     ? `${cpGs?.name} のゴール後ターン／スロット開始を待っています…`
@@ -2908,13 +3265,24 @@ export default function App() {
             onGoalLandingConfirm={handleGoalLandingConfirm}
           />
 
+          {isMyTurn && cpIsGhostPick && cpGs && (
+            <TurnManager
+              gs={gs}
+              cpGs={cpGs}
+              isMyTurn={isMyTurn}
+              writeGS={writeGS}
+              interactionLocked={day8ActionLocked}
+            />
+          )}
+
           {isMyTurn && cpIsSlot && cpGs && (
-            <SlotMachine
+            <SlotContainer
               gs={gs}
               cpGs={cpGs}
               isMyTurn={isMyTurn}
               writeGS={writeGS}
               commitPendingGameState={commitPendingGameState}
+              commitGameStateTransaction={commitGameStateTransaction}
               soundRef={soundRef}
               roomId={roomId}
               interactionLocked={day8ActionLocked}
@@ -2928,11 +3296,17 @@ export default function App() {
           <h2 className="mb-3 text-xs font-semibold text-slate-400">全プレイヤー</h2>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {gs.players.map((p, i) => (
+              (() => {
+                const frame = PLAYER_FRAME_COLORS[i % PLAYER_FRAME_COLORS.length];
+                const isCurrent = i === gs.currentPlayerIdx;
+                const borderCls = isCurrent ? frame.activeBorder : frame.border;
+                const bgCls = isCurrent ? frame.activeBg : "bg-slate-800/30";
+                return (
               <div key={p.id}
-                className={`rounded-xl border p-3 ${i === gs.currentPlayerIdx ? "border-cyan-500/60 bg-cyan-500/5" : "border-slate-800 bg-slate-800/30"}`}>
+                className={`rounded-xl border p-3 ${borderCls} ${bgCls}`}>
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium flex items-center gap-1.5">
-                  {i === gs.currentPlayerIdx ? "▶ " : ""}
+                  {isCurrent ? "▶ " : ""}
                   {/* Day8移動中はマップ上の駒で識別できるのでキャラ絵文字は非表示 */}
                   {gs.subPhase !== "day8" && (
                     <CharacterIcon
@@ -2989,6 +3363,8 @@ export default function App() {
                   </div>
                 )}
               </div>
+              );
+            })()
             ))}
           </div>
         </section>

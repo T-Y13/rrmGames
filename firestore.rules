@@ -1,50 +1,269 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isSignedIn() {
+
+    // genRoomId(): 6 chars from A–Z (no I,O) + 2–9 — not decimal digits only.
+    function validRoomCode(rid) {
+      return rid.matches('^[A-HJ-NP-Z2-9]{6}$');
+    }
+
+    function signedIn() {
       return request.auth != null;
     }
 
-    function isPlayerListValid(slots) {
+    function uid() {
+      return request.auth.uid;
+    }
+
+    // ─── Room document shape helpers ─────────────────────────────────────
+
+    function slotsInRange(slots) {
       return slots is list && slots.size() >= 1 && slots.size() <= 4;
     }
 
-    function hasValidPlayerIds(ids) {
+    function idsInRange(ids) {
       return ids is list && ids.size() >= 1 && ids.size() <= 4;
     }
 
-    function actorInPlayerIds() {
-      return request.auth.uid in resource.data.playerIds;
+    function slotIdsMatchPlayerIds(slots, ids) {
+      return slots.size() == ids.size();
     }
 
-    function actorInNextPlayerIds() {
-      return request.auth.uid in request.resource.data.playerIds;
+    // Prefix: first n entries of two slot lists are identical (join append).
+    function slotPrefixEqual(a, b, n) {
+      return (n < 1 || a[0] == b[0])
+        && (n < 2 || a[1] == b[1])
+        && (n < 3 || a[2] == b[2])
+        && (n < 4 || a[3] == b[3]);
     }
 
-    // Main game room documents.
+    function sameSlotIds(bslots, aslots, n) {
+      return (n < 1 || bslots[0].id == aslots[0].id)
+        && (n < 2 || bslots[1].id == aslots[1].id)
+        && (n < 3 || bslots[2].id == aslots[2].id)
+        && (n < 4 || bslots[3].id == aslots[3].id);
+    }
+
+    // Lobby: only own slot row may change when length unchanged.
+    function eachSlotSameOrSelf(bslots, aslots, n) {
+      return (n < 1 || aslots[0] == bslots[0] || bslots[0].id == uid())
+        && (n < 2 || aslots[1] == bslots[1] || bslots[1].id == uid())
+        && (n < 3 || aslots[2] == bslots[2] || bslots[2].id == uid())
+        && (n < 4 || aslots[3] == bslots[3] || bslots[3].id == uid());
+    }
+
+    function lobbyJoinSlotsValid(before, after) {
+      let bslots = before.playerSlots;
+      let aslots = after.playerSlots;
+      let n = bslots.size();
+      return slotsInRange(aslots)
+        && idsInRange(after.playerIds)
+        && aslots.size() == n + 1
+        && after.playerIds.size() == before.playerIds.size() + 1
+        && uid() in after.playerIds
+        && !(uid() in before.playerIds)
+        && aslots[n].id == uid()
+        && slotPrefixEqual(bslots, aslots, n);
+    }
+
+    function lobbySelfSlotEditValid(before, after) {
+      let bslots = before.playerSlots;
+      let aslots = after.playerSlots;
+      let n = bslots.size();
+      return slotsInRange(aslots)
+        && aslots.size() == n
+        && sameSlotIds(bslots, aslots, n)
+        && eachSlotSameOrSelf(bslots, aslots, n);
+    }
+
+    function lobbyImmutableCore(before, after) {
+      return after.gameState == before.gameState
+        && after.status == before.status
+        && after.hostId == before.hostId;
+    }
+
+    // Turn = Firestore state before this write (prevents claiming another seat).
+    function currentActorId(room) {
+      return room.gameState.players[room.gameState.currentPlayerIdx].id;
+    }
+
+    function isActorTurn(room) {
+      return room.gameState is map
+        && room.gameState.players is list
+        && room.gameState.players.size() >= 1
+        && room.gameState.currentPlayerIdx is int
+        && room.gameState.currentPlayerIdx >= 0
+        && room.gameState.currentPlayerIdx < room.gameState.players.size()
+        && currentActorId(room) == uid();
+    }
+
+    function isHost(room) {
+      return room.hostId == uid();
+    }
+
+    function hostFinalBattleWriteAllowed(room, nextGs) {
+      return isHost(room)
+        && room.gameState is map
+        && nextGs is map
+        && (
+          room.gameState.gamePhase == 'finalBattle'
+          || nextGs.gamePhase == 'finalBattle'
+        );
+    }
+
+    // Ghost "isGhost": alive == false on current actor (matches isGhostPickTargetPhase / proxy slot actor).
+    function actorIsGhost(gs) {
+      let cp = gs.currentPlayerIdx;
+      let ap = gs.players[cp];
+      return ap is map && 'alive' in ap && ap.alive == false;
+    }
+
+    // Non-actor, non-proxy-target player docs must be byte-identical (controlled proxy: only target money etc. changes).
+    function mustFreezeGhostSlot(j, cp, hasPxy, pxy) {
+      return j != cp && (!hasPxy || j != pxy);
+    }
+
+    function ghostProxyFrozenOk(gs0, gs1) {
+      let cp = gs0.currentPlayerIdx;
+      let n = gs0.players.size();
+      let pxy = gs0.proxySlotTargetIdx;
+      let hasPxy = pxy is int;
+      return n == gs1.players.size()
+        && (n < 1 || !mustFreezeGhostSlot(0, cp, hasPxy, pxy) || gs1.players[0] == gs0.players[0])
+        && (n < 2 || !mustFreezeGhostSlot(1, cp, hasPxy, pxy) || gs1.players[1] == gs0.players[1])
+        && (n < 3 || !mustFreezeGhostSlot(2, cp, hasPxy, pxy) || gs1.players[2] == gs0.players[2])
+        && (n < 4 || !mustFreezeGhostSlot(3, cp, hasPxy, pxy) || gs1.players[3] == gs0.players[3]);
+    }
+
+    function ghostProxyMoneyOkIfGhostActor(roomBefore, gs1) {
+      let gs0 = roomBefore.gameState;
+      return !(gs0 is map) || !actorIsGhost(gs0) || ghostProxyFrozenOk(gs0, gs1);
+    }
+
+    function playGameStatePatchValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      return (
+          affected.hasOnly(['gameState'])
+          || affected.hasOnly(['gameState', 'status'])
+          || affected.hasOnly(['gameState', 'remainingTurns', 'completedPlayers'])
+          || affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers'])
+        )
+        && before.gameState != null
+        && after.gameState is map
+        && after.gameState.players is list
+        && slotsInRange(after.gameState.players)
+        && after.remainingTurns is int
+        && after.remainingTurns >= 0
+        && after.completedPlayers is list
+        && after.playerSlots == before.playerSlots
+        && after.playerIds == before.playerIds
+        && after.hostId == before.hostId
+        && (
+          (isActorTurn(before) && ghostProxyMoneyOkIfGhostActor(before, after.gameState))
+          || hostFinalBattleWriteAllowed(before, after.gameState)
+        );
+    }
+
+    function hostStartGameValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      return uid() == before.hostId
+        && before.status == 'lobby'
+        && after.status == 'playing'
+        && affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers'])
+        && before.gameState == null
+        && after.gameState != null
+        && after.remainingTurns is int
+        && after.remainingTurns >= 0
+        && after.completedPlayers is list
+        && after.playerSlots == before.playerSlots
+        && after.playerIds == before.playerIds
+        && after.hostId == before.hostId;
+    }
+
+    function lobbyInviteValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      return before.status == 'lobby'
+        && lobbyImmutableCore(before, after)
+        && affected.hasOnly(['allowedPlayers'])
+        && uid() in before.playerIds;
+    }
+
+    function lobbyJoinValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      return before.status == 'lobby'
+        && lobbyImmutableCore(before, after)
+        && affected.hasOnly(['playerSlots', 'playerIds'])
+        && lobbyJoinSlotsValid(before, after);
+    }
+
+    function lobbySelfSlotsValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      return before.status == 'lobby'
+        && lobbyImmutableCore(before, after)
+        && affected.hasOnly(['playerSlots'])
+        && uid() in before.playerIds
+        && lobbySelfSlotEditValid(before, after);
+    }
+
+    function createRoomValid(rid) {
+      let d = request.resource.data;
+      return signedIn()
+        && validRoomCode(rid)
+        && d.hostId == uid()
+        && d.status == 'lobby'
+        && idsInRange(d.playerIds)
+        && uid() in d.playerIds
+        && slotsInRange(d.playerSlots)
+        && slotIdsMatchPlayerIds(d.playerSlots, d.playerIds)
+        && (d.gameState == null);
+    }
+
     match /rooms/{roomId} {
-      // Signed-in players can read room state.
-      allow get, list: if isSignedIn();
 
-      // Create only by authenticated user and include creator in playerIds.
-      allow create: if isSignedIn()
-        && hasValidPlayerIds(request.resource.data.playerIds)
-        && request.auth.uid in request.resource.data.playerIds
-        && isPlayerListValid(request.resource.data.playerSlots);
+      // Single-room fetch by code (join / spectate) — no account required.
+      allow get: if validRoomCode(roomId);
 
-      // Update only by existing or resulting room participant.
-      allow update: if isSignedIn()
-        && hasValidPlayerIds(request.resource.data.playerIds)
-        && isPlayerListValid(request.resource.data.playerSlots)
-        && (actorInPlayerIds() || actorInNextPlayerIds());
+      // Collection queries (quick match, invite discovery). Prevents unauthenticated enumeration.
+      // Note: private lobby docs may still appear in broad lobby queries; client filters isPrivate.
+      allow list: if signedIn()
+        && validRoomCode(roomId)
+        && resource.data.status == 'lobby'
+        && request.query.limit <= 20;
 
-      // Delete only by current host.
-      allow delete: if isSignedIn()
-        && resource.data.hostId is string
-        && request.auth.uid == resource.data.hostId;
+      allow create: if createRoomValid(roomId);
+
+      allow update: if signedIn()
+        && validRoomCode(roomId)
+        && idsInRange(request.resource.data.playerIds)
+        && slotsInRange(request.resource.data.playerSlots)
+        && slotIdsMatchPlayerIds(request.resource.data.playerSlots, request.resource.data.playerIds)
+        && (
+          lobbyJoinValid()
+          || (
+            uid() in resource.data.playerIds
+            && (
+              lobbyInviteValid()
+              || lobbySelfSlotsValid()
+              || hostStartGameValid()
+              || playGameStatePatchValid()
+            )
+          )
+        );
+
+      allow delete: if signedIn()
+        && resource.data.hostId == uid();
     }
 
-    // Deny everything else by default.
     match /{document=**} {
       allow read, write: if false;
     }

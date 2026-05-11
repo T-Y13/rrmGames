@@ -77,7 +77,7 @@ import BoardViewport from "./BoardViewport";
             onClick={onGoalLandingConfirm}
             className="w-full rounded-xl bg-amber-500 py-4 font-black text-slate-950 hover:bg-amber-400 shadow-lg animate-pulse"
           >
-            スロットを始める →
+            次のターンからスロットを始める →
           </button>
         </div>
       )}

@@ -5,13 +5,13 @@ export const GAME_TITLE_WITH_ACRONYM = "POTENTIAL OVER NEXT SPIN (PONS)";
  * プレリリース設定: true のときロビーの「みんなで遊ぶ」一式をロック（UIは残して Coming Soon のみ）。
  * オンライン開放時は false に変更。
  */
-export const PRERELEASE_SOLO_ONLY = true;
+export const PRERELEASE_SOLO_ONLY = false;
 
 /**
- * メニュー用の短文（開発状況の案内）。
+ * ロビー・エントリー「News」欄の短文。
  */
 export const SOLO_PRERELEASE_NOTICE =
-  "現在はソロプレイ体験版です。オンラインで仲間と遊ぶ「Next Spin」（マルチプレイ）は開発中です。次のアップデートで解放予定です。";
+  "オンラインでルーム作成・入室・クイックマッチから、最大4人まで一緒に遊べます。「一人で遊ぶ」でソロ練習も可能です。";
 
 /** ブランド表示用（ドキュメント title は短縮名、画面はフルタイトル併用可） */
 export const GAME_TITLE_FULL = "POTENTIAL OVER NEXT SPIN";

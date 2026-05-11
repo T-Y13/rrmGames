@@ -1,1 +1,10 @@
 node_modules
+
+# Local secrets / env (never commit)
+.env.local
+
+# Firebase CLI local cache
+.firebase/
+
+# Vite production build output (rebuild with npm run build)
+dist/

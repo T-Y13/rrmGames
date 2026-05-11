@@ -4,12 +4,12 @@ import slotCabinetPng from "../assets/slot-machine.png";
 import { CharacterIcon } from "./CharacterPieces";
 import { BAL, SLOT_BETS, SLOT_COST, SLOT_MACHINES } from "../constants/gameBalance";
 import {
+  advanceDay8AfterSlotSpinShow,
+  applyDay8SlotSpinToFreshGameState,
   calcSlotRates,
-  clampMoney,
   computeAdvanceDay8Turn,
   getSlotReachAnimationState,
   pickWrongSymbol,
-  prependLogs,
   randomStripTriple,
   rankLabel,
   rollReachCutInDisplay,
@@ -65,6 +65,7 @@ export default function SlotMachine({
   isMyTurn,
   writeGS,
   commitPendingGameState,
+  commitGameStateTransaction,
   soundRef,
   roomId,
   interactionLocked = false,
@@ -100,6 +101,12 @@ export default function SlotMachine({
 
   const cpIsSlot =
     gs?.gamePhase === "playing" && gs?.subPhase === "day8" && cpGs?.movePhase === "arrived";
+
+  const proxySlotTargetIdx =
+    typeof gs?.proxySlotTargetIdx === "number" && gs.proxySlotTargetIdx >= 0 ? gs.proxySlotTargetIdx : null;
+  const targetGs =
+    proxySlotTargetIdx != null && gs?.players?.[proxySlotTargetIdx] ? gs.players[proxySlotTargetIdx] : null;
+  const moneyGs = targetGs ?? cpGs;
 
   const displayReelsKey = gs?.displayReels?.join?.(",") ?? "";
 
@@ -147,11 +154,15 @@ export default function SlotMachine({
     if (!gs || !isMyTurn || isSpinning || interactionLocked) return;
     const idx = gs.currentPlayerIdx;
     const p = gs.players[idx];
-    const logs = [`${p.name} スロット終了 / 資金${p.stats.money}G / ランク${rankLabel(p.stats.money)}`];
+    const pxy = typeof gs.proxySlotTargetIdx === "number" ? gs.proxySlotTargetIdx : null;
+    const wallet = pxy != null && gs.players[pxy] ? gs.players[pxy] : p;
+    const logs = [
+      `${p.name} スロット終了 / ${pxy != null ? `${wallet.name}の資金 ` : "資金"}${wallet.stats.money}G / ランク${rankLabel(wallet.stats.money)}`,
+    ];
     const newPlayers = gs.players.map((pl, i) =>
       i !== idx ? pl : { ...pl, slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 },
     );
-    await writeGS(computeAdvanceDay8Turn(gs, newPlayers, logs));
+    await writeGS(computeAdvanceDay8Turn({ ...gs, proxySlotTargetIdx: null }, newPlayers, logs));
   };
 
   const handleSpin = async (bet = SLOT_COST) => {
@@ -160,9 +171,15 @@ export default function SlotMachine({
     if (p.slotTurnsLeft <= 0) return;
     const machine = SLOT_MACHINES[selectedMachineKey] ?? SLOT_MACHINES.standard;
 
+    const proxyIdx =
+      typeof gs.proxySlotTargetIdx === "number" && gs.proxySlotTargetIdx >= 0 ? gs.proxySlotTargetIdx : null;
+    const statsForSpin =
+      proxyIdx != null && gs.players[proxyIdx] ? gs.players[proxyIdx].stats : p.stats;
+
     const heat = p.slotHeat ?? 0;
     const pityBefore = p.slotPityCounter ?? 0;
-    const res = spinSlot(p.stats, bet, selectedMachineKey, heat, p.characterType, { pityCounter: pityBefore });
+    const slotTurnsBefore = p.slotTurnsLeft;
+    const res = spinSlot(statsForSpin, bet, selectedMachineKey, heat, p.characterType, { pityCounter: pityBefore });
 
     let visualReels = [...res.reels];
     if (res.tier === "miss") {
@@ -184,8 +201,8 @@ export default function SlotMachine({
     const { reachPossible } = getSlotReachAnimationState(visualReels, res.tier);
     const shouldShowReachCutin = reachPossible && rollReachCutInDisplay();
 
-    const lkEx = Math.max(0, p.stats.luck - BAL.slot.luckBaseline);
-    const skEx = Math.max(0, p.stats.skill - BAL.slot.skillBaseline);
+    const lkEx = Math.max(0, statsForSpin.luck - BAL.slot.luckBaseline);
+    const skEx = Math.max(0, statsForSpin.skill - BAL.slot.skillBaseline);
     const slipEligible = res.tier !== "miss" && (lkEx >= 10 || skEx >= 10);
     const finalStrips = visualReels.map((mid, ci) => stripTripleForMiddleColumn(mid, machine, ci));
 
@@ -360,56 +377,47 @@ export default function SlotMachine({
         setCharReaction("miss");
       }
 
-      const net = res.payout - bet;
-      const newMoney = clampMoney(p.stats.money - bet + res.payout);
       const newLeft = p.slotTurnsLeft - 1;
       const newPullsSeat = (p.slotPullsThisSeat ?? 0) + 1;
       const newSpins = p.spinCount + 1;
-      const newSlotNet = p.slotNet + net;
       const newHeat = heat + 1;
 
-      const newPlayers = gs.players.map((pl, i) => {
-        if (i !== gs.currentPlayerIdx) return pl;
-        return {
-          ...pl,
-          stats: { ...pl.stats, money: newMoney },
-          slotTurnsLeft: newLeft,
-          slotPullsThisSeat: newPullsSeat,
-          spinCount: newSpins,
-          slotNet: newSlotNet,
-          slotHeat: newHeat,
-          slotPityCounter: res.pityCounterAfter,
-          lastSpinResult: { ...res, net, spin: newSpins },
-        };
-      });
-
-      const heatMissRed = (newHeat * 1.5).toFixed(1);
-      const heatLabel =
-        newHeat >= 10 ? "🔥 BURNING!!" : newHeat >= 6 ? "🌡️ 熱くなってきた！" : "🌀 台が温まってきた！";
       const emotionLine = buildSlotReachEmotionLine(p.characterType, shouldShowReachCutin, res.tier !== "miss");
-      const pityLine = res.pityForced
-        ? `  🎯 善行ピティ: 連続ハズレ${res.maxPity}回で今回は役確定（カウンタリセット）`
-        : `  🎯 善行ピティ: ${res.pityCounterAfter}/${res.maxPity}（善行が高いほど天井までの回数が減ります）`;
-      const logs = [
-        `${p.name} スロット${newSpins}回[${machine.emoji}${machine.label}|${bet}G]: ${res.message} / 収支${net >= 0 ? "+" : ""}${net}G / 合計${newSlotNet >= 0 ? "+" : ""}${newSlotNet}G` +
-          ` | JP ${(res.r.jp * 100).toFixed(1)}% ハズレ ${(res.r.miss * 100).toFixed(1)}%`,
-        pityLine,
-        `  技量によりハズレを${(res.r.skillMissReduced * 100).toFixed(2)}%削減 / 運：当−${(res.r.luckDrainAtari * 100).toFixed(2)}%・小−${(res.r.luckDrainSmall * 100).toFixed(2)}%→上位 / 熟成でハズレ${(res.r.heatMissReduced * 100).toFixed(2)}%削減`,
-        `  ${heatLabel} ハズレ確率が${heatMissRed}%ダウン（熟成Lv${newHeat}）`,
-      ];
-      if (emotionLine) logs.push(`💬 ${p.name}: 「${emotionLine}」`);
+      const useMoneyTx =
+        gs.players.length > 1 && proxyIdx != null && typeof commitGameStateTransaction === "function";
 
-      const resultGS = {
-        ...gs,
-        players: newPlayers,
-        displayReels: visualReels,
-        showSpinResult: true,
-        log: prependLogs(logs, gs.log),
+      const ctx = {
+        actorIdx: gs.currentPlayerIdx,
+        proxyTargetIdx: proxyIdx,
+        bet,
+        res,
+        newLeft,
+        newPullsSeat,
+        newSpins,
+        newHeat,
+        pityAfter: res.pityCounterAfter,
+        visualReels,
+        emotionLine,
+        machine,
+        slotTurnsBefore,
       };
-      pendingGSRef.current = computeAdvanceDay8Turn(resultGS, newPlayers, []);
+
+      let resultGS = null;
+      if (useMoneyTx) {
+        resultGS = await commitGameStateTransaction((g0) => applyDay8SlotSpinToFreshGameState(g0, ctx));
+      } else {
+        resultGS = applyDay8SlotSpinToFreshGameState(gs, ctx);
+        if (resultGS) await writeGS(resultGS);
+      }
+
+      if (!resultGS) {
+        setIsSpinning(false);
+        return;
+      }
+
+      pendingGSRef.current = advanceDay8AfterSlotSpinShow(resultGS);
       setAwaitingConfirm(true);
       setConfirmCountdown(5);
-      await writeGS(resultGS);
       setLocalReels(res.reels);
       setIsSpinning(false);
     }, reel3StopAt);
@@ -430,7 +438,14 @@ export default function SlotMachine({
     <>
       <div className={showReachCutin ? "anim-slot-reach-machine-shake" : ""}>
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold">8日目 スロットターン — {cpGs.name}</h2>
+          <h2 className="font-semibold">
+            8日目 スロットターン — {cpGs.name}
+            {proxySlotTargetIdx != null && targetGs && (
+              <span className="ml-2 block sm:inline text-sm font-bold text-violet-300">
+                （資金は {targetGs.name} のもの）
+              </span>
+            )}
+          </h2>
           <button
             type="button"
             onClick={() => {
@@ -450,7 +465,7 @@ export default function SlotMachine({
           {(() => {
             const activeMachine = SLOT_MACHINES[selectedMachineKey] ?? SLOT_MACHINES.standard;
             const heat = cpGs.slotHeat ?? 0;
-            const r = calcSlotRates(cpGs.stats, activeMachine, heat, cpGs.characterType);
+            const r = calcSlotRates(moneyGs.stats, activeMachine, heat, cpGs.characterType);
             const missRed = (r.heatMissReduced * 100).toFixed(1);
             const isBurning = heat >= 10;
             const isWarm = heat >= 6;
@@ -498,7 +513,8 @@ export default function SlotMachine({
                 </div>
 
                 <p className="text-slate-300">
-                  現資金 <span className="font-bold text-white text-base">{cpGs.stats.money}</span>G
+                  現資金（{proxySlotTargetIdx != null ? `${targetGs?.name ?? "標的"}の所持` : "自分"}）{" "}
+                  <span className="font-bold text-white text-base">{moneyGs.stats.money}</span>G
                   {cpGs.spinCount > 0 && (
                     <span className={`ml-2 font-semibold ${cpGs.slotNet >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
                       スロット収支: {cpGs.slotNet >= 0 ? "+" : ""}
@@ -507,8 +523,8 @@ export default function SlotMachine({
                   )}
                 </p>
                 {(() => {
-                  const lk = Math.max(0, cpGs.stats.luck - BAL.slot.luckBaseline);
-                  const skEx = Math.max(0, cpGs.stats.skill - BAL.slot.skillBaseline);
+                  const lk = Math.max(0, moneyGs.stats.luck - BAL.slot.luckBaseline);
+                  const skEx = Math.max(0, moneyGs.stats.skill - BAL.slot.skillBaseline);
                   const skBlocks = skEx >= BAL.slot.skillBlockSize ? Math.floor(skEx / BAL.slot.skillBlockSize) : 0;
                   const hasLuck = lk > 0;
                   const hasSkill = skBlocks > 0;
@@ -564,8 +580,8 @@ export default function SlotMachine({
                     : charReaction === "miss"
                       ? "anim-char-sad"
                       : "";
-            const lkEx = Math.max(0, cpGs.stats.luck - BAL.slot.luckBaseline);
-            const skEx = Math.max(0, cpGs.stats.skill - BAL.slot.skillBaseline);
+            const lkEx = Math.max(0, moneyGs.stats.luck - BAL.slot.luckBaseline);
+            const skEx = Math.max(0, moneyGs.stats.skill - BAL.slot.skillBaseline);
             const luckTier = lkEx >= 50 ? 3 : lkEx >= 30 ? 2 : lkEx >= 10 ? 1 : 0;
             const skillTier = skEx >= 30 ? 2 : skEx >= 10 ? 1 : 0;
             const comboHigh = luckTier >= 1 && skillTier >= 1;
@@ -879,7 +895,7 @@ export default function SlotMachine({
                       ) : (
                         <span className="flex flex-col items-start leading-tight">
                           <span>{bet}G</span>
-                          {cpGs.stats.money < bet && <span className="text-[9px] font-normal opacity-80">←借金プレイ</span>}
+                          {moneyGs.stats.money < bet && <span className="text-[9px] font-normal opacity-80">←借金プレイ</span>}
                         </span>
                       )}
                     </button>

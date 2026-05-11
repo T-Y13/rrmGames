@@ -119,6 +119,7 @@ function GoalFinishLine({ tileW }) {
 }
 
 const HOP_SETTLE_PADDING_MS = 300;
+const PLAYER_SYMBOL_COLORS = ["#ef4444", "#3b82f6", "#facc15", "#22c55e"]; // red, blue, yellow, green
 
 /** 道幅に合わせたマス（正方形）の一辺（px） */
 const TILE_MIN_W = 52;
@@ -133,6 +134,12 @@ const TRAVEL_EPS = 0.015;
 function opaqueTw(cls) {
   if (!cls || typeof cls !== "string") return cls;
   return cls.replace(/\/(\d{2,3})\b/g, "");
+}
+
+function playerNameColor(players, playerId) {
+  const idx = players.findIndex((p) => p?.id === playerId);
+  if (idx < 0) return PLAYER_SYMBOL_COLORS[0];
+  return PLAYER_SYMBOL_COLORS[idx % PLAYER_SYMBOL_COLORS.length];
 }
 
 /** タイル間の補間オフセット（進行＝画面下＝正の Y） */
@@ -184,10 +191,12 @@ export default function BoardViewport({
   const [laneTileW, setLaneTileW] = useState(58);
 
   const prevPosRef = useRef(viewPos);
+  const prevCurrentPlayerIdRef = useRef(currentPlayer?.id ?? null);
   const travelDirRef = useRef(1);
   const rafRef = useRef(null);
   const taxiDriveRafRef = useRef(null);
   const hopTimerRef = useRef(null);
+  const [cameraPanOnly, setCameraPanOnly] = useState(false);
   const onHopCompleteRef = useRef(onHopAnimationComplete);
   onHopCompleteRef.current = onHopAnimationComplete;
 
@@ -219,6 +228,7 @@ export default function BoardViewport({
     const from = prevPosRef.current;
     const to = viewPos;
     const diff = to - from;
+    const switchedPlayer = prevCurrentPlayerIdRef.current !== (currentPlayer?.id ?? null);
     const taxiSnapPhases =
       taxiPhase === "taxiHail" ||
       taxiPhase === "enter" ||
@@ -240,6 +250,8 @@ export default function BoardViewport({
       prevPosRef.current = viewPos;
       setSmoothPos(viewPos);
       setBoardMotion({ forward: diff >= 0, msPerStep: 360, fast: false });
+      setCameraPanOnly(false);
+      prevCurrentPlayerIdRef.current = currentPlayer?.id ?? null;
       return undefined;
     }
 
@@ -267,6 +279,7 @@ export default function BoardViewport({
     const msPerStep = isBig ? 110 : 360;
     const duration = steps * msPerStep;
 
+    setCameraPanOnly(switchedPlayer);
     setBoardMotion({ forward: dir > 0, msPerStep, fast: isBig });
 
     const t0 = performance.now();
@@ -282,6 +295,8 @@ export default function BoardViewport({
       } else {
         rafRef.current = null;
         setSmoothPos(to);
+        setCameraPanOnly(false);
+        prevCurrentPlayerIdRef.current = currentPlayer?.id ?? null;
         if (reportHopAnimationComplete && steps > 0) {
           hopTimerRef.current = setTimeout(() => {
             onHopCompleteRef.current?.();
@@ -295,8 +310,9 @@ export default function BoardViewport({
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (hopTimerRef.current) clearTimeout(hopTimerRef.current);
+      setCameraPanOnly(false);
     };
-  }, [viewPos, reportHopAnimationComplete, taxiPhase]);
+  }, [viewPos, reportHopAnimationComplete, taxiPhase, currentPlayer?.id]);
 
   /** タクシー drive（1区画または分割）：マップを ease-in-out でスクロール */
   useEffect(() => {
@@ -451,6 +467,13 @@ export default function BoardViewport({
     : "linear-gradient(to bottom, #020617 0%, #0f172a 55%, #1e293b 100%)";
 
   const isPieceTraveling = traveling || pieceHopping;
+  const hideCurrentPieceDuringTurnSwitchPan =
+    cameraPanOnly &&
+    traveling &&
+    taxiPhase == null &&
+    !showPlayerPieceAsTaxi &&
+    !showTaxiBoardingVisual &&
+    !showTaxiDock;
   const remainingSteps = Math.ceil(Math.abs(viewPos - smoothPos) - 1e-9);
 
   return (
@@ -620,8 +643,19 @@ export default function BoardViewport({
                     >
                       {othersHere.map((p) => {
                         const piecePx = isCurrent ? 28 : Math.max(12, iconPx - 6);
+                        const nameColor = playerNameColor(players, p.id);
                         return (
                           <div key={p.id} className="relative flex flex-col items-center justify-end">
+                            <span
+                              className="pointer-events-none absolute bottom-full left-1/2 z-[39] mb-0.5 -translate-x-1/2 whitespace-nowrap rounded-md border px-[6px] py-[2px] text-[10px] font-black leading-none shadow-[0_2px_8px_rgba(0,0,0,0.45)]"
+                              style={{
+                                color: nameColor,
+                                borderColor: `${nameColor}cc`,
+                                backgroundColor: "rgba(2,6,23,0.85)",
+                              }}
+                            >
+                              {p.name}
+                            </span>
                             <TaxiCongestionBadge player={p} />
                             <span className="anim-breathe leading-none inline-flex items-end justify-center">
                               <SugorokuBoardPiece
@@ -643,8 +677,21 @@ export default function BoardViewport({
                       {isCurrent && showTaxiDock && (
                         <TaxiTileDock characterType={currentPlayer.characterType} taxiPhase={taxiPhase} />
                       )}
-                      {isCurrent && currentPlayer && (!taxiHideOnTilePiece || showPlayerPieceAsTaxi || showTaxiBoardingVisual) && (
+                      {isCurrent &&
+                        currentPlayer &&
+                        !hideCurrentPieceDuringTurnSwitchPan &&
+                        (!taxiHideOnTilePiece || showPlayerPieceAsTaxi || showTaxiBoardingVisual) && (
                         <div className="relative flex flex-col items-center justify-end">
+                          <span
+                            className="pointer-events-none absolute bottom-full left-1/2 z-[39] mb-0.5 -translate-x-1/2 whitespace-nowrap rounded-md border px-[6px] py-[2px] text-[10px] font-black leading-none shadow-[0_2px_8px_rgba(0,0,0,0.45)]"
+                            style={{
+                              color: playerNameColor(players, currentPlayer.id),
+                              borderColor: `${playerNameColor(players, currentPlayer.id)}cc`,
+                              backgroundColor: "rgba(2,6,23,0.85)",
+                            }}
+                          >
+                            {currentPlayer.name}
+                          </span>
                           <TaxiCongestionBadge player={currentPlayer} />
                           {showTaxiBoardingVisual ? (
                             <div className="flex max-w-[min(340px,calc(100vw-40px))] flex-row flex-nowrap items-end justify-center gap-1 pr-0.5 origin-bottom scale-[0.88] sm:scale-95 md:scale-100">
@@ -706,14 +753,14 @@ export default function BoardViewport({
                               <span
                                 className="inline-flex items-end justify-center leading-none"
                                 style={{
-                                  transform: `translate3d(${taxiOnTileShiftX}px, ${laneDY}px, 0)`,
+                                  transform: `translate3d(${taxiOnTileShiftX}px, ${cameraPanOnly ? 0 : laneDY}px, 0)`,
                                   transition: traveling ? "none" : "transform 0.4s linear",
                                   willChange: traveling ? "transform" : "auto",
                                 }}
                               >
                                 <span
                                   className={`standee-piece relative inline-flex items-end justify-center leading-none ${
-                                    traveling && !showPlayerPieceAsTaxi ? "anim-standee-walk" : ""
+                                    traveling && !showPlayerPieceAsTaxi && !cameraPanOnly ? "anim-standee-walk" : ""
                                   } ${showPlayerPieceAsTaxi ? "z-[26] anim-pulse-taxi-ride" : ""} ${
                                     showPlayerPieceAsTaxi && taxiPhase === "trafficJam"
                                       ? "anim-taxi-stutter"
