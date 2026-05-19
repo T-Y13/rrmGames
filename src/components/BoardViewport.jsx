@@ -31,6 +31,14 @@ const TAXI_AS_BOARD_PIECE_PHASES = new Set([
   "driveAfterJam",
 ]);
 
+/** すごろくマス上の駒（立ち絵）表示倍率（サラリーマン等の駒絵） */
+const BOARD_STANDEE_SCALE = 1.15;
+
+/** 大学生の立ち絵はアートが大きめのため、サラリーマンと同程度に見えるようだけ縮小 */
+function boardStandeePieceScale(characterType) {
+  return characterType === "student" ? 0.88 : 1;
+}
+
 /** 到着時のみ：横に停車タクシー＋退車アニメ（車体表現は立ち絵と同じ public `/images/` + フォールバック列） */
 function TaxiTileDock({ characterType, taxiPhase }) {
   if (!characterType || taxiPhase !== "arrive") return null;
@@ -48,7 +56,11 @@ function TaxiTileDock({ characterType, taxiPhase }) {
           <SugorokuBoardPiece
             characterType={characterType}
             pose="normal"
-            imgClassName="max-h-[56px] w-auto max-w-[min(100px,28vw)] object-contain object-bottom"
+            imgClassName="w-auto object-contain object-bottom"
+            imgStyle={{
+              maxHeight: 64 * boardStandeePieceScale(characterType),
+              maxWidth: `min(${Math.round(115 * boardStandeePieceScale(characterType))}px, ${28 * boardStandeePieceScale(characterType)}vw)`,
+            }}
             spanClassName="text-3xl leading-none"
           />
         </div>
@@ -437,6 +449,7 @@ export default function BoardViewport({
 
   const pendingTaxiVisualOnly =
     (currentPlayer?.pendingTaxiSteps ?? 0) > 0 && taxiPhase == null;
+  const currentPlayerStandeeMult = boardStandeePieceScale(currentPlayer?.characterType);
   const showPlayerPieceAsTaxi =
     (taxiPhase != null && TAXI_AS_BOARD_PIECE_PHASES.has(taxiPhase)) ||
     pendingTaxiVisualOnly;
@@ -643,6 +656,7 @@ export default function BoardViewport({
                     >
                       {othersHere.map((p) => {
                         const piecePx = isCurrent ? 28 : Math.max(12, iconPx - 6);
+                        const pieceCharScale = boardStandeePieceScale(p.characterType);
                         const nameColor = playerNameColor(players, p.id);
                         return (
                           <div key={p.id} className="relative flex flex-col items-center justify-end">
@@ -664,9 +678,13 @@ export default function BoardViewport({
                                 imgClassName="object-contain object-bottom"
                                 spanClassName="leading-none"
                                 imgStyle={{
-                                  maxHeight: Math.max(72, Math.min(118, piecePx * 5.5)),
+                                  maxHeight:
+                                    Math.max(72, Math.min(118, piecePx * 5.5)) *
+                                    BOARD_STANDEE_SCALE *
+                                    pieceCharScale,
                                   width: "auto",
-                                  maxWidth: Math.max(58, piecePx * 6.25),
+                                  maxWidth:
+                                    Math.max(58, piecePx * 6.25) * BOARD_STANDEE_SCALE * pieceCharScale,
                                 }}
                                 spanStyle={{ fontSize: piecePx }}
                               />
@@ -702,7 +720,7 @@ export default function BoardViewport({
                                     : "taxi-approach-parked"
                                 } relative z-[24]`}
                               >
-                                <TaxiStandeeImage imgClassName="relative z-[1] max-h-[118px] w-auto min-w-[48px] max-w-[min(165px,46vw)] object-contain object-bottom opacity-100" />
+                                <TaxiStandeeImage imgClassName="relative z-[1] max-h-[136px] w-auto min-w-[48px] max-w-[min(190px,46vw)] object-contain object-bottom opacity-100" />
                               </div>
                               <div
                                 className={`order-2 shrink-0 relative z-[20] flex flex-col items-center justify-end self-end ${
@@ -717,7 +735,12 @@ export default function BoardViewport({
                                   <SugorokuBoardPiece
                                     characterType={currentPlayer.characterType}
                                     pose={(currentPlayer.skipTurns ?? 0) > 0 ? "fallen" : "normal"}
-                                    imgClassName="max-h-[130px] w-auto max-w-[min(180px,55vw)] object-contain object-bottom"
+                                    imgClassName="w-auto object-contain object-bottom"
+                                    imgStyle={{
+                                      maxHeight: 150 * currentPlayerStandeeMult,
+                                      width: "auto",
+                                      maxWidth: `min(${Math.round(207 * currentPlayerStandeeMult)}px, ${55 * currentPlayerStandeeMult}vw)`,
+                                    }}
                                     spanClassName="text-4xl leading-none"
                                   />
                                 </span>
@@ -775,12 +798,17 @@ export default function BoardViewport({
                                   }
                                 >
                                   {showPlayerPieceAsTaxi ? (
-                                    <TaxiStandeeImage imgClassName="relative z-[1] max-h-[130px] w-auto min-w-[48px] max-w-[min(180px,55vw)] object-contain object-bottom opacity-100" />
+                                    <TaxiStandeeImage imgClassName="relative z-[1] max-h-[150px] w-auto min-w-[48px] max-w-[min(207px,55vw)] object-contain object-bottom opacity-100" />
                                   ) : (
                                     <SugorokuBoardPiece
                                       characterType={currentPlayer.characterType}
                                       pose={(currentPlayer.skipTurns ?? 0) > 0 ? "fallen" : "normal"}
-                                      imgClassName="max-h-[130px] w-auto max-w-[min(180px,55vw)] object-contain object-bottom"
+                                      imgClassName="w-auto object-contain object-bottom"
+                                      imgStyle={{
+                                        maxHeight: 150 * currentPlayerStandeeMult,
+                                        width: "auto",
+                                        maxWidth: `min(${Math.round(207 * currentPlayerStandeeMult)}px, ${55 * currentPlayerStandeeMult}vw)`,
+                                      }}
                                       spanClassName="text-4xl leading-none"
                                     />
                                   )}

@@ -3,6 +3,7 @@ import {
   VIRTUE_BY_INITIAL_ROLL,
   virtueMinRoll,
   rollDie,
+  applyGoalLandingConfirm,
   computeFinalStatsFromInitialRolls,
   livingRollFromInitialRolls,
 } from "./gameLogic.js";
@@ -30,6 +31,25 @@ describe("initial rolls → final virtue", () => {
   it("derives living roll from the mean of luck, skill, virtue dice", () => {
     expect(livingRollFromInitialRolls({ luck: 0, skill: 0, virtue: 0, pon: 0 })).toBe(0);
     expect(livingRollFromInitialRolls({ luck: 2, skill: 3, virtue: 4, pon: 0 })).toBe(3);
+  });
+});
+
+describe("applyGoalLandingConfirm", () => {
+  it("updates only the goal lander without changing currentPlayerIdx", () => {
+    const gs = {
+      subPhase: "day8",
+      gamePhase: "playing",
+      currentPlayerIdx: 1,
+      log: [],
+      players: [
+        { id: "a", name: "A", movePhase: "arrived", reservedSlotTurns: 0 },
+        { id: "b", name: "B", movePhase: "goalLanding", reservedSlotTurns: 2 },
+      ],
+    };
+    const next = applyGoalLandingConfirm(gs, "b");
+    expect(next.currentPlayerIdx).toBe(1);
+    expect(next.players[1].movePhase).toBe("waitingSlot");
+    expect(next.players[0].movePhase).toBe("arrived");
   });
 });
 

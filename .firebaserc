@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "rrmgame-7df52"
+  },
+  "targets": {
+    "rrmgame-7df52": {
+      "hosting": {
+        "pons-site": [
+          "potential-over-next-spin"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

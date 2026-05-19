@@ -13,9 +13,11 @@ import FinalBattleStage from "./components/FinalBattleStage";
 import Lobby from "./components/Lobby";
 import SSRainParticles from "./components/SSRainParticles";
 import SlotContainer from "./components/SlotContainer";
+import SlotSpinBroadcastOverlay from "./components/SlotSpinBroadcastOverlay";
 import TurnManager from "./components/TurnManager";
 import WaitingRoom from "./components/WaitingRoom";
 import TopRightHud from "./components/TopRightHud";
+import PlayingPlayerSidebar from "./components/PlayingPlayerSidebar";
 import StreamTypeCutin from "./components/StreamTypeCutin";
 import WorkCutin from "./components/WorkCutin";
 import { GAME_STYLES } from "./constants/gameAnimationsCss";
@@ -33,6 +35,7 @@ import {
   TILE_EFFECT_KIND,
   isSecretRirimuUnlockedByTrimmedPlayerName,
 } from "./constants/gameBalance";
+import { STATUS_OVERVIEW_HINTS } from "./constants/statusOverviewHints";
 import {
   GAME_TITLE_FULL,
   GAME_TITLE_SHORT,
@@ -42,11 +45,13 @@ import {
 } from "./constants/branding";
 import { useFirebaseGame } from "./hooks/useFirebaseGame";
 import {
+  canWriteGoalLandingConfirm,
   isActorTurnOnGameState,
   isHostFinalBattleScheduledWrite,
 } from "./lib/multiplayerGameStateAuth";
 import { createSlotSoundManager } from "./lib/slotSound";
 import {
+  applyGoalLandingConfirm,
   applyRimiruDailyEnd,
   applySplashDamage,
   applyVirtueIncomeBoost,
@@ -91,29 +96,12 @@ const RIRIMU_UNLOCK_VOICE_FILES = [
   "/sounds/full_name.mp3",
 ];
 const RIRIMU_SELECT_SE_FILE = "/sounds/start_rrm.mp3";
-const STATUS_OVERVIEW_HINTS = {
-  money: "行動やスロットで増減する所持金です。マイナスになっても続行できますが、借金状態になります。",
-  luck: "運気の強さです。伸びるとすごろくのダイスなどで追い風になりやすくなります。一定値を超えるとダイスが増える！？",
-  skill: "腕前やコツのイメージです。スロットでは当たりやすさなどに効いてきます。",
-  virtue: "善行の蓄えです。ダイスや日常イベントで「最低限ここまで」が変わるなど、行動の土台に効きます。",
-  pon: "ストレスや無謀さの目安です。高まると荒れた展開に振れやすくなります。",
-  livingCost: "暮らしの固定費です。日が進むたびにこの負担がのしかかり、資金との攻防になります。",
-};
-
 const PLAYER_FRAME_COLORS = [
   { border: "border-rose-500/70", activeBorder: "border-rose-400", activeBg: "bg-rose-500/10" },   // red
   { border: "border-sky-500/70", activeBorder: "border-sky-400", activeBg: "bg-sky-500/10" },      // blue
   { border: "border-amber-500/75", activeBorder: "border-amber-400", activeBg: "bg-amber-500/10" }, // yellow
   { border: "border-emerald-500/70", activeBorder: "border-emerald-400", activeBg: "bg-emerald-500/10" }, // green
 ];
-
-const DAILY_ACTION_LABELS = {
-  work: "Training",
-  stream: "Rest",
-  shrine: "Pray",
-  dailySlot: "Slot",
-  unknown: "Thinking...",
-};
 
 function loadSoundVolume(key, fallback) {
   try {
@@ -189,9 +177,22 @@ function applyDay8RoundTracking(roomDoc, nextGs, actorUid) {
     inDay8Before &&
     ((nextGs?.gamePhase !== "playing" || nextGs?.subPhase !== "day8") ||
       Number(nextGs?.currentPlayerIdx) !== Number(prevGs?.currentPlayerIdx));
-  const actionCompleted = turnAdvanced || actorMoveTurnsIncreased;
+  /** 手番 index が変わらないソロ等：スロット1席終了で slotPullsThisSeat がアウトゴーイングにより 0 に戻る */
+  const day8SlotSeatClosedSameIdx =
+    inDay8Before &&
+    Number(prevGs?.currentPlayerIdx) === Number(nextGs?.currentPlayerIdx) &&
+    actorPrev?.movePhase === "arrived" &&
+    Number(actorPrev?.slotPullsThisSeat ?? 0) > 0 &&
+    Number(actorNext?.slotPullsThisSeat ?? 0) === 0;
+  const actionCompleted = turnAdvanced || actorMoveTurnsIncreased || day8SlotSeatClosedSameIdx;
 
-  if (inDay8Before && actionCompleted && actorIdBefore && actorIdBefore === actorUid) {
+  if (
+    inDay8Before &&
+    actionCompleted &&
+    actorIdBefore &&
+    actorIdBefore === actorUid &&
+    actorPrev?.alive !== false
+  ) {
     if (!completedPlayers.includes(actorUid)) completedPlayers = [...completedPlayers, actorUid];
     const aliveIds = (prevGs.players ?? [])
       .filter((p) => p?.alive !== false && typeof p?.id === "string")
@@ -243,7 +244,6 @@ export default function App() {
     roomId,
     setRoomId,
     roomData,
-    roomPlayers,
     updateRoom,
     updateRoomById,
     createRoom,
@@ -321,6 +321,8 @@ export default function App() {
   /** 今回のタクシー操作で渋滞2ターン化したか（ride→trafficJam→drive の分岐用） */
   const pendingTaxiCongestionRef = useRef(false);
   const prevRoomGsForTaxiSyncRef = useRef(null);
+  /** 今回のタクシー演出の操作者（drive 完了書き込みで手番が進んだら arrive を出さない判定用） */
+  const taxiActorPlayerIdRef = useRef(null);
   /** PON転倒カットイン後に書き込む gameState（転倒時のみ） */
   const ponCutinCommitRef = useRef(null);
   const ponCutinFinalizeRef = useRef(async () => {});
@@ -361,8 +363,11 @@ export default function App() {
   const [turnChangeBannerTurns, setTurnChangeBannerTurns] = useState(null);
   const [pendingTurnBannerTurns, setPendingTurnBannerTurns] = useState(null);
   const prevDay8TurnKeyRef = useRef(null);
+  /** 8日目：残りラウンド（room.remainingTurns）が減ったときにターン変更カットインを予約（ソロ・マルチ共通） */
+  const prevDay8RemainingTurnsRef = useRef(null);
   const turnChangeBannerTimerRef = useRef(null);
   const turnChangeBannerDelayTimerRef = useRef(null);
+  const pieceHoppingClearTimerRef = useRef(null);
   const [gameOverSplashMsg, setGameOverSplashMsg] = useState(null);
   const gameOverSplashTimerRef = useRef(null);
 
@@ -398,6 +403,20 @@ export default function App() {
     playManagedAudio("select", RIRIMU_SELECT_SE_FILE);
   }, [playManagedAudio]);
 
+  /** すごろく駒ホップ中はターン変更カットイン等を抑止する（所要は gameLogic のホップ時間に合わせる） */
+  const schedulePieceHopBlockingMs = useCallback((ms) => {
+    if (pieceHoppingClearTimerRef.current) {
+      clearTimeout(pieceHoppingClearTimerRef.current);
+      pieceHoppingClearTimerRef.current = null;
+    }
+    setPieceHopping(true);
+    const safe = Math.max(80, Math.ceil(Number(ms) || 0));
+    pieceHoppingClearTimerRef.current = setTimeout(() => {
+      pieceHoppingClearTimerRef.current = null;
+      setPieceHopping(false);
+    }, safe);
+  }, []);
+
   useEffect(() => {
     const isUnlockedNow = isSecretRirimuUnlockedByTrimmedPlayerName(myName);
     if (!isUnlockedNow || ririmuUnlockVoicePlayedRef.current) return;
@@ -428,10 +447,12 @@ export default function App() {
     roomGs.players?.[roomGs.currentPlayerIdx]?.id === myId &&
     !day7DailyWritePending;
   const roomCompletedPlayers = normalizeCompletedPlayers(roomData?.completedPlayers);
+  const myPlayerAlive = roomGs?.players?.find((p) => p.id === myId)?.alive !== false;
   const isMyDay8RoundCompleted =
     roomGs?.gamePhase === "playing" &&
     roomGs?.subPhase === "day8" &&
     !!myId &&
+    myPlayerAlive &&
     roomCompletedPlayers.includes(myId);
   const isMyTurn = rawIsMyTurn && !isMyDay8RoundCompleted;
   const cpGs        = gs?.players?.[gs?.currentPlayerIdx] ?? null;
@@ -446,28 +467,27 @@ export default function App() {
   /** gamePhase だけ欠けた古いスナップショットでも演出を出す */
   const isFinalBattleUIMode = gs?.gamePhase === "finalBattle" || gs?.subPhase === "finalBattle";
   const cpIsWaitingSlot = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "waitingSlot";
-  const cpIsGoalLanding =
-    playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "goalLanding";
+  /** 手番が別プレイヤーでも、自分が goalLanding なら GOAL 確認 UI を出す */
+  const goalLandingSelf =
+    playingMain && gs?.subPhase === "day8" && myId
+      ? gs.players?.find((pl) => pl.id === myId && pl.movePhase === "goalLanding") ?? null
+      : null;
+  const anyGoalLandingPlayer =
+    playingMain && gs?.subPhase === "day8"
+      ? gs.players?.find((pl) => pl.movePhase === "goalLanding") ?? null
+      : null;
   const cpIsSlot     = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "arrived";
+  const slotPhase = gs?.slotPhase ?? "idle";
+  const showSlotSpinBroadcastMirror =
+    playingMain &&
+    gs?.subPhase === "day8" &&
+    (slotPhase === "spinning" || slotPhase === "completed") &&
+    !(isMyTurn && cpIsSlot);
   const cpIsGhostPick = playingMain && gs?.subPhase === "day8" && isGhostPickTargetPhase(cpGs);
   const isDay8Moving =
     playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "moving" && cpGs?.alive !== false;
   const boardProgress = cpGs ? Math.min(100, (cpGs.position / BOARD_GOAL) * 100) : 0;
   const day8DiceRollCount = Array.isArray(gs?.lastDiceRolls) ? gs.lastDiceRolls.length : 0;
-  const dailyPlayersForGrid = useMemo(() => {
-    if (!gs?.players?.length || gs.subPhase !== "daily") return [];
-    return gs.players.map((p, idx) => {
-      const pd = roomPlayers?.[p.id] ?? {};
-      const typeRaw = pd?.currentAction?.type;
-      const type = typeof typeRaw === "string" && typeRaw.length > 0 ? typeRaw : "unknown";
-      return {
-        idx,
-        ...p,
-        actionType: type,
-        actionLabel: DAILY_ACTION_LABELS[type] ?? DAILY_ACTION_LABELS.unknown,
-      };
-    });
-  }, [gs?.players, gs?.subPhase, roomPlayers]);
   const day8ActionLocked =
     isDiceRolling ||
     taxiPhase != null ||
@@ -480,9 +500,24 @@ export default function App() {
   useEffect(() => {
     if (!gs || gs.gamePhase !== "playing" || gs.subPhase !== "day8" || !Array.isArray(gs.players)) {
       prevDay8TurnKeyRef.current = null;
+      prevDay8RemainingTurnsRef.current = null;
       setPendingTurnBannerTurns(null);
       return;
     }
+
+    const raw = roomData?.remainingTurns;
+    const rem = Number(raw);
+    if (Number.isFinite(rem) && rem >= 0) {
+      const remaining = Math.floor(rem);
+      const prevRem = prevDay8RemainingTurnsRef.current;
+      prevDay8RemainingTurnsRef.current = remaining;
+      if (prevRem != null && remaining < prevRem) {
+        setPendingTurnBannerTurns(Math.max(0, remaining));
+      }
+      return;
+    }
+
+    // ルームに remainingTurns が無い古いデータ用フォールバック（主にソロ想定）
     const idx = gs.currentPlayerIdx;
     if (!Number.isInteger(idx) || idx < 0 || idx >= gs.players.length) return;
     const p = gs.players[idx];
@@ -490,31 +525,29 @@ export default function App() {
     const prevKey = prevDay8TurnKeyRef.current;
     prevDay8TurnKeyRef.current = turnKey;
     if (prevKey == null || prevKey === turnKey) return;
-    const [prevIdxRaw, , prevMoveTurnsRaw] = String(prevKey).split(":");
-    const prevIdx = Number(prevIdxRaw);
+    const [, , prevMoveTurnsRaw] = String(prevKey).split(":");
     const prevMoveTurns = Number(prevMoveTurnsRaw);
     const nowMoveTurns = Number(p?.moveTurns ?? 0);
 
-    // 「次ターンへ進んだ」事実だけで予約する（マス効果の追い移動やPON演出の有無に依存しない）。
-    // マルチ: currentPlayerIdx が変わったら次ターン
-    // ソロ  : moveTurns が進んだら次ターン
-    const isMultiTurnSwitch = gs.players.length > 1 && Number.isFinite(prevIdx) && prevIdx !== idx;
-    const isSoloTurnSwitch = gs.players.length === 1 && Number.isFinite(prevMoveTurns) && nowMoveTurns > prevMoveTurns;
-    if (!isMultiTurnSwitch && !isSoloTurnSwitch) return;
+    const isSoloTurnSwitch = Number.isFinite(prevMoveTurns) && nowMoveTurns > prevMoveTurns;
+    if (!isSoloTurnSwitch) return;
 
     const turnsLeft = Math.max(0, BAL.dice.maxTurns - Number(p?.moveTurns ?? 0));
     setPendingTurnBannerTurns(turnsLeft);
-  }, [gs?.gamePhase, gs?.subPhase, gs?.currentPlayerIdx, gs?.players]);
+  }, [gs?.gamePhase, gs?.subPhase, gs?.currentPlayerIdx, gs?.players, roomData?.remainingTurns]);
 
   useEffect(() => {
     if (pendingTurnBannerTurns == null) return;
-    // 次ターンが実際に開始（移動フェーズ）してからカットインを出す。
-    // これで前プレイヤーの移動/スロット/カットイン完了前に表示されるのを防ぐ。
+    /** ラウンド開始後に表示（ゴール確認・幽霊標的選びも含む。移動ホップ中は pieceHopping で抑止） */
     const mp = cpGs?.movePhase;
+    const bannerReadyMovePhase =
+      mp === "moving" ||
+      mp === "goalLanding" ||
+      mp === "waitingSlot" ||
+      mp === "arrived" ||
+      mp === "ghostPickTarget";
     const turnStarted =
-      gs?.gamePhase === "playing" &&
-      gs?.subPhase === "day8" &&
-      (mp === "moving" || mp === "arrived" || mp === "waitingSlot");
+      gs?.gamePhase === "playing" && gs?.subPhase === "day8" && bannerReadyMovePhase;
     if (!turnStarted) return;
     const idleNow =
       !isDiceRolling &&
@@ -586,6 +619,10 @@ export default function App() {
     if (turnChangeBannerDelayTimerRef.current) {
       clearTimeout(turnChangeBannerDelayTimerRef.current);
       turnChangeBannerDelayTimerRef.current = null;
+    }
+    if (pieceHoppingClearTimerRef.current) {
+      clearTimeout(pieceHoppingClearTimerRef.current);
+      pieceHoppingClearTimerRef.current = null;
     }
   }, []);
 
@@ -799,11 +836,15 @@ export default function App() {
     if (roomGs.gamePhase !== "playing" || roomGs.subPhase !== "day8") return;
     if (prev.gamePhase !== "playing" || prev.subPhase !== "day8") return;
 
-    const idx = roomGs.currentPlayerIdx;
-    const cur = roomGs.players?.[idx];
-    if (!cur) return;
-    const prevCur = prev.players?.find((p) => p.id === cur.id);
-    if (!prevCur) return;
+    const prevIdx = prev.currentPlayerIdx;
+    const roomIdx = roomGs.currentPlayerIdx;
+    // 手番が変わったフレームでは「新しい手番の人」の lastMoveEvent（過去にタクシーを使った記録など）で誤検知し、
+    // 次プレイヤーのターン開始時にタクシー drive が走ることがある。
+    if (prevIdx !== roomIdx) return;
+
+    const cur = roomGs.players?.[roomIdx];
+    const prevCur = prev.players?.[prevIdx];
+    if (!cur || !prevCur || cur.id !== prevCur.id) return;
 
     const moved = Math.abs((cur.position ?? 0) - (prevCur.position ?? 0)) > 0;
     const looksTaxi = String(cur.lastMoveEvent ?? "").includes("タクシー");
@@ -874,9 +915,12 @@ export default function App() {
         skipArriveForPendingTaxi = (cp?.pendingTaxiSteps ?? 0) > 0;
       }
 
+      let taxiWriteOk = false;
+      let writtenCurPlayerId = null;
       if (writeDriveDone) {
+        const tgSnap = taxiGSRef.current;
+        writtenCurPlayerId = tgSnap?.players?.[tgSnap.currentPlayerIdx]?.id ?? null;
         const followUp = taxiGSFollowUpRef.current;
-        let taxiWriteOk = false;
         try {
           const tg = taxiGSRef.current;
           taxiWriteOk = await performGameStateUpdateRef.current(tg, "actorTurn");
@@ -925,6 +969,23 @@ export default function App() {
       if (tentativeNext === "arrive" && skipArriveForPendingTaxi) {
         next = null;
       }
+      // drive 完了の書き込みで手番が進んでいるのに arrive を出すと、BoardViewport は「今手番の人」基準のため
+      // 次プレイヤーの盤面に退場タクシーが載る。ゴール等で手番が残る場合は id が一致するので arrive は維持。
+      const arriveAfterDriveWrite =
+        writeDriveDone &&
+        taxiWriteOk &&
+        tentativeNext === "arrive" &&
+        (taxiPhase === "drive" ||
+          taxiPhase === "driveAfterJam" ||
+          (taxiPhase === "trafficJam" && tentativeNext === "arrive"));
+      if (
+        arriveAfterDriveWrite &&
+        writtenCurPlayerId &&
+        taxiActorPlayerIdRef.current &&
+        writtenCurPlayerId !== taxiActorPlayerIdRef.current
+      ) {
+        next = null;
+      }
 
       if (next === "driveAfterJam") {
         setTaxiDriveActiveMs(taxiSecondLegMsRef.current);
@@ -936,6 +997,7 @@ export default function App() {
       }
       if (next === "arrive") setTaxiDriveCongested(false);
       if (next === null) {
+        taxiActorPlayerIdRef.current = null;
         pendingTaxiCongestionRef.current = false;
         setTaxiDriveCongested(false);
         setTaxiDriveEndPos(null);
@@ -948,17 +1010,18 @@ export default function App() {
 
   // ─── 1回休みの自動スキップ ───────────────────────────────────────────
   useEffect(() => {
-    if (!isMyTurn || !gs || gs.subPhase !== "day8" || gs.gamePhase !== "playing") return;
-    const p = cpGs;
+    const liveGs = gsRef.current;
+    if (!isMyTurn || !liveGs || liveGs.subPhase !== "day8" || liveGs.gamePhase !== "playing") return;
+    const idx = liveGs.currentPlayerIdx;
+    const p = liveGs.players?.[idx];
     if (!p || p.skipTurns <= 0 || p.movePhase !== "moving") return;
     if ((p.pendingTaxiSteps ?? 0) > 0) return;
-    // skipTurns > 0 なら自動でターンを消費して次へ進む
-    const newPlayers = gs.players.map((pl, i) =>
-      i === gs.currentPlayerIdx ? { ...pl, skipTurns: pl.skipTurns - 1 } : pl
+    const newPlayers = liveGs.players.map((pl, i) =>
+      i === idx ? { ...pl, skipTurns: pl.skipTurns - 1 } : pl,
     );
     const logs = [`💤 ${p.name} 1回休み（炎上の巻き添え）`];
-    writeGS(computeAdvanceDay8Turn(gs, newPlayers, logs));
-  }, [isMyTurn, gs?.currentPlayerIdx]); // eslint-disable-line
+    void performGameStateUpdateRef.current?.(computeAdvanceDay8Turn(liveGs, newPlayers, logs), "actorTurn");
+  }, [isMyTurn, gs?.currentPlayerIdx]);
 
   /** PON用オーバーライド解除：Firestore の自分の position が表示マスに追いついた後だけ null にする（解除が早いと古いマスへ戻り二次ホップする） */
   useEffect(() => {
@@ -980,6 +1043,11 @@ export default function App() {
           setUiError("手番が変わったため、同期を送信できませんでした。最新の状態を確認してください。");
           return false;
         }
+      } else if (writeMode === "goalLandingConfirm") {
+        if (!canWriteGoalLandingConfirm(authG, myId)) {
+          setUiError("ゴール確認を送信できませんでした。最新の状態を確認してください。");
+          return false;
+        }
       } else if (writeMode === "hostFinalBattle") {
         if (!isHostFinalBattleScheduledWrite(authRd, authG, myId)) {
           setUiError("この更新はホストのみが実行できます。");
@@ -988,7 +1056,7 @@ export default function App() {
       }
       try {
         if (
-          writeMode === "actorTurn" &&
+          (writeMode === "actorTurn" || writeMode === "goalLandingConfirm") &&
           roomId &&
           authG?.gamePhase === "playing" &&
           authG?.subPhase === "day8"
@@ -999,7 +1067,11 @@ export default function App() {
             if (!snap.exists()) throw new Error("ROOM_MISSING");
             const liveRoom = snap.data();
             const liveGs = liveRoom?.gameState;
-            if (!isActorTurnOnGameState(liveGs, myId)) throw new Error("TURN_CHANGED");
+            if (writeMode === "goalLandingConfirm") {
+              if (!canWriteGoalLandingConfirm(liveGs, myId)) throw new Error("GOAL_CONFIRM_DENIED");
+            } else if (!isActorTurnOnGameState(liveGs, myId)) {
+              throw new Error("TURN_CHANGED");
+            }
             const tracked = applyDay8RoundTracking(liveRoom, newGS, myId);
             const updates = {
               gameState: tracked.gameState,
@@ -1029,6 +1101,8 @@ export default function App() {
   performGameStateUpdateRef.current = performGameStateUpdate;
 
   const writeGS = async (newGS) => performGameStateUpdate(newGS, "actorTurn");
+
+  const writeGoalLandingConfirm = async (newGS) => performGameStateUpdate(newGS, "goalLandingConfirm");
 
   ponCutinFinalizeRef.current = async () => {
     const pending = ponCutinCommitRef.current;
@@ -1455,23 +1529,10 @@ export default function App() {
 
   /** ゴール直後ターン終了 → waitingSlot（または権利0ならその場で終了処理）へ */
   const handleGoalLandingConfirm = async () => {
-    if (!gs || !isMyTurn) return;
-    const p = gs.players[gs.currentPlayerIdx];
-    if (p.movePhase !== "goalLanding") return;
-    const r = p.reservedSlotTurns ?? 0;
-    let newPlayers;
-    if (r <= 0) {
-      const logs = [`${p.name}: ゴール済み／スロット権利0回でラウンド不参加`];
-      newPlayers = gs.players.map((pl, i) =>
-        i !== gs.currentPlayerIdx ? pl : { ...pl, movePhase: "arrived", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 });
-      await writeGS(computeAdvanceDay8Turn(gs, newPlayers, logs));
-      return;
-    }
-    const maxPulls = r * BAL.dice.slotsPerSugorokuTurn;
-    const logs = [`${p.name}: ゴール到着ターン終了　→ スロット${r}ターンブン（計最大${maxPulls}回）は次の自分のターンで開始できます`];
-    newPlayers = gs.players.map((pl, i) =>
-      i !== gs.currentPlayerIdx ? pl : { ...pl, movePhase: "waitingSlot" });
-    await writeGS(computeAdvanceDay8Turn(gs, newPlayers, logs));
+    if (!gs || !myId) return;
+    const nextGs = applyGoalLandingConfirm(gs, myId);
+    if (!nextGs) return;
+    await writeGoalLandingConfirm(nextGs);
   };
 
   /** 権利適用済みステータスでスロット筐体へ移行（この時点のアイテム・効果後の運・技量が反映される） */
@@ -2126,12 +2187,10 @@ export default function App() {
         : null;
       const taxiEndPosWait = needsTileSlideWait ? landedDiceWait : newPosFinal;
 
-      setPieceHopping(true);
-      setTimeout(() => setPieceHopping(false), 700);
-
       /** 渋滞2ターン目：移動距離は残りマスだが、速度は「通常1ターン目のドライブ」の半分（所要2倍） */
       const baseDriveMs = computeTaxiDriveDurationMs(Math.abs(taxiEndPosWait - p.position));
       const driveMsWait = baseDriveMs * 2;
+      schedulePieceHopBlockingMs(Math.max(700, driveMsWait + 120));
       taxiDriveDurationMsRef.current = driveMsWait;
       setTaxiDriveDurationMs(driveMsWait);
       setTaxiDriveEndPos(taxiEndPosWait);
@@ -2146,6 +2205,7 @@ export default function App() {
       pendingTaxiCongestionRef.current = false;
       pendingSugorokuTileFxToastRef.current = rrWait.tileToast;
       setTaxiDriveCongested(true);
+      taxiActorPlayerIdRef.current = p.id;
       /** 渋滞2ターン目：すでにタクシー乗車中なので enter/boarding/ride は出さず drive のみ */
       setTaxiPhase("drive");
       return;
@@ -2393,9 +2453,6 @@ export default function App() {
         }, 2800);
       };
 
-      setPieceHopping(true);
-      setTimeout(() => setPieceHopping(false), 700);
-
       if (actionType === "taxi") {
         pendingTaxiCongestionRef.current = taxiCongestionSplit;
         pendingSugorokuTileFxToastRef.current = rr.tileToast;
@@ -2438,6 +2495,26 @@ export default function App() {
           taxiSecondLegMsRef.current = 0;
           setTaxiDriveActiveMs(driveMs);
         }
+        let taxiPieceBlockMs = 900;
+        if (taxiCongestionSplit) {
+          const driveMsFull = computeTaxiDriveDurationMs(Math.abs(newPosFinal - p.position));
+          const { firstLegMs, secondLegMs } = computeTaxiCongestedLegDurations(
+            p.position,
+            newPosFinal,
+            diceRolls[0],
+            driveMsFull,
+          );
+          taxiPieceBlockMs = firstLegMs + secondLegMs + 200;
+        } else if (needsSugorokuTileSlide) {
+          taxiPieceBlockMs =
+            computeTaxiDriveDurationMs(Math.abs(landedDice - p.position)) +
+            computeTaxiDriveDurationMs(Math.abs(newPosFinal - landedDice)) +
+            200;
+        } else {
+          taxiPieceBlockMs = computeTaxiDriveDurationMs(Math.abs(newPosFinal - p.position)) + 200;
+        }
+        schedulePieceHopBlockingMs(Math.max(700, taxiPieceBlockMs));
+        taxiActorPlayerIdRef.current = p.id;
         setTaxiPhase("enter");
         setTaxiDriveCongested(false);
         setIsDiceRolling(false);
@@ -2464,12 +2541,44 @@ export default function App() {
         setBoardViewPosOverride(landedDice);
         setPonHopCompleteEnabled(true);
         setIsDiceRolling(false);
+        const ponHopBlockMs = needsSugorokuTileSlide
+          ? computeSugorokuHopDurationMs(p.position, landedDice) + computeSugorokuHopDurationMs(landedDice, newPosFinal)
+          : computeSugorokuHopDurationMs(p.position, newPosFinal);
+        schedulePieceHopBlockingMs(Math.max(700, ponHopBlockMs));
       } else {
+        const hopBlockMs = needsSugorokuTileSlide
+          ? computeSugorokuHopDurationMs(p.position, landedDice) + computeSugorokuHopDurationMs(landedDice, newPosFinal)
+          : computeSugorokuHopDurationMs(p.position, newPosFinal);
+        schedulePieceHopBlockingMs(hopBlockMs);
         if (!needsSugorokuTileSlide) {
-          const ok = await writeGS(nextGS);
-          if (!ok) {
-            setIsDiceRolling(false);
-            return;
+          if (!arrived) {
+            // 1 回の write で「駒の最終マス」と「次の currentPlayerIdx」を同時に送ると、
+            // BoardViewport の viewPos が次手プレイヤーの座標に即座に切り替わり、
+            // 移動補間が出ない／別人のマス間を滑ることがある。
+            // マス効果で landed≠final のときだけ中間 write があり手番が残るのでアニメが出やすかった。
+            const holdTurnGs = {
+              ...gsWithDice,
+              players: newPlayers,
+              log: prependLogs(logs, rr.gsWithTiles.log),
+            };
+            const okHold = await writeGS(holdTurnGs);
+            if (!okHold) {
+              setIsDiceRolling(false);
+              return;
+            }
+            await new Promise((r) => setTimeout(r, hopBlockMs));
+            const advancedGs = computeAdvanceDay8Turn(holdTurnGs, holdTurnGs.players, []);
+            const okAdvance = await writeGS(advancedGs);
+            if (!okAdvance) {
+              setIsDiceRolling(false);
+              return;
+            }
+          } else {
+            const ok = await writeGS(nextGS);
+            if (!ok) {
+              setIsDiceRolling(false);
+              return;
+            }
           }
         } else {
           const intermediatePlayers = buildDay8TileSlideMidpointPlayers(newPlayers, idx, landedDice);
@@ -3003,8 +3112,8 @@ export default function App() {
       )}
 
       {!isFinalBattleUIMode ? (
-      <div className="mx-auto w-full max-w-4xl space-y-5">
-
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 lg:flex-row lg:items-start">
+        <div className="min-w-0 flex-1 space-y-5">
         {/* ── ヘッダー ──────────────────────────────────────────────── */}
         <header className="rounded-2xl border border-slate-800 bg-slate-900/80 px-5 py-4">
           <div className="flex items-center justify-between flex-wrap gap-2">
@@ -3020,7 +3129,8 @@ export default function App() {
                     <span className="block">
                       {cpGs.movePhase === "missed" &&
                         `【8日目・決戦】タイムアウト／${cpGs.name}`}
-                      {cpIsGoalLanding && `【8日目・決戦】ゴール到着処理中／${cpGs.name}`}
+                      {anyGoalLandingPlayer &&
+                        `【8日目・決戦】ゴール到着処理中／${anyGoalLandingPlayer.name}`}
                       {cpIsWaitingSlot &&
                         `【8日目・決戦】ゴール済／${cpGs.name}（次の自分ターンからスロット）`}
                       {cpIsSlot && `【8日目・決戦】スロット／${cpGs.name}`}
@@ -3069,11 +3179,11 @@ export default function App() {
           </div>
         </header>
 
-        {/* ── 現在プレイヤーのステータス ────────────────────────────── */}
-        {cpGs && (
-          <section className="rounded-2xl border border-cyan-800/50 bg-slate-900 p-4">
+        {/* ── 現在プレイヤーのステータス（ソロのみ。マルチはサイドバーに集約） ── */}
+        {cpGs && gs.players.length <= 1 && (
+          <section className="rounded-2xl border border-cyan-800/50 bg-slate-900 p-4 anim-turn-status-aura">
             <div className="flex items-center gap-2 mb-3 flex-wrap">
-              <span className="font-semibold text-cyan-400 text-sm">{cpGs.name}のステータス</span>
+              <span className="font-semibold text-cyan-400 text-sm anim-turn-active-name">{cpGs.name}のステータス</span>
               {cpGs.id === myId && <span className="text-xs text-cyan-400 border border-cyan-400/40 rounded px-1.5 py-0.5">YOU</span>}
               {cpGs.stats.pon >= BAL.pon.deathThreshold && (
                 <span className="animate-pulse rounded-full border border-rose-500/60 bg-rose-500/15 px-2 py-0.5 text-xs text-rose-300">
@@ -3094,7 +3204,7 @@ export default function App() {
                 const negMoney = key === "money" && cpGs.stats.money < 0;
                 const sizeCls = key === "money" ? "text-lg" : "text-2xl";
                 return (
-                  <div key={key} className="group/status-hint relative rounded-lg bg-slate-800 p-2.5 text-center">
+                  <div key={key} className="group/status-hint relative rounded-lg bg-slate-800 p-2.5 text-center anim-turn-active-stat-cell">
                     <div className="text-xs text-slate-400 leading-tight">
                       {label}
                       {isLivingCost && (
@@ -3149,55 +3259,18 @@ export default function App() {
           </section>
         )}
 
-        {gs?.subPhase === "daily" && dailyPlayersForGrid.length > 0 && (
-          <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-xs font-semibold text-slate-400">Daily Live View</h2>
-              <span className="text-[11px] text-slate-500">1-7日目の行動をリアルタイム表示</span>
-            </div>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {dailyPlayersForGrid.map((p) => {
-                const frame = PLAYER_FRAME_COLORS[p.idx % PLAYER_FRAME_COLORS.length];
-                const isCurrent = p.id === gs.players?.[gs.currentPlayerIdx]?.id;
-                return (
-                  <div
-                    key={p.id}
-                    className={`rounded-xl border px-3 py-2 ${isCurrent ? frame.activeBorder : frame.border} ${
-                      isCurrent ? frame.activeBg : "bg-slate-800/30"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <CharacterIcon
-                          characterType={p.characterType}
-                          imgClassName="h-5 w-5 shrink-0 object-contain"
-                          spanClassName="text-base leading-none"
-                        />
-                        <span className="text-sm font-semibold text-slate-100">{p.name}</span>
-                      </div>
-                      <span className={`text-[11px] rounded px-2 py-0.5 border ${isCurrent ? "text-cyan-200 border-cyan-400/50" : "text-slate-300 border-slate-600"}`}>
-                        {p.actionLabel}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
         {/* ── アクションエリア ──────────────────────────────────────── */}
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 space-y-4">
 
           {/* 相手のターン待ちインジケーター */}
-          {!isMyTurn && (
+          {!isMyTurn && !goalLandingSelf && (
             <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-5 text-center space-y-2">
               <Loader2 size={24} className="animate-spin text-slate-500 mx-auto" />
               <p className="text-slate-400 text-sm">
                 {isMyDay8RoundCompleted
                   ? "Waiting for others..."
-                  : cpIsGoalLanding
-                  ? `${cpGs?.name} がゴール到着！終了確認を待っています…`
+                  : anyGoalLandingPlayer && anyGoalLandingPlayer.id !== myId
+                  ? `${anyGoalLandingPlayer.name} がゴール到着！終了確認を待っています…`
                   : cpIsWaitingSlot
                     ? `${cpGs?.name} のゴール後ターン／スロット開始を待っています…`
                     : `${cpGs?.name} のターン操作を待っています…`}
@@ -3239,11 +3312,14 @@ export default function App() {
           <BoardGamePhase
             gs={gs}
             cpGs={cpGs}
-            boardViewPos={isMyTurn && typeof boardViewPosOverride === "number" ? boardViewPosOverride : null}
+            boardViewPos={
+              typeof boardViewPosOverride === "number" && (isMyTurn || goalLandingSelf)
+                ? boardViewPosOverride
+                : null
+            }
             reportSugorokuHopComplete={isMyTurn && ponHopCompleteEnabled}
             onSugorokuHopComplete={handleSugorokuHopComplete}
             isMyTurn={isMyTurn}
-            cpIsGoalLanding={cpIsGoalLanding}
             cpIsWaitingSlot={cpIsWaitingSlot}
             isDay8Moving={isDay8Moving}
             isDiceRolling={isDiceRolling}
@@ -3263,6 +3339,7 @@ export default function App() {
             interactionLocked={day8ActionLocked}
             onMoveAction={handleMoveAction}
             onGoalLandingConfirm={handleGoalLandingConfirm}
+            goalLandingSelf={goalLandingSelf}
           />
 
           {isMyTurn && cpIsGhostPick && cpGs && (
@@ -3289,84 +3366,8 @@ export default function App() {
             />
           )}
 
-        </section>
+          {showSlotSpinBroadcastMirror && <SlotSpinBroadcastOverlay gs={gs} soundRef={soundRef} />}
 
-        {/* ── 全プレイヤー一覧 ──────────────────────────────────────── */}
-        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-          <h2 className="mb-3 text-xs font-semibold text-slate-400">全プレイヤー</h2>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {gs.players.map((p, i) => (
-              (() => {
-                const frame = PLAYER_FRAME_COLORS[i % PLAYER_FRAME_COLORS.length];
-                const isCurrent = i === gs.currentPlayerIdx;
-                const borderCls = isCurrent ? frame.activeBorder : frame.border;
-                const bgCls = isCurrent ? frame.activeBg : "bg-slate-800/30";
-                return (
-              <div key={p.id}
-                className={`rounded-xl border p-3 ${borderCls} ${bgCls}`}>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium flex items-center gap-1.5">
-                  {isCurrent ? "▶ " : ""}
-                  {/* Day8移動中はマップ上の駒で識別できるのでキャラ絵文字は非表示 */}
-                  {gs.subPhase !== "day8" && (
-                    <CharacterIcon
-                      characterType={p.characterType}
-                      imgClassName="h-5 w-5 shrink-0 object-contain"
-                      spanClassName="text-base leading-none"
-                    />
-                  )}
-                  {p.name}
-                  {p.id === myId && (
-                    <span className={`text-xs border rounded px-1 ${gs.subPhase === "day8" && p.stats.luck >= 80 ? "text-amber-300 border-amber-400/40" : "text-cyan-400 border-cyan-400/40"}`}>
-                      {gs.subPhase === "day8" && p.stats.luck >= 80 ? "✦YOU" : "YOU"}
-                    </span>
-                  )}
-                </span>
-                  <div className="flex items-center gap-2">
-                    {gs.subPhase === "day8" && p.spinCount > 0 && (
-                      <span className={`text-xs font-semibold ${p.slotNet >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                        S:{p.slotNet >= 0 ? "+" : ""}{p.slotNet}
-                      </span>
-                    )}
-                    <span className="text-xs font-semibold text-yellow-300">{p.stats.money}G</span>
-                  </div>
-                </div>
-                <div className="mt-2 grid grid-cols-5 gap-1 text-center text-xs">
-                  {[
-                    ["生活費","text-orange-300",livingCostForPlayer(p)],
-                    ["技量","text-sky-400",     p.stats.skill],
-                    ["運",  "text-amber-400",   p.stats.luck],
-                    ["善行","text-emerald-400", p.stats.virtue],
-                    ["PON", p.stats.pon >= BAL.pon.deathThreshold ? "text-rose-400" : p.stats.pon >= BAL.pon.fireThreshold ? "text-orange-400" : "text-fuchsia-400", p.stats.pon],
-                  ].map(([lbl, clr, val]) => (
-                    <div key={lbl} className="rounded bg-slate-900/60 py-1">
-                      <div className="text-slate-500" style={{ fontSize: "10px" }}>{lbl}</div>
-                      <div className={`font-bold ${clr}`}>{val}</div>
-                    </div>
-                  ))}
-                </div>
-                {gs.subPhase === "day8" && (
-                  <div className="mt-1.5 text-xs">
-                    {p.movePhase === "moving"       && <span className="text-slate-400">スタートから{p.position}マス目（T{p.moveTurns}）</span>}
-                    {p.movePhase === "goalLanding" && <span className="text-yellow-300">🏁 ゴール到着・確認待ち</span>}
-                    {p.movePhase === "waitingSlot" && (
-                      <span className="text-teal-300">🎰 ゴール済／次の自分ターンでスロット</span>
-                    )}
-                    {p.movePhase === "arrived" && p.slotTurnsLeft > 0
-                      ? (
-                        <span className="text-amber-300">
-                          ゴール・スロット中{p.stats.money < 0 ? "（借金可）" : ""}
-                        </span>
-                      )
-                      : p.movePhase === "arrived" && <span className="text-slate-500">✅ スロット完了</span>}
-                    {p.movePhase === "missed"  && <span className="text-rose-400">⏰ タイムアウト</span>}
-                  </div>
-                )}
-              </div>
-              );
-            })()
-            ))}
-          </div>
         </section>
 
         {/* ── ゲームログ ────────────────────────────────────────────── */}
@@ -3383,6 +3384,18 @@ export default function App() {
           className="text-xs text-slate-600 underline hover:text-slate-400">
           ロビーへ戻る（ゲームは続行中）
         </button>
+        </div>
+
+        <PlayingPlayerSidebar
+          className="w-full shrink-0 lg:sticky lg:top-6 lg:w-[min(100%,320px)] lg:self-start"
+          players={gs.players}
+          seatOrderIds={playerSlots.map((s) => s.id)}
+          currentPlayerIdx={gs.currentPlayerIdx}
+          myId={myId}
+          subPhase={gs.subPhase}
+          proxySlotTargetIdx={gs.proxySlotTargetIdx}
+          showStatLegend={gs.players.length > 1}
+        />
       </div>
       ) : null}
     </div>

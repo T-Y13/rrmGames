@@ -597,6 +597,28 @@ export const GAME_STYLES = `
     animation: slotPayoutPopup 2.85s cubic-bezier(0.22, 1, 0.36, 1) forwards;
     will-change: transform, opacity;
   }
+  @keyframes slotGoldPayoutCenter {
+    0% {
+      opacity: 0;
+      transform: scale(0.72);
+      filter: brightness(1);
+    }
+    18% {
+      opacity: 1;
+      transform: scale(1.1);
+      filter: brightness(1.35) drop-shadow(0 0 28px rgba(251, 191, 36, 0.85));
+    }
+    32%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+      filter: brightness(1.08) drop-shadow(0 0 18px rgba(250, 204, 21, 0.55));
+    }
+  }
+  .anim-slot-gold-payout-center {
+    animation: slotGoldPayoutCenter 0.65s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    will-change: transform, opacity, filter;
+  }
 
   @keyframes coinDrop {
     0%   { transform: translateY(-50px) rotate(0deg) scale(1); opacity: 1; }
@@ -1172,6 +1194,40 @@ export const GAME_STYLES = `
   }
   .anim-traffic-jam-overlay-fade {
     animation: trafficJamOverlayIn 0.38s ease-out both;
+  }
+
+  /* ── 手番：メインの現在プレイヤーステータス帯・サイドバー行のオーラ ── */
+  @keyframes turnStatusAura {
+    0%, 100% {
+      box-shadow: 0 0 14px rgba(34, 211, 238, 0.1), inset 0 0 0 1px rgba(34, 211, 238, 0.14);
+    }
+    50% {
+      box-shadow: 0 0 28px rgba(34, 211, 238, 0.28), inset 0 0 0 1px rgba(34, 211, 238, 0.26);
+    }
+  }
+  .anim-turn-status-aura {
+    animation: turnStatusAura 2.2s ease-in-out infinite;
+  }
+  @keyframes turnActiveNameGlow {
+    0%, 100% { text-shadow: 0 0 6px rgba(103, 232, 249, 0.2); }
+    50%      { text-shadow: 0 0 16px rgba(103, 232, 249, 0.55); }
+  }
+  .anim-turn-active-name {
+    animation: turnActiveNameGlow 2.2s ease-in-out infinite;
+  }
+  @keyframes turnStatCellGlow {
+    0%, 100% { box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.08); }
+    50%      { box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.22), 0 0 10px rgba(34, 211, 238, 0.12); }
+  }
+  .anim-turn-active-stat-cell {
+    animation: turnStatCellGlow 2.2s ease-in-out infinite;
+  }
+  @keyframes turnRowCardGlow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0); }
+    50%      { box-shadow: 0 0 18px 1px rgba(34, 211, 238, 0.2); }
+  }
+  .anim-turn-row-halo {
+    animation: turnRowCardGlow 2s ease-in-out infinite;
   }
 
 `;

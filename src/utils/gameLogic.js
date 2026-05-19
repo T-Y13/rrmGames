@@ -43,6 +43,74 @@ export function estimateSugorokuHopDurationMs(fromPos, toPos) {
 export const prependLogs = (newEntries, existing = []) =>
   [...newEntries.slice().reverse(), ...existing].slice(0, 30);
 
+/** 全員表示用スロット同期（Firestore gameState 上位フィールド） */
+export const SLOT_SYNC_DEFAULTS = {
+  slotPhase: "idle",
+  activeBet: null,
+  targetResult: null,
+  slotSpinSessionId: null,
+  slotMirrorMachineKey: null,
+  /** 直近1スピンの収支（bet 差し引き後）。観戦オーバーレイ用。idle 時は null */
+  lastPayout: null,
+  /** 結果確定を書き込んだクライアント時刻（ms）。任意（主にデバッグ） */
+  slotResultSettledAt: null,
+  /** リーチ演出フラグ：1・2リール目が同じ絵柄のとき true。観戦側のタイムライン制御に使う */
+  isReach: false,
+  /** 演出用の視覚リール3本（near-miss 加工後）。実際の targetResult と絵柄が異なる場合がある */
+  slotVisualReels: null,
+};
+
+/** @deprecated 手番継続時はリール停止直後に idle へ。バースト終了時は SLOT_RESULT_END_BURST_GRACE_MS */
+export const SLOT_RESULT_COMPLETED_GRACE_MS = 4000;
+/** 1バースト（例: 3回）終了後、確認 UI までの待ち（ms） */
+export const SLOT_RESULT_END_BURST_GRACE_MS = 1200;
+
+// ── 観戦側タイムライン定数（SlotMachine.jsx の手番側と合わせる） ──────────
+/** リーチなしのとき：スピン開始からリール1が止まるまで（ms） */
+export const SLOT_SYNC_T0 = 1200;
+/** リーチなしのとき：リール2が止まるまで（ms） */
+export const SLOT_SYNC_T1 = 1700;
+/** リーチなしのとき：リール3が止まるまで（ms）= t1 + 550 */
+export const SLOT_SYNC_T2_NOREACH = 2250;
+/** リーチありのとき：リール3が止まるまで（ms）= t1 + 2400 + 3500（カットイン分） */
+export const SLOT_SYNC_T2_REACH = 7600;
+/** リーチ判定表示（REACH!! UI）をリール2停止から何 ms 後に出すか */
+export const SLOT_SYNC_REACH_SHOW_DELAY = 400;
+
+/** 旧クライアントが書き込んだフィールドを除去（次回書き込みで上書き） */
+export const LEGACY_SLOT_FIELD_KEYS = ["slotAnimationState", "slotSpinBroadcast", "currentSlotResult"];
+
+export function stripLegacySlotFirestoreFields(gs) {
+  if (!gs || typeof gs !== "object") return gs;
+  const o = { ...gs };
+  for (const k of LEGACY_SLOT_FIELD_KEYS) delete o[k];
+  return o;
+}
+
+/** 観戦オーバーレイ：リーチなし時の全リール同時停止までの固定時間（後方互換）（ms） */
+export const SLOT_SYNC_SPIN_MS = SLOT_SYNC_T2_NOREACH;
+
+/** `targetResult`（筐体 symbols のインデックス 3 つ）→ 中段の絵柄 */
+export function slotTargetIndicesToPaylineMiddles(targetResult, machineKey) {
+  const m = SLOT_MACHINES[machineKey] ?? SLOT_MACHINES.standard;
+  const sy = m.symbols ?? [];
+  if (!Array.isArray(targetResult) || targetResult.length !== 3) return ["?", "?", "?"];
+  return targetResult.map((ix) => {
+    const i = typeof ix === "number" && Number.isFinite(ix) ? Math.floor(ix) : 0;
+    return sy[i] ?? sy[0] ?? "?";
+  });
+}
+
+/** 確定した中段 3 絵柄 → Firestore 用 `targetResult`（number[]） */
+export function slotPaylineMiddlesToTargetIndices(visualReels, machine) {
+  const sy = machine?.symbols ?? [];
+  const mids = Array.isArray(visualReels) ? visualReels : ["?", "?", "?"];
+  return mids.map((sym) => {
+    const ix = sy.indexOf(sym);
+    return ix >= 0 ? ix : 0;
+  });
+}
+
 export const genRoomId = () => {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   return Array.from({ length: 6 }, () => chars[rand(0, chars.length - 1)]).join("");
@@ -724,6 +792,48 @@ export function isGhostPickTargetPhase(p) {
 }
 
 /**
+ * ゴール到着確認：自分の movePhase のみ更新（currentPlayerIdx は変えない）。
+ * 他プレイヤーのスロット中でも Firestore から単独パッチ可能。
+ */
+export function applyGoalLandingConfirm(gs, playerId) {
+  const players = gs?.players;
+  if (!Array.isArray(players) || !playerId) return null;
+  const idx = players.findIndex((p) => p.id === playerId);
+  if (idx < 0) return null;
+  const p = players[idx];
+  if (p.movePhase !== "goalLanding") return null;
+  const r = p.reservedSlotTurns ?? 0;
+  let newPlayers;
+  let logs;
+  if (r <= 0) {
+    logs = [`${p.name}: ゴール済み／スロット権利0回でラウンド不参加`];
+    newPlayers = players.map((pl, i) =>
+      i !== idx
+        ? pl
+        : {
+            ...pl,
+            movePhase: "arrived",
+            slotTurnsLeft: 0,
+            reservedSlotTurns: 0,
+            slotPullsGranted: 0,
+            slotPullsThisSeat: 0,
+          },
+    );
+  } else {
+    const maxPulls = r * BAL.dice.slotsPerSugorokuTurn;
+    logs = [
+      `${p.name}: ゴール到着ターン終了　→ スロット${r}ターンブン（計最大${maxPulls}回）は次の自分のターンで開始できます`,
+    ];
+    newPlayers = players.map((pl, i) => (i !== idx ? pl : { ...pl, movePhase: "waitingSlot" }));
+  }
+  return stripLegacySlotFirestoreFields({
+    ...gs,
+    players: newPlayers,
+    log: prependLogs(logs, gs.log),
+  });
+}
+
+/**
  * 標的がいなくなった幽霊手番をスキップして進める。
  * @returns {object|null}
  */
@@ -879,13 +989,20 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
     return pl;
   });
 
-  return {
+  return stripLegacySlotFirestoreFields({
     ...freshGs,
     players: newPlayers,
     displayReels: visualReels,
-    showSpinResult: true,
+    showSpinResult: false,
+    slotPhase: "completed",
+    lastPayout: net,
+    slotResultSettledAt: Date.now(),
+    activeBet: null,
+    targetResult: slotPaylineMiddlesToTargetIndices(visualReels, machine),
+    slotSpinSessionId: null,
+    slotMirrorMachineKey: machine?.key ?? "standard",
     log: prependLogs(logs, freshGs.log),
-  };
+  });
 }
 
 /** スロット結果反映直後の gs から、必要なら同一手番継続 or 次手番へ進める */
@@ -912,6 +1029,7 @@ export function finalizeToResults(gs, playersOverride) {
   ];
   const next = {
     ...gs,
+    ...SLOT_SYNC_DEFAULTS,
     players,
     gamePhase: "results",
     subPhase: "daily",
@@ -919,7 +1037,7 @@ export function finalizeToResults(gs, playersOverride) {
   };
   delete next.finalBattleStartedAt;
   delete next.finalBattleEntry;
-  return next;
+  return stripLegacySlotFirestoreFields(next);
 }
 
 function shuffleSugorokuTileKinds(arr) {
@@ -1024,6 +1142,7 @@ export function enterDay8AfterFinalBattleCue(gs) {
   const banner = "━━━ 8日目！全員で交互に移動＆スロット ━━━";
   const next = {
     ...ensureSugorokuTileEffects(gs),
+    ...SLOT_SYNC_DEFAULTS,
     gamePhase: "playing",
     subPhase: "day8",
     aidAvailable: Math.random() < BAL.dice.helpChance,
@@ -1079,6 +1198,7 @@ export function initialGameState(playerSlots) {
     lastDiceRolls: [],
     displayReels: ["?", "?", "?"],
     proxySlotTargetIdx: null,
+    ...SLOT_SYNC_DEFAULTS,
   };
 }
 
@@ -1126,13 +1246,14 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
   const slotLeft = stayP?.slotTurnsLeft ?? 0;
   const pullsSeat = stayP?.slotPullsThisSeat ?? 0;
   if (stayP?.movePhase === "arrived" && slotLeft > 0 && pullsSeat < burst) {
-    return {
+    return stripLegacySlotFirestoreFields({
       ...gs,
+      ...SLOT_SYNC_DEFAULTS,
       players: newPlayers,
       showSpinResult: false,
       displayReels: ["?", "?", "?"],
       log: prependLogs(extraLogs, gs.log),
-    };
+    });
   }
 
   /** moveTurns は App 側のラウンド完了時（completedPlayers 全員完了）でのみ進める。 */
@@ -1189,8 +1310,9 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
     nextLog = `${nextP.name}の移動ターン（T${nextP.moveTurns + 1} / ${nextP.position}/${BOARD_GOAL}マス）`;
   }
 
-  return {
+  return stripLegacySlotFirestoreFields({
     ...gs,
+    ...SLOT_SYNC_DEFAULTS,
     players: playersNext,
     currentPlayerIdx: nextIdx,
     proxySlotTargetIdx: null,
@@ -1200,7 +1322,7 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
     showSpinResult: false,
     displayReels: ["?", "?", "?"],
     log: prependLogs([...extraMerged, nextLog], gs.log),
-  };
+  });
 }
 
 export function applyVirtueWave(actingPlayer, virtueBefore, virtueAfter, players, logs) {

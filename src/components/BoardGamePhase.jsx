@@ -5,7 +5,8 @@ import { TaxiStandeeImage } from "./CharacterPieces";
 import { virtueMinRoll } from "../utils/gameLogic";
 import BoardViewport from "./BoardViewport";
 
-/** 8日目：ゴール確認・スロット開始待ち・すごろく移動・ダイスUI */export default function BoardGamePhase({
+/** 8日目：ゴール確認・スロット開始待ち・すごろく移動・ダイスUI */
+export default function BoardGamePhase({
   gs,
   cpGs,
   /** Firestore 反映前に現在マスとして見せる位置（PON転倒ストップ用）。null なら cpGs.position */
@@ -15,7 +16,6 @@ import BoardViewport from "./BoardViewport";
   /** true のときだけホップ完了を親へ通知（他プレイヤーのホップで誤爆しない） */
   reportSugorokuHopComplete = false,
   isMyTurn,
-  cpIsGoalLanding,
   cpIsWaitingSlot,
   isDay8Moving,
   isDiceRolling,
@@ -37,6 +37,8 @@ import BoardViewport from "./BoardViewport";
   interactionLocked = false,
   onMoveAction,
   onGoalLandingConfirm,
+  /** ローカル利用者が goalLanding のとき（currentPlayerIdx が別でも GOAL 確認を出す） */
+  goalLandingSelf = null,
 }) {
   if (!cpGs) return null;
 
@@ -45,32 +47,38 @@ import BoardViewport from "./BoardViewport";
 
   const sugorokuViewPos = typeof boardViewPos === "number" ? boardViewPos : cpGs.position;
 
+  const goalSelf = goalLandingSelf;
+  const goalSelfViewPos =
+    goalSelf && typeof boardViewPos === "number" && goalSelf.id === cpGs?.id
+      ? boardViewPos
+      : goalSelf?.position ?? 0;
+
   /** メニューにタクシーを出すか（常時フラグ or 各ターンの taxiAvailable） */
   const showTaxiInMenu = BAL.dice.taxiMenuAlwaysVisible || gs.taxiAvailable;
 
   return (
     <>
-      {isMyTurn && gs.subPhase === "day8" && cpIsGoalLanding && (
+      {goalSelf && gs.subPhase === "day8" && (
         <div className="space-y-4">
           <div className="rounded-2xl border-2 border-amber-400/60 bg-gradient-to-br from-amber-500/20 to-yellow-900/30 p-5 text-center space-y-3">
             <p className="text-4xl animate-bounce">🏁</p>
-            <p className="text-lg font-bold text-amber-100">{cpGs.name}</p>
+            <p className="text-lg font-bold text-amber-100">{goalSelf.name}</p>
             <h2 className="text-2xl font-black text-amber-200 tracking-wide">GOAL!</h2>
           </div>
           <div style={{ height: "min(720px, 80vh)", minHeight: "min(560px, 72vh)", overflow: "hidden", borderRadius: "12px" }}>
             <BoardViewport
               players={gs.players}
-              viewPos={sugorokuViewPos}
+              viewPos={goalSelfViewPos}
               boardGoal={BOARD_GOAL}
               isDiceRolling={false}
               taxiPhase={null}
               pieceHopping={false}
-              currentPlayer={cpGs}
+              currentPlayer={goalSelf}
               tileEffects={gs?.sugorokuTileEffects}
             />
           </div>
-          {cpGs.lastMoveEvent && (
-            <p className="rounded-lg bg-slate-800/60 px-3 py-2 text-xs text-slate-300 text-center">{cpGs.lastMoveEvent}</p>
+          {goalSelf.lastMoveEvent && (
+            <p className="rounded-lg bg-slate-800/60 px-3 py-2 text-xs text-slate-300 text-center">{goalSelf.lastMoveEvent}</p>
           )}
           <button
             type="button"

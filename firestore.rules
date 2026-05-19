@@ -97,6 +97,44 @@ service cloud.firestore {
         && currentActorId(room) == uid();
     }
 
+    function goalLandingConfirmerIdx(gs) {
+      return (gs.players.size() > 0 && gs.players[0].id == uid() && gs.players[0].movePhase == 'goalLanding')
+        ? 0
+        : (gs.players.size() > 1 && gs.players[1].id == uid() && gs.players[1].movePhase == 'goalLanding')
+        ? 1
+        : (gs.players.size() > 2 && gs.players[2].id == uid() && gs.players[2].movePhase == 'goalLanding')
+        ? 2
+        : (gs.players.size() > 3 && gs.players[3].id == uid() && gs.players[3].movePhase == 'goalLanding')
+        ? 3
+        : -1;
+    }
+
+    function goalLandingPatchFrozenOk(gs0, gs1, confirmerIdx) {
+      let n = gs0.players.size();
+      return n == gs1.players.size()
+        && (confirmerIdx != 0 || gs1.players[0] == gs0.players[0])
+        && (confirmerIdx != 1 || gs1.players[1] == gs0.players[1])
+        && (confirmerIdx != 2 || gs1.players[2] == gs0.players[2])
+        && (confirmerIdx != 3 || gs1.players[3] == gs0.players[3]);
+    }
+
+    function goalLandingConfirmValid(roomBefore, gs1) {
+      let gs0 = roomBefore.gameState;
+      if (!(gs0 is map) || !(gs1 is map) || gs0.subPhase != 'day8' || gs1.subPhase != 'day8') return false;
+      if (gs1.currentPlayerIdx != gs0.currentPlayerIdx) return false;
+      let confirmerIdx = goalLandingConfirmerIdx(gs0);
+      if (confirmerIdx < 0) return false;
+      let cp = gs0.currentPlayerIdx;
+      if (!(cp is int) || cp < 0 || cp >= gs0.players.size()) return false;
+      let curPhase = gs0.players[cp].movePhase;
+      if (!(curPhase == 'arrived' || curPhase == 'waitingSlot')) return false;
+      let beforeP = gs0.players[confirmerIdx];
+      let afterP = gs1.players[confirmerIdx];
+      if (beforeP.movePhase != 'goalLanding') return false;
+      if (!(afterP.movePhase == 'waitingSlot' || afterP.movePhase == 'arrived')) return false;
+      return goalLandingPatchFrozenOk(gs0, gs1, confirmerIdx);
+    }
+
     function isHost(room) {
       return room.hostId == uid();
     }
@@ -162,6 +200,7 @@ service cloud.firestore {
         && after.hostId == before.hostId
         && (
           (isActorTurn(before) && ghostProxyMoneyOkIfGhostActor(before, after.gameState))
+          || goalLandingConfirmValid(before, after.gameState)
           || hostFinalBattleWriteAllowed(before, after.gameState)
         );
     }
@@ -262,6 +301,23 @@ service cloud.firestore {
 
       allow delete: if signedIn()
         && resource.data.hostId == uid();
+
+      match /players/{playerId} {
+        allow read: if validRoomCode(roomId)
+          && signedIn()
+          && uid() in get(/databases/$(database)/documents/rooms/$(roomId)).data.playerIds;
+
+        allow create, update: if validRoomCode(roomId)
+          && signedIn()
+          && playerId == uid()
+          && uid() in get(/databases/$(database)/documents/rooms/$(roomId)).data.playerIds
+          && request.resource.data.uid == uid()
+          && request.resource.data.keys().hasOnly(['uid', 'currentAction', 'updatedAt'])
+          && request.resource.data.currentAction is map
+          && request.resource.data.currentAction.keys().hasOnly(['type', 'timestamp']);
+
+        allow delete: if false;
+      }
     }
 
     match /{document=**} {
