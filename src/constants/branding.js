@@ -11,7 +11,7 @@ export const PRERELEASE_SOLO_ONLY = false;
  * ロビー・エントリー「News」欄の短文。
  */
 export const SOLO_PRERELEASE_NOTICE =
-  "オンラインでルーム作成・入室・クイックマッチから、最大4人まで一緒に遊べます。「一人で遊ぶ」でソロ練習も可能です。";
+  "オンラインでルーム作成・ルームID参加から、最大4人まで一緒に遊べます。「一人で遊ぶ」でソロ練習も可能です。";
 
 /** ブランド表示用（ドキュメント title は短縮名、画面はフルタイトル併用可） */
 export const GAME_TITLE_FULL = "POTENTIAL OVER NEXT SPIN";

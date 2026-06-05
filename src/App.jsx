@@ -1,6 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { db } from "./lib/firebase";
-import { arrayUnion, collection, doc, query, where, limit, getDocs, runTransaction } from "firebase/firestore";
+import {
+  arrayUnion,
+  collection,
+  deleteDoc,
+  doc,
+  query,
+  where,
+  limit,
+  getDocs,
+  runTransaction,
+} from "firebase/firestore";
 import { Loader2, TrendingUp, TrendingDown, Trophy, Users } from "lucide-react";
 
 import { CharacterIcon } from "./components/CharacterPieces";
@@ -18,6 +28,7 @@ import TurnManager from "./components/TurnManager";
 import WaitingRoom from "./components/WaitingRoom";
 import TopRightHud from "./components/TopRightHud";
 import PlayingPlayerSidebar from "./components/PlayingPlayerSidebar";
+import ResultsRoomActions from "./components/ResultsRoomActions";
 import StreamTypeCutin from "./components/StreamTypeCutin";
 import WorkCutin from "./components/WorkCutin";
 import { GAME_STYLES } from "./constants/gameAnimationsCss";
@@ -82,6 +93,10 @@ import {
 } from "./utils/gameLogic";
 import { publicAssetUrl } from "./lib/publicAssetUrl";
 import { formatFriendlyError } from "./lib/formatFriendlyError";
+import {
+  buildHostContinueToLobbyPatch,
+  buildLeaveRoomPatch,
+} from "./lib/roomLifecycle";
 import { GAME_ASSET_PRELOAD_PATHS, preloadImages } from "./utils/assetLoader";
 /* 筐体が消えない組み合わせ: PNG は SlotMachine import、マスクは index.css の data URL、
    drop-shadow／オーラは .slot-cabinet-img-wrap の filter のみ（img に mask+filter 併用しない） */
@@ -261,6 +276,12 @@ export default function App() {
   /** 待機室へ入るたびに増やし、ステータス抽選UIのローカル表示とグラフをリセットする */
   const [waitingSessionKey, setWaitingSessionKey] = useState(0);
   const [loading, setLoading]   = useState(false);
+  const [invitesLoading, setInvitesLoading] = useState(false);
+  const [invitesProbeReady, setInvitesProbeReady] = useState(false);
+  const [invitesPanelOpen, setInvitesPanelOpen] = useState(false);
+  const [pendingInvites, setPendingInvites] = useState([]);
+  const [resultsRoomActionLoading, setResultsRoomActionLoading] = useState(false);
+  const hadRoomDataRef = useRef(false);
   // 招待制ルーム関連
   const [isPrivateRoom, setIsPrivateRoom] = useState(false);
   const [inviteInput, setInviteInput]     = useState("");
@@ -271,7 +292,6 @@ export default function App() {
   // モード選択画面
   const [multiOpen, setMultiOpen]         = useState(false);
   const [multiAction, setMultiAction]     = useState(null); // null|"create"|"join"
-  const [allowQuickMatch, setAllowQuickMatch] = useState(true); // 公開ルームでクイックマッチを受け入れるか
   const [assetsReady, setAssetsReady] = useState(false);
   const [assetsProgress, setAssetsProgress] = useState({ loaded: 0, total: GAME_ASSET_PRELOAD_PATHS.length });
 
@@ -681,6 +701,24 @@ export default function App() {
     if (!roomData) return;
     if ((roomData.status === "playing" || roomData.status === "FINAL_BATTLE") && screen === "waiting") setScreen("playing");
   }, [roomData?.status]); // eslint-disable-line
+
+  useEffect(() => {
+    if (roomId && roomData) hadRoomDataRef.current = true;
+    if (roomId && !roomData && hadRoomDataRef.current) {
+      hadRoomDataRef.current = false;
+      setRoomId(null);
+      setScreen("lobby");
+      setUiError("");
+    }
+  }, [roomId, roomData, setRoomId]);
+
+  useEffect(() => {
+    if (roomData?.status !== "lobby") return;
+    if (screen === "results" || screen === "gameover" || screen === "playing") {
+      setScreen("waiting");
+      setWaitingSessionKey((k) => k + 1);
+    }
+  }, [roomData?.status, screen]);
 
   useEffect(() => {
     if (!roomGs?.gamePhase) return;
@@ -1224,7 +1262,6 @@ export default function App() {
         gameState: null,
         isPrivate: isPrivateRoom,
         allowedPlayers: isPrivateRoom ? [useFullId] : [],
-        acceptQuickMatch: !isPrivateRoom && allowQuickMatch,
         createdAt: new Date().toISOString(),
       });
       setRoomId(rid);
@@ -1377,62 +1414,66 @@ export default function App() {
   }, [screen, myName, playerSlots, myId, roomId, handleSelectCharacter]);
 
   const handleReturnToLobby = () => {
-    setScreen("lobby"); setRoomId(null); setUiError("");
+    setScreen("lobby");
+    setRoomId(null);
+    setUiError("");
   };
 
-  // ─── クイックマッチ ──────────────────────────────────────────────────
-  const handleQuickMatch = async () => {
-    setLoading(true); setUiError("");
+  const exitRoomToMainMenu = useCallback(() => {
+    hadRoomDataRef.current = false;
+    setRoomId(null);
+    setScreen("lobby");
+    setUiError("");
+  }, [setRoomId]);
 
-    // 名前が未入力ならランダム生成
-    const useName = myName.trim() || genQuickName();
-    if (!myName.trim()) setMyName(useName);
-    const useFullId = `${useName}#${myTag}`;
-
+  const handleHostDisbandRoom = useCallback(async () => {
+    if (!roomId || !isHost || !myId) return;
+    setResultsRoomActionLoading(true);
+    setUiError("");
     try {
-      // 公開 & lobby 状態のルームを最大10件取得してクライアントでフィルタ
-      const q    = query(collection(db, "rooms"), where("status", "==", "lobby"), limit(10));
-      const snap = await getDocs(q);
-      const available = snap.docs.find(d => {
-        const data = d.data();
-        return !data.isPrivate && data.acceptQuickMatch !== false && (data.playerSlots?.length ?? 0) < 4;
-      });
+      await deleteDoc(doc(db, "rooms", roomId));
+      exitRoomToMainMenu();
+    } catch (e) {
+      setUiError(formatFriendlyError(e, "ルームの解散に失敗しました。しばらくしてから再度お試しください。"));
+    }
+    setResultsRoomActionLoading(false);
+  }, [roomId, isHost, myId, exitRoomToMainMenu]);
 
-      if (available) {
-        // ── 既存ルームに参加 ──
-        const rid  = available.id;
-        const data = available.data();
-        if (!data.playerSlots.find(s => s.id === myId)) {
-          await updateRoomById(rid, {
-            playerSlots: arrayUnion({ id: myId, name: useName, fullId: useFullId }),
-            playerIds:   arrayUnion(myId),
-          });
-        }
-        setRoomId(rid);
-        setWaitingSessionKey((n) => n + 1);
-        setScreen("waiting");
-      } else {
-        // ── 新規ルーム作成（公開） ──
-        const rid = genRoomId();
-        await createRoom(rid, {
-          hostId: myId,
-          status: "lobby",
-          playerSlots: [{ id: myId, name: useName, fullId: useFullId }],
-          playerIds: [myId],
-          completedPlayers: [],
-          remainingTurns: BAL.dice.maxTurns,
-          gameState: null,
-          isPrivate: false,
-          allowedPlayers: [],
-          createdAt: new Date().toISOString(),
-        });
-        setRoomId(rid);
-        setWaitingSessionKey((n) => n + 1);
-        setScreen("waiting");
+  const handleHostContinueToLobby = useCallback(async () => {
+    if (!roomId || !isHost || !roomData) return;
+    setResultsRoomActionLoading(true);
+    setUiError("");
+    try {
+      await updateRoom(buildHostContinueToLobbyPatch(roomData));
+    } catch (e) {
+      setUiError(formatFriendlyError(e, "待機室への戻しに失敗しました。しばらくしてから再度お試しください。"));
+    }
+    setResultsRoomActionLoading(false);
+  }, [roomId, isHost, roomData, updateRoom]);
+
+  const handleLeaveRoomFromResults = useCallback(async () => {
+    if (!roomId || !myId || !roomData || isHost) return;
+    setResultsRoomActionLoading(true);
+    setUiError("");
+    try {
+      const patch = buildLeaveRoomPatch(roomData, myId);
+      if ((patch.playerIds?.length ?? 0) < 1) {
+        setUiError("参加者がいないため抜けられません。ホストに解散を依頼してください。");
+        setResultsRoomActionLoading(false);
+        return;
       }
-    } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
-    setLoading(false);
-  };
+      await updateRoom(patch);
+      try {
+        await deleteDoc(doc(db, "rooms", roomId, "players", myId));
+      } catch {
+        /* presence doc optional */
+      }
+      exitRoomToMainMenu();
+    } catch (e) {
+      setUiError(formatFriendlyError(e, "ルームからの退出に失敗しました。しばらくしてから再度お試しください。"));
+    }
+    setResultsRoomActionLoading(false);
+  }, [roomId, myId, roomData, isHost, updateRoom, exitRoomToMainMenu]);
 
   // ─── 招待（ホワイトリスト）追加 ──────────────────────────────────────
   const handleInvitePlayer = async () => {
@@ -1483,7 +1524,6 @@ export default function App() {
         isPrivate: true,
         isSolo: true,
         allowedPlayers: [useFullId],
-        acceptQuickMatch: false,
         createdAt: new Date().toISOString(),
       });
       setRoomId(rid);
@@ -1493,39 +1533,123 @@ export default function App() {
     setLoading(false);
   };
 
-  const handleCheckInvites = async () => {
-    if (!myFullId) return;
-    setLoading(true); setUiError("");
-    try {
-      const q    = query(
-        collection(db, "rooms"),
-        where("status", "==", "lobby"),
-        where("allowedPlayers", "array-contains", myFullId),
-        limit(5)
-      );
-      const snap = await getDocs(q);
-      const available = snap.docs.find(d => {
+  const queryPendingInvites = useCallback(async () => {
+    if (!myFullId || !myId) return [];
+    const q = query(
+      collection(db, "rooms"),
+      where("status", "==", "lobby"),
+      where("allowedPlayers", "array-contains", myFullId),
+      limit(20),
+    );
+    const snap = await getDocs(q);
+    return snap.docs
+      .map((d) => {
         const data = d.data();
-        return (data.playerSlots?.length ?? 0) < 4 &&
-               !data.playerSlots?.find(s => s.id === myId);
+        const slots = data.playerSlots ?? [];
+        if (slots.length >= 4) return null;
+        if (slots.some((s) => s.id === myId)) return null;
+        const hostSlot = slots.find((s) => s.id === data.hostId);
+        return {
+          roomId: d.id,
+          hostName: hostSlot?.name?.trim() || "ホスト",
+        };
+      })
+      .filter(Boolean);
+  }, [myFullId, myId]);
+
+  useEffect(() => {
+    if (screen !== "lobby" || !multiOpen || !myFullId || !myId) return undefined;
+    let cancelled = false;
+    setInvitesProbeReady(false);
+    setInvitesLoading(true);
+    void queryPendingInvites()
+      .then((list) => {
+        if (cancelled) return;
+        setPendingInvites(list);
+        setInvitesProbeReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPendingInvites([]);
+        setInvitesProbeReady(true);
+      })
+      .finally(() => {
+        if (!cancelled) setInvitesLoading(false);
       });
-      if (!available) {
+    return () => {
+      cancelled = true;
+    };
+  }, [screen, multiOpen, myFullId, myId, queryPendingInvites]);
+
+  const handleFetchInvites = useCallback(async () => {
+    if (!myFullId || !myId) return;
+    if (invitesProbeReady && pendingInvites.length === 0) return;
+    setInvitesPanelOpen(true);
+    setInvitesLoading(true);
+    setUiError("");
+    try {
+      const list = await queryPendingInvites();
+      setPendingInvites(list);
+      setInvitesProbeReady(true);
+      if (list.length === 0) {
         setUiError("招待されているルームが見つかりませんでした");
-        setLoading(false);
-        return;
       }
-      const rid      = available.id;
-      const useName  = myName.trim();
-      await updateRoomById(rid, {
-        playerSlots: arrayUnion({ id: myId, name: useName, fullId: myFullId }),
-        playerIds:   arrayUnion(myId),
-      });
-      setRoomId(rid);
-      setWaitingSessionKey((n) => n + 1);
-      setScreen("waiting");
-    } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
-    setLoading(false);
-  };
+    } catch (e) {
+      setPendingInvites([]);
+      setInvitesProbeReady(true);
+      setUiError(formatFriendlyError(e, "招待の取得に失敗しました。しばらくしてから再度お試しください。"));
+    }
+    setInvitesLoading(false);
+  }, [myFullId, myId, invitesProbeReady, pendingInvites.length, queryPendingInvites]);
+
+  const handleJoinInvite = useCallback(
+    async (rid) => {
+      if (!rid || !myId || !myFullId) return;
+      const useName = myName.trim() || genQuickName();
+      if (!myName.trim()) setMyName(useName);
+      setLoading(true);
+      setUiError("");
+      try {
+        const snap = await fetchRoom(rid);
+        if (!snap.exists()) {
+          setUiError("ルームが見つかりません");
+          setLoading(false);
+          return;
+        }
+        const data = snap.data();
+        if (data.status !== "lobby") {
+          setUiError("このルームはすでに開始されています");
+          setLoading(false);
+          return;
+        }
+        if ((data.playerSlots?.length ?? 0) >= 4) {
+          setUiError("ルームが満員です");
+          setLoading(false);
+          return;
+        }
+        if (data.isPrivate && !data.allowedPlayers?.includes(myFullId)) {
+          setUiError(`招待されていません。ホストに「${myFullId}」を共有してもらってください`);
+          setLoading(false);
+          return;
+        }
+        if (!data.playerSlots?.find((s) => s.id === myId)) {
+          await updateRoomById(rid, {
+            playerSlots: arrayUnion({ id: myId, name: useName, fullId: myFullId }),
+            playerIds: arrayUnion(myId),
+          });
+        }
+        setRoomId(rid);
+        setWaitingSessionKey((n) => n + 1);
+        setScreen("waiting");
+        setInvitesPanelOpen(false);
+        setPendingInvites([]);
+      } catch (e) {
+        setUiError(formatFriendlyError(e, "ルームへの参加に失敗しました。しばらくしてから再度お試しください。"));
+      }
+      setLoading(false);
+    },
+    [myId, myFullId, myName, fetchRoom, updateRoomById, setRoomId],
+  );
 
   /** ゴール直後ターン終了 → waitingSlot（または権利0ならその場で終了処理）へ */
   const handleGoalLandingConfirm = async () => {
@@ -2706,20 +2830,25 @@ export default function App() {
       onToggleMultiOpen={() => {
         setMultiOpen((p) => !p);
         setMultiAction(null);
+        setInvitesPanelOpen(false);
+        setPendingInvites([]);
+        setInvitesProbeReady(false);
         setUiError("");
       }}
       multiAction={multiAction}
       onSetMultiAction={setMultiAction}
-      onQuickMatch={handleQuickMatch}
       isPrivateRoom={isPrivateRoom}
       onSetPrivateRoom={setIsPrivateRoom}
-      allowQuickMatch={allowQuickMatch}
-      onSetAllowQuickMatch={setAllowQuickMatch}
       onCreateRoom={handleCreateRoom}
       joinInput={joinInput}
       onJoinInputChange={setJoinInput}
       onJoinRoom={handleJoinRoom}
-      onCheckInvites={handleCheckInvites}
+      invitesPanelOpen={invitesPanelOpen}
+      pendingInvites={pendingInvites}
+      invitesLoading={invitesLoading}
+      invitesProbeReady={invitesProbeReady}
+      onFetchInvites={handleFetchInvites}
+      onJoinInvite={handleJoinInvite}
       uiError={uiError}
       onClearUiError={() => setUiError("")}
       seVolume={seVolume}
@@ -2868,10 +2997,29 @@ export default function App() {
               );
             })}
           </div>
-          <button onClick={handleReturnToLobby}
-            className="w-full rounded-xl bg-cyan-500 py-3 font-bold text-slate-950 hover:bg-cyan-400 transition-colors">
-            ロビーへ戻る
-          </button>
+          {roomId ? (
+            <ResultsRoomActions
+              isHost={isHost}
+              waitingForHost={roomData?.status === "completed"}
+              loading={resultsRoomActionLoading}
+              onDisband={handleHostDisbandRoom}
+              onContinue={handleHostContinueToLobby}
+              onLeave={handleLeaveRoomFromResults}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={handleReturnToLobby}
+              className="w-full rounded-xl bg-cyan-500 py-3 font-bold text-slate-950 hover:bg-cyan-400 transition-colors"
+            >
+              ロビーへ戻る
+            </button>
+          )}
+          {uiError && (
+            <p className="text-center text-sm text-rose-400" role="alert">
+              {uiError}
+            </p>
+          )}
         </div>
       </div>
     );

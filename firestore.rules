@@ -254,6 +254,53 @@ service cloud.firestore {
         && lobbySelfSlotEditValid(before, after);
     }
 
+    function hostContinueToLobbyValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      let n = before.playerSlots.size();
+      return uid() == before.hostId
+        && before.status == 'completed'
+        && after.status == 'lobby'
+        && after.gameState == null
+        && after.hostId == before.hostId
+        && after.playerIds == before.playerIds
+        && after.completedPlayers is list
+        && after.completedPlayers.size() == 0
+        && after.remainingTurns is int
+        && after.remainingTurns >= 0
+        && slotsInRange(after.playerSlots)
+        && idsInRange(after.playerIds)
+        && slotIdsMatchPlayerIds(after.playerSlots, after.playerIds)
+        && after.playerSlots.size() == n
+        && sameSlotIds(before.playerSlots, after.playerSlots, n)
+        && (
+          affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers', 'playerSlots'])
+          || affected.hasOnly(['status', 'gameState', 'remainingTurns', 'completedPlayers', 'playerSlots'])
+        );
+    }
+
+    function playerLeaveRoomValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      return before.status == 'completed'
+        && before.hostId != uid()
+        && uid() in before.playerIds
+        && !(uid() in after.playerIds)
+        && after.hostId == before.hostId
+        && after.gameState == before.gameState
+        && after.status == before.status
+        && after.completedPlayers == before.completedPlayers
+        && after.remainingTurns == before.remainingTurns
+        && affected.hasOnly(['playerSlots', 'playerIds'])
+        && after.playerIds.size() == before.playerIds.size() - 1
+        && after.playerSlots.size() == before.playerSlots.size() - 1
+        && slotsInRange(after.playerSlots)
+        && idsInRange(after.playerIds)
+        && slotIdsMatchPlayerIds(after.playerSlots, after.playerIds);
+    }
+
     function createRoomValid(rid) {
       let d = request.resource.data;
       return signedIn()
@@ -295,6 +342,8 @@ service cloud.firestore {
               || lobbySelfSlotsValid()
               || hostStartGameValid()
               || playGameStatePatchValid()
+              || hostContinueToLobbyValid()
+              || playerLeaveRoomValid()
             )
           )
         );
@@ -316,7 +365,9 @@ service cloud.firestore {
           && request.resource.data.currentAction is map
           && request.resource.data.currentAction.keys().hasOnly(['type', 'timestamp']);
 
-        allow delete: if false;
+        allow delete: if validRoomCode(roomId)
+          && signedIn()
+          && playerId == uid();
       }
     }
 

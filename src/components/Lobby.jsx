@@ -28,7 +28,7 @@ import TopRightHud from "./TopRightHud";
 
 
 
-/** ルーム作成・参加・クイックマッチ */
+/** ルーム作成・参加 */
 
 export default function Lobby({
 
@@ -58,15 +58,9 @@ export default function Lobby({
 
   onSetMultiAction,
 
-  onQuickMatch,
-
   isPrivateRoom,
 
   onSetPrivateRoom,
-
-  allowQuickMatch,
-
-  onSetAllowQuickMatch,
 
   onCreateRoom,
 
@@ -76,7 +70,17 @@ export default function Lobby({
 
   onJoinRoom,
 
-  onCheckInvites,
+  invitesPanelOpen = false,
+
+  pendingInvites = [],
+
+  invitesLoading = false,
+
+  invitesProbeReady = false,
+
+  onFetchInvites,
+
+  onJoinInvite,
 
   uiError,
 
@@ -87,6 +91,12 @@ export default function Lobby({
   const multiplayerLocked = PRERELEASE_SOLO_ONLY;
 
   const multiplayerPanelOpen = multiOpen && !multiplayerLocked;
+
+  const hasInvites = pendingInvites.length > 0;
+
+  const noInvites = invitesProbeReady && !hasInvites;
+
+  const inviteCheckDisabled = loading || invitesLoading || noInvites;
 
 
 
@@ -232,7 +242,7 @@ export default function Lobby({
 
             <span className="text-2xl grayscale">👥</span>
 
-            <span className="opacity-90">みんなで遊ぶ（オンライン）</span>
+            <span className="opacity-90">みんなで遊ぶ</span>
 
             {!multiplayerLocked && <span className="text-base opacity-60 ml-1">{multiOpen ? "▲" : "▼"}</span>}
 
@@ -275,26 +285,6 @@ export default function Lobby({
         {multiplayerPanelOpen && (
 
           <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4 space-y-3">
-
-            <button
-
-              type="button"
-
-              onClick={onQuickMatch}
-
-              disabled={loading}
-
-              className="w-full rounded-xl bg-violet-700 hover:bg-violet-600 active:scale-[0.98] py-3.5 font-semibold text-white transition-all disabled:opacity-50 flex flex-col items-center gap-0.5"
-
-            >
-
-              <span className="text-base font-bold">⚡ クイックマッチ</span>
-
-              <span className="text-xs text-violet-300 opacity-80">空きルームにランダム参加</span>
-
-            </button>
-
-
 
             <button
 
@@ -353,40 +343,6 @@ export default function Lobby({
                   {isPrivateRoom ? "招待したIDのみ参加可" : "ルームIDを知っていれば誰でも参加可"}
 
                 </p>
-
-                {!isPrivateRoom && (
-
-                  <div className="flex items-center justify-between rounded-lg bg-slate-700 px-3 py-2.5">
-
-                    <div>
-
-                      <p className="text-sm font-medium">⚡ クイックマッチを受け入れる</p>
-
-                      <p className="text-xs text-slate-400">OFFにすると自動マッチングから除外</p>
-
-                    </div>
-
-                    <button
-
-                      type="button"
-
-                      onClick={() => onSetAllowQuickMatch((p) => !p)}
-
-                      className={`relative shrink-0 w-10 h-5 rounded-full transition-colors duration-200 ${allowQuickMatch ? "bg-cyan-500" : "bg-slate-600"}`}
-
-                    >
-
-                      <div
-
-                        className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${allowQuickMatch ? "translate-x-5" : "translate-x-0.5"}`}
-
-                      />
-
-                    </button>
-
-                  </div>
-
-                )}
 
                 <button
 
@@ -478,19 +434,127 @@ export default function Lobby({
 
               type="button"
 
-              onClick={onCheckInvites}
+              onClick={onFetchInvites}
 
-              disabled={loading}
+              disabled={inviteCheckDisabled}
 
-              className="w-full rounded-xl bg-rose-700 hover:bg-rose-600 active:scale-[0.98] py-3.5 font-semibold text-white transition-all disabled:opacity-50 flex flex-col items-center gap-0.5"
+              title={noInvites ? "現在、参加できる招待はありません" : undefined}
+
+              className={[
+
+                "w-full rounded-xl py-3.5 font-semibold transition-all flex flex-col items-center gap-0.5",
+
+                noInvites
+
+                  ? "pointer-events-none cursor-not-allowed border border-slate-700 bg-slate-800 text-slate-500 opacity-55 grayscale"
+
+                  : "bg-rose-700 hover:bg-rose-600 active:scale-[0.98] text-white disabled:opacity-50",
+
+              ].join(" ")}
 
             >
 
               <span className="text-base font-bold">🔔 招待を確認</span>
 
-              <span className="text-xs text-rose-300 opacity-80">自分宛ての招待ルームを探す</span>
+              <span className={`text-xs opacity-80 ${noInvites ? "text-slate-500" : "text-rose-300"}`}>
+
+                {invitesLoading && !invitesProbeReady
+
+                  ? "招待を確認中…"
+
+                  : noInvites
+
+                    ? "招待はありません"
+
+                    : hasInvites
+
+                      ? `${pendingInvites.length}件の招待を表示`
+
+                      : "自分宛ての招待ルームを一覧表示"}
+
+              </span>
 
             </button>
+
+
+
+            {invitesPanelOpen && (
+
+              <div className="rounded-xl border border-rose-500/30 bg-slate-800/80 p-3 space-y-2">
+
+                {invitesLoading ? (
+
+                  <p className="flex items-center justify-center gap-2 py-4 text-sm text-slate-400" role="status">
+
+                    <Loader2 size={18} className="animate-spin shrink-0" aria-hidden />
+
+                    招待を読み込み中…
+
+                  </p>
+
+                ) : pendingInvites.length === 0 ? (
+
+                  <p className="py-3 text-center text-sm text-slate-400">表示できる招待はありません</p>
+
+                ) : (
+
+                  <ul className="space-y-2" role="list">
+
+                    {pendingInvites.map((inv) => (
+
+                      <li
+
+                        key={inv.roomId}
+
+                        className="flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5"
+
+                      >
+
+                        <div className="min-w-0 flex-1">
+
+                          <p className="text-sm font-semibold text-slate-100 truncate">
+
+                            招待者: {inv.hostName}
+
+                          </p>
+
+                          <p className="text-xs text-slate-400 mt-0.5">
+
+                            ルームID{" "}
+
+                            <span className="font-mono tracking-widest text-rose-200/90">{inv.roomId}</span>
+
+                          </p>
+
+                        </div>
+
+                        <button
+
+                          type="button"
+
+                          onClick={() => onJoinInvite(inv.roomId)}
+
+                          disabled={loading}
+
+                          className="shrink-0 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-cyan-400 transition-colors disabled:opacity-50"
+
+                        >
+
+                          参加
+
+                        </button>
+
+                      </li>
+
+                    ))}
+
+                  </ul>
+
+                )}
+
+              </div>
+
+            )}
 
           </div>
 

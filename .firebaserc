@@ -5,8 +5,14 @@
   "targets": {
     "rrmgame-7df52": {
       "hosting": {
+        "default-site": [
+          "rrmgame-7df52"
+        ],
         "pons-site": [
           "potential-over-next-spin"
+        ],
+        "slot-site": [
+          "kenzenslot"
         ]
       }
     }
