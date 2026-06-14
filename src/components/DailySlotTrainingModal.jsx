@@ -13,10 +13,6 @@ import {
   rand,
 } from "../utils/gameLogic";
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /**
  * 1〜7日目：デイリースロット（技能練習）。
  * spinBet × spins 回、8日目筐体と同系アニメ・同じ spinSlot の配当計算。
@@ -52,7 +48,12 @@ export default function DailySlotTrainingModal({
 
   const shuffleIntervalRef = useRef(null);
   const stoppedReelsRef = useRef([false, false, false]);
-  const ranRef = useRef(false);
+  /** スピン処理中の同期ガード（連打防止） */
+  const spinningRef = useRef(false);
+  /** 各スピン間で持ち越す作業ステータス（資金・技量） */
+  const workingStatsRef = useRef(null);
+  /** これまでのスピン結果を蓄積（全回終了で onFinished へ渡す） */
+  const resultsRef = useRef([]);
   /** スピン完了後、次へ押下時に onFinished へ渡す */
   const pendingResultsRef = useRef(null);
   const pityCounterRef = useRef(0);
@@ -65,7 +66,9 @@ export default function DailySlotTrainingModal({
 
   useEffect(() => {
     if (!open) return;
-    ranRef.current = false;
+    spinningRef.current = false;
+    workingStatsRef.current = statsForSpin ? { ...statsForSpin } : null;
+    resultsRef.current = [];
     setCommitting(false);
     setIsSpinning(false);
     setSpinRoundIdx(0);
@@ -247,42 +250,45 @@ export default function DailySlotTrainingModal({
     [machine, machineKey, soundRef],
   );
 
-  const handleRunTraining = async () => {
-    if (!open || !statsForSpin || isSpinning || sessionDone || ranRef.current) return;
-    ranRef.current = true;
+  /** 1回ぶんだけ回す（2回目以降もボタン押下で実行）。全回終了でセッション確定。 */
+  const handleSpinOnce = async () => {
+    if (!open || !statsForSpin || sessionDone || committing) return;
+    if (spinningRef.current) return;
+    if (resultsRef.current.length >= spins) return;
+    spinningRef.current = true;
 
-    const results = [];
-    let working = { ...statsForSpin };
+    const round = resultsRef.current.length; // 0-based
+    const working = workingStatsRef.current ?? { ...statsForSpin };
+    setSpinRoundIdx(round + 1);
+    setAuraStats({ ...working });
+
+    const res = spinSlot(working, bet, machineKey, 0, characterType, {
+      pityCounter: pityCounterRef.current,
+    });
+    pityCounterRef.current = res.pityCounterAfter ?? 0;
 
     try {
-      for (let round = 0; round < spins; round++) {
-        setSpinRoundIdx(round + 1);
-        setAuraStats({ ...working });
+      await playSpinAnimationRound(working, res, `第 ${round + 1} / ${spins} 回`);
+    } catch (e) {
+      console.error(e);
+      spinningRef.current = false;
+      setSpinRoundIdx(round);
+      return;
+    }
 
-        const res = spinSlot(working, bet, machineKey, 0, characterType, {
-          pityCounter: pityCounterRef.current,
-        });
-        pityCounterRef.current = res.pityCounterAfter ?? 0;
-        results.push(res);
+    resultsRef.current = [...resultsRef.current, res];
 
-        await playSpinAnimationRound(
-          working,
-          res,
-          `第 ${round + 1} / ${spins} 回`,
-        );
+    const skAdj =
+      BAL.dailySlot.skillGainEverySpin +
+      (res?.tier && res.tier !== "miss" ? BAL.dailySlot.skillGainOnRole : 0);
+    workingStatsRef.current = {
+      ...working,
+      money: clampMoney(working.money - res.bet + res.payout),
+      skill: clamp(working.skill + skAdj),
+    };
 
-        await sleep(round < spins - 1 ? 1100 : 0);
-
-        const skAdj =
-          BAL.dailySlot.skillGainEverySpin +
-          (res?.tier && res.tier !== "miss" ? BAL.dailySlot.skillGainOnRole : 0);
-        working = {
-          ...working,
-          money: clampMoney(working.money - res.bet + res.payout),
-          skill: clamp(working.skill + skAdj),
-        };
-      }
-
+    if (resultsRef.current.length >= spins) {
+      const results = resultsRef.current;
       const totalNet = results.reduce((a, r) => a + (r.payout - r.bet), 0);
       const winCount = results.filter((r) => r.tier !== "miss").length;
       setOutcomeBanner({
@@ -291,18 +297,11 @@ export default function DailySlotTrainingModal({
         detail:
           `${winCount} / ${results.length} 回役成立（スピンごと技量 +${BAL.dailySlot.skillGainEverySpin}／役ごと追加 +${BAL.dailySlot.skillGainOnRole}）・次へでターン終了`,
       });
-
       pendingResultsRef.current = results;
       setSessionDone(true);
-    } catch (e) {
-      console.error(e);
-      ranRef.current = false;
-      setSessionDone(false);
-      setCommitting(false);
-      setSpinRoundIdx(0);
-      pendingResultsRef.current = null;
-      setOutcomeBanner(null);
     }
+
+    spinningRef.current = false;
   };
 
   const handleAdvanceToNextTurn = async () => {
@@ -356,15 +355,14 @@ export default function DailySlotTrainingModal({
     height: "var(--slot-window-height)",
   };
 
+  const nextRoundNum = Math.min(spins, spinRoundIdx + 1);
   const mainSpinLabel = committing
     ? "締め処理中…"
     : sessionDone
       ? "次へ"
       : isSpinning
-        ? spinRoundIdx > 0
-          ? `回転中… (${spinRoundIdx}/${spins})`
-          : "回転中…"
-        : `資金から${bet}G×${spins}回スピン（計${totalBet}G・各回収支適用）`;
+        ? `回転中… (${spinRoundIdx}/${spins})`
+        : `${nextRoundNum}回目を回す（${bet}G）`;
 
   const closeDisabled = committing || sessionDone || isSpinning || spinRoundIdx > 0;
 
@@ -529,7 +527,7 @@ export default function DailySlotTrainingModal({
 
                   <button
                     type="button"
-                    title={`連続スピン（${bet}G×${spins}）`}
+                    title={`${nextRoundNum}回目を回す（${bet}G・全${spins}回）`}
                     aria-label="スロットを回す"
                     disabled={isSpinning || sessionDone || committing}
                     className="absolute z-[20] cursor-pointer rounded-full border-0 bg-transparent p-0 opacity-40 transition-opacity hover:opacity-70 active:translate-y-0.5 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
@@ -539,7 +537,7 @@ export default function DailySlotTrainingModal({
                       width: "var(--slot-spin-w)",
                       height: "var(--slot-spin-h)",
                     }}
-                    onClick={() => void handleRunTraining()}
+                    onClick={() => void handleSpinOnce()}
                   />
                 </div>
               </div>
@@ -570,11 +568,11 @@ export default function DailySlotTrainingModal({
                 ? "締め処理中"
                 : sessionDone
                   ? "次のプレイヤーへ（ターン終了）"
-                  : "スロット練習を開始"
+                  : `${nextRoundNum}回目を回す`
             }
             disabled={isSpinning || committing}
             onClick={() =>
-              sessionDone ? void handleAdvanceToNextTurn() : void handleRunTraining()
+              sessionDone ? void handleAdvanceToNextTurn() : void handleSpinOnce()
             }
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 px-4 py-3 font-bold text-slate-950 hover:bg-amber-400 disabled:opacity-40 transition-colors"
           >
@@ -582,7 +580,7 @@ export default function DailySlotTrainingModal({
             {mainSpinLabel}
           </button>
           <p className="text-[10px] text-slate-500 text-center">
-            開始後は自動で連続回転します。「次へ」で結果を送信し、翌手番（または翌日開始）まで進みます。回転〜結果確認まで閉じることはできません。
+            1回ごとにボタンを押して回します（全{spins}回）。最終回のあと「次へ」で結果を送信し、翌手番（または翌日開始）まで進みます。1回目を回したあとは結果確認まで閉じることはできません。
           </p>
         </div>
       </div>

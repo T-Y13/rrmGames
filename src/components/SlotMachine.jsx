@@ -272,9 +272,13 @@ export default function SlotMachine({
       }
     };
 
-    const t0 = 1200;
-    const t1 = 1700;
-    const t2Base = reachPossible ? t1 + 2400 : t1 + 550;
+    /** 各リールは「1つ止まってから次が止まる」と分かるよう、停止間隔を広めに確保 */
+    const REEL_STOP_GAP_MS = 800; // リール間の停止間隔（順番に止まって見えるよう広めに）
+    const t0 = 1000;                       // 第1リール停止
+    const t1 = t0 + REEL_STOP_GAP_MS;      // 第2リール停止（第1リールから 0.8s 後）
+    const t2Base = reachPossible
+      ? t1 + 2400                          // リーチ時は第3リール前の溜めを長く
+      : t1 + REEL_STOP_GAP_MS;             // 通常時は第2リールから 0.8s 後に第3リール停止
 
     const tCutinReveal = shouldShowReachCutin
       ? Math.max(t1 + 480, t2Base + REACH_CUTIN_SPIN_PAD_BEFORE_REVEAL_MS)

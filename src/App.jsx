@@ -159,6 +159,10 @@ export default function App() {
   /** 待機室へ入るたびに増やし、ステータス抽選UIのローカル表示とグラフをリセットする */
   const [waitingSessionKey, setWaitingSessionKey] = useState(0);
   const [loading, setLoading]   = useState(false);
+  /** ロビー／開始系ボタンの二重送信防止（loading state は非同期反映なので ref で同期ガード） */
+  const lobbyActionBusyRef = useRef(false);
+  /** ゲーム中アクションの連打・描画反映前の二重クリック防止（直近操作からの最小間隔） */
+  const lastTurnActionAtRef = useRef(0);
   // 招待制ルーム関連
   const [isPrivateRoom, setIsPrivateRoom] = useState(false);
   const [inviteInput, setInviteInput]     = useState("");
@@ -345,6 +349,15 @@ export default function App() {
     !!sugorokuTileFxToast ||
     turnChangeBannerTurns != null ||
     pendingTurnBannerTurns != null;
+
+  /** ターン操作系ボタンの連打／描画反映前の二重発火を無視（true=受理） */
+  const TURN_ACTION_DEBOUNCE_MS = 500;
+  const acceptTurnAction = () => {
+    const now = Date.now();
+    if (now - lastTurnActionAtRef.current < TURN_ACTION_DEBOUNCE_MS) return false;
+    lastTurnActionAtRef.current = now;
+    return true;
+  };
 
   useEffect(() => {
     if (!gs || gs.gamePhase !== "playing" || gs.subPhase !== "day8" || !Array.isArray(gs.players)) {
@@ -880,9 +893,11 @@ export default function App() {
 
   // ─── ロビー操作 ──────────────────────────────────────────────────────
   const handleCreateRoom = async () => {
+    if (lobbyActionBusyRef.current) return;
     const useName = myName.trim() || genQuickName();
     if (!myName.trim()) setMyName(useName);
     const useFullId = `${useName}#${myTag}`;
+    lobbyActionBusyRef.current = true;
     setLoading(true); setUiError("");
     try {
       const rid = genRoomId();
@@ -901,25 +916,29 @@ export default function App() {
       setWaitingSessionKey((n) => n + 1);
       setScreen("waiting");
     } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
+    lobbyActionBusyRef.current = false;
     setLoading(false);
   };
 
   const handleJoinRoom = async () => {
+    if (lobbyActionBusyRef.current) return;
     if (!joinInput.trim()) { setUiError("ルームIDを入力してください"); return; }
     const useName = myName.trim() || genQuickName();
     if (!myName.trim()) setMyName(useName);
     const useFullId = `${useName}#${myTag}`;
+    lobbyActionBusyRef.current = true;
     setLoading(true); setUiError("");
     try {
       const rid  = joinInput.trim().toUpperCase();
       const snap = await fetchRoom(rid);
-      if (!snap.exists())                  { setUiError("ルームが見つかりません"); setLoading(false); return; }
+      if (!snap.exists())                  { setUiError("ルームが見つかりません"); lobbyActionBusyRef.current = false; setLoading(false); return; }
       const data = snap.data();
-      if (data.status !== "lobby")         { setUiError("このルームはすでに開始されています"); setLoading(false); return; }
-      if (data.playerSlots.length >= 4)    { setUiError("ルームが満員です"); setLoading(false); return; }
+      if (data.status !== "lobby")         { setUiError("このルームはすでに開始されています"); lobbyActionBusyRef.current = false; setLoading(false); return; }
+      if (data.playerSlots.length >= 4)    { setUiError("ルームが満員です"); lobbyActionBusyRef.current = false; setLoading(false); return; }
       // 招待制チェック
       if (data.isPrivate && !data.allowedPlayers?.includes(useFullId)) {
         setUiError(`招待されていません。ホストに「${useFullId}」を共有して招待してもらってください`);
+        lobbyActionBusyRef.current = false;
         setLoading(false);
         return;
       }
@@ -933,10 +952,12 @@ export default function App() {
       setWaitingSessionKey((n) => n + 1);
       setScreen("waiting");
     } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
+    lobbyActionBusyRef.current = false;
     setLoading(false);
   };
 
   const handleStartGame = async () => {
+    if (lobbyActionBusyRef.current) return;
     if (!isHost || playerSlots.length < 1) return;
     const missingCharacter = playerSlots.some((s) => !s.character);
     if (missingCharacter) {
@@ -948,11 +969,13 @@ export default function App() {
       setUiError("全員がステータス抽選を確定（同期）してから開始してください");
       return;
     }
+    lobbyActionBusyRef.current = true;
     setLoading(true);
     try {
       const initGS = initialGameState(playerSlots);
       await updateRoom({ status: "playing", gameState: initGS });
     } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
+    lobbyActionBusyRef.current = false;
     setLoading(false);
   };
 
@@ -1024,6 +1047,8 @@ export default function App() {
 
   // ─── クイックマッチ ──────────────────────────────────────────────────
   const handleQuickMatch = async () => {
+    if (lobbyActionBusyRef.current) return;
+    lobbyActionBusyRef.current = true;
     setLoading(true); setUiError("");
 
     // 名前が未入力ならランダム生成
@@ -1071,6 +1096,7 @@ export default function App() {
         setScreen("waiting");
       }
     } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
+    lobbyActionBusyRef.current = false;
     setLoading(false);
   };
 
@@ -1106,9 +1132,11 @@ export default function App() {
 
   // ─── ひとりで遊ぶ（ソロプレイ） ──────────────────────────────────
   const handleSoloPlay = async () => {
+    if (lobbyActionBusyRef.current) return;
     const useName = myName.trim() || genQuickName();
     if (!myName.trim()) setMyName(useName);
     const useFullId = `${useName}#${myTag}`;
+    lobbyActionBusyRef.current = true;
     setLoading(true); setUiError("");
     try {
       const rid = genRoomId();
@@ -1128,11 +1156,14 @@ export default function App() {
       setWaitingSessionKey((n) => n + 1);
       setScreen("waiting");
     } catch (e) { setUiError(formatFriendlyError(e, "一人プレイ用のルームを作成できませんでした。ネットワークを確認のうえ、再度お試しください。")); }
+    lobbyActionBusyRef.current = false;
     setLoading(false);
   };
 
   const handleCheckInvites = async () => {
+    if (lobbyActionBusyRef.current) return;
     if (!myFullId) return;
+    lobbyActionBusyRef.current = true;
     setLoading(true); setUiError("");
     try {
       const q    = query(
@@ -1149,6 +1180,7 @@ export default function App() {
       });
       if (!available) {
         setUiError("招待されているルームが見つかりませんでした");
+        lobbyActionBusyRef.current = false;
         setLoading(false);
         return;
       }
@@ -1162,6 +1194,7 @@ export default function App() {
       setWaitingSessionKey((n) => n + 1);
       setScreen("waiting");
     } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
+    lobbyActionBusyRef.current = false;
     setLoading(false);
   };
 
@@ -1170,6 +1203,7 @@ export default function App() {
     if (!gs || !isMyTurn) return;
     const p = gs.players[gs.currentPlayerIdx];
     if (p.movePhase !== "goalLanding") return;
+    if (!acceptTurnAction()) return;
     const r = p.reservedSlotTurns ?? 0;
     let newPlayers;
     if (r <= 0) {
@@ -1389,6 +1423,7 @@ export default function App() {
       streamFailOverlay
     )
       return;
+    if (!acceptTurnAction()) return;
     if (actionType !== "stream") {
       streamFxChainTimeoutsRef.current.forEach(clearTimeout);
       streamFxChainTimeoutsRef.current = [];
@@ -1720,6 +1755,7 @@ export default function App() {
     const idx = gs.currentPlayerIdx;
     const p = gs.players[idx];
     if (p.movePhase !== "moving") return;
+    if (!acceptTurnAction()) return;
 
     const pendingTraffic = p.pendingTaxiSteps ?? 0;
 
@@ -1751,6 +1787,7 @@ export default function App() {
 
       const rrWait = resolveDay8LandingWithTiles(gs, idx, landedDiceWait, sWait, logsWait, {
         ponSplashDamage: false,
+        skipTileEffects: true, // タクシーは止まったマスの効果を受けない
       });
       if (rrWait.gameOverByDebt?.triggered) {
         await writeGS({
@@ -1998,6 +2035,7 @@ export default function App() {
 
       const rr = resolveDay8LandingWithTiles(gs, idx, landedDice, s, logs, {
         ponSplashDamage: ponFired,
+        skipTileEffects: actionType === "taxi", // タクシーは止まったマスの効果を受けない
       });
       if (rr.gameOverByDebt?.triggered) {
         await writeGS({
@@ -2262,9 +2300,8 @@ export default function App() {
               onChange={e => setMyName(e.target.value)}
               onKeyDown={e => e.key === "Enter" && handleConfirmEntry()}
               maxLength={12}
-              autoFocus
               className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base text-center focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-colors"
-              placeholder="例: 闇月リリム"
+              placeholder="デモ版のため、STARTで始められます"
             />
             <p className="text-xs text-slate-500 text-center">空欄の場合はランダムな名前が割り当てられます</p>
           </div>
@@ -2461,6 +2498,14 @@ export default function App() {
             className="w-full rounded-xl bg-cyan-500 py-3 font-bold text-slate-950 hover:bg-cyan-400 transition-colors">
             ロビーへ戻る
           </button>
+          <div className="space-y-2">
+            <button
+              onClick={() => { setScreen("entry"); setRoomId(null); setUiError(""); }}
+              className="w-full rounded-xl border border-slate-600 bg-slate-800 py-3 font-bold text-slate-200 hover:bg-slate-700 transition-colors">
+              トップに戻る
+            </button>
+            <p className="text-center text-xs text-slate-500">プレイヤー名を変更したい方はこちら</p>
+          </div>
         </div>
       </div>
     );
