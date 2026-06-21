@@ -120,19 +120,24 @@ service cloud.firestore {
 
     function goalLandingConfirmValid(roomBefore, gs1) {
       let gs0 = roomBefore.gameState;
-      if (!(gs0 is map) || !(gs1 is map) || gs0.subPhase != 'day8' || gs1.subPhase != 'day8') return false;
-      if (gs1.currentPlayerIdx != gs0.currentPlayerIdx) return false;
       let confirmerIdx = goalLandingConfirmerIdx(gs0);
-      if (confirmerIdx < 0) return false;
       let cp = gs0.currentPlayerIdx;
-      if (!(cp is int) || cp < 0 || cp >= gs0.players.size()) return false;
       let curPhase = gs0.players[cp].movePhase;
-      if (!(curPhase == 'arrived' || curPhase == 'waitingSlot')) return false;
       let beforeP = gs0.players[confirmerIdx];
       let afterP = gs1.players[confirmerIdx];
-      if (beforeP.movePhase != 'goalLanding') return false;
-      if (!(afterP.movePhase == 'waitingSlot' || afterP.movePhase == 'arrived')) return false;
-      return goalLandingPatchFrozenOk(gs0, gs1, confirmerIdx);
+      return gs0 is map
+        && gs1 is map
+        && gs0.subPhase == 'day8'
+        && gs1.subPhase == 'day8'
+        && gs1.currentPlayerIdx == gs0.currentPlayerIdx
+        && confirmerIdx >= 0
+        && cp is int
+        && cp >= 0
+        && cp < gs0.players.size()
+        && (curPhase == 'arrived' || curPhase == 'waitingSlot')
+        && beforeP.movePhase == 'goalLanding'
+        && (afterP.movePhase == 'waitingSlot' || afterP.movePhase == 'arrived')
+        && goalLandingPatchFrozenOk(gs0, gs1, confirmerIdx);
     }
 
     function isHost(room) {
@@ -303,9 +308,12 @@ service cloud.firestore {
 
     function actorIsNetworkAutomated(gs) {
       let cp = gs.currentPlayerIdx;
-      if (!(cp is int) || cp < 0 || cp >= gs.players.size()) return false;
       let ap = gs.players[cp];
-      return ap is map && (ap.isGhost == true || ap.isGameOver == true);
+      return cp is int
+        && cp >= 0
+        && cp < gs.players.size()
+        && ap is map
+        && (ap.isGhost == true || ap.isGameOver == true);
     }
 
     function networkGhostMarkPlayerPair(beforeP, afterP) {
