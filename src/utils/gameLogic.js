@@ -289,8 +289,8 @@ export function rollDie(stats) {
   return { value: a, rolls: [a], advantage: false };
 }
 
-/** student（ビギナーズラック）：ハズレ −5pt 分を JP+1%・大当+2%・小役+2% へ（合計100%を維持） */
-const STUDENT_SLOT_LUCK_DELTA = { jp: 0.01, big: 0.02, small: 0.02 };
+/** student（ビギナーズラック）：ハズレ −8pt 分を JP+2%・大当+3%・小役+3% へ（合計100%を維持） */
+const STUDENT_SLOT_LUCK_DELTA = { jp: 0.02, big: 0.03, small: 0.03 };
 
 export function calcSlotRates(stats, machine, heat = 0, characterType = null) {
   const { baseRates: br } = machine;
@@ -1431,6 +1431,8 @@ export function applySugorokuTileLandingChain(tiles, startPosIn, moverStatsIn, p
  */
 export function resolveDay8LandingWithTiles(gs, moverIdx, landedPosDice, moverStatsSnapshot, logs, options = {}) {
   const ponSplashDamage = !!options.ponSplashDamage;
+  /** タクシー移動はマス効果（タイル）の判定を受けない */
+  const skipTileEffects = !!options.skipTileEffects;
   const ensured = ensureSugorokuTileEffects(gs);
   const tiles = ensured.sugorokuTileEffects;
 
@@ -1440,7 +1442,9 @@ export function resolveDay8LandingWithTiles(gs, moverIdx, landedPosDice, moverSt
   const afterSplash = ponSplashDamage ? applySplashDamage(moverIdx, phantom, logs) : phantom;
 
   const mover = afterSplash[moverIdx];
-  const chain = applySugorokuTileLandingChain(tiles, landedPosDice, { ...mover.stats }, mover.name, logs);
+  const chain = skipTileEffects
+    ? { finalPos: landedPosDice, stats: { ...mover.stats }, popupTitles: [], debtTrapTriggered: false }
+    : applySugorokuTileLandingChain(tiles, landedPosDice, { ...mover.stats }, mover.name, logs);
 
   const playersOut = afterSplash.map((pl, i) =>
     i === moverIdx ? { ...pl, stats: chain.stats, position: chain.finalPos } : pl,

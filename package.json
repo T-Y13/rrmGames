@@ -8,7 +8,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "deploy": "npm run build && npx -y firebase-tools@latest deploy --only hosting:default-site --non-interactive",
+    "deploy:verify": "npm run deploy",
+    "deploy:prod": "npm run build && npx -y firebase-tools@latest deploy --only hosting:pons-site --non-interactive",
+    "deploy:slot": "npm run build && npx -y firebase-tools@latest deploy --only hosting:slot-site --non-interactive"
   },
   "dependencies": {
     "firebase": "^12.12.1",

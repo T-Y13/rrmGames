@@ -240,26 +240,31 @@ export default function BoardGamePhase({
                   </div>
                 </div>
                 {showTaxiInMenu && (
-                  <button
-                    type="button"
-                    onClick={() => onMoveAction("taxi")}
-                    disabled={interactionLocked || isDiceRolling || !!taxiPhase || cpGs.stats.money < BAL.dice.taxiCost || cpGs.skipTurns > 0}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-yellow-400 px-5 py-2.5 font-semibold text-slate-950 hover:bg-yellow-300 transition-colors disabled:opacity-40 shadow-lg"
-                  >
-                    <TaxiStandeeImage imgClassName="h-[2.25rem] w-[2.25rem] object-contain shrink-0 opacity-100" />
-                    タクシー
-                    <span className="text-xs opacity-70">
-                      -{BAL.dice.taxiCost}G / {BAL.dice.taxiMoveMin}〜{BAL.dice.taxiMoveMax}マス
-                    </span>
-                    {cpGs.stats.virtue <= BAL.dice.taxiCongestThresh && (
-                      <span
-                        className="text-[10px] opacity-60"
-                        title="善行が低めのときに一定確率で2ターン渋滞イベント（前半→次自分ターンで残り進行／渋滞時+PON、そのターンは他操作不可）"
-                      >
-                        渋滞リスク
+                  <div className="relative group">
+                    <button
+                      type="button"
+                      onClick={() => onMoveAction("taxi")}
+                      disabled={interactionLocked || isDiceRolling || !!taxiPhase || cpGs.stats.money < BAL.dice.taxiCost || cpGs.skipTurns > 0}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-yellow-400 px-5 py-2.5 font-semibold text-slate-950 hover:bg-yellow-300 transition-colors disabled:opacity-40 shadow-lg"
+                    >
+                      <TaxiStandeeImage imgClassName="h-[2.25rem] w-[2.25rem] object-contain shrink-0 opacity-100" />
+                      タクシー
+                      <span className="text-xs opacity-70">
+                        -{BAL.dice.taxiCost}G / {BAL.dice.taxiMoveMin}〜{BAL.dice.taxiMoveMax}マス
                       </span>
-                    )}
-                  </button>
+                      {cpGs.stats.virtue <= BAL.dice.taxiCongestThresh && (
+                        <span className="text-[10px] opacity-60">渋滞リスク</span>
+                      )}
+                    </button>
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50 pointer-events-none">
+                      <div className="w-64 bg-slate-800 border border-yellow-400/40 text-slate-100 text-xs rounded-xl px-3 py-2 whitespace-normal text-left leading-relaxed shadow-xl">
+                        🚕 タクシーで {BAL.dice.taxiMoveMin}〜{BAL.dice.taxiMoveMax}マス進む（-{BAL.dice.taxiCost}G）。
+                        <span className="block mt-1 font-semibold text-yellow-300">⛔ 止まったマスのマス効果は受けません。</span>
+                        <span className="block mt-1 text-slate-300">善行が低いと一定確率で渋滞（2ターン化／前半→次の自分ターンで残り進行・渋滞時+PON、そのターンは他操作不可）。</span>
+                        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-800" />
+                      </div>
+                    </div>
+                  </div>
                 )}
                 {gs.aidAvailable && (
                   <button
