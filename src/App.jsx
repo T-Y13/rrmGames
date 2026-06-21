@@ -98,6 +98,19 @@ import {
   buildKickPlayerPatch,
   buildLeaveRoomPatch,
 } from "./lib/roomLifecycle";
+import { runGhostAutomationStep } from "./lib/ghostPlayerAutomation";
+import {
+  buildClearSelfPresencePatch,
+  buildGracefulLeavePatch,
+  buildMarkNetworkGhostPatch,
+  clearRoomSession,
+  GHOST_AUTOMATION_POLL_MS,
+  HEARTBEAT_INTERVAL_MS,
+  persistRoomSession,
+  PRESENCE_STALE_CHECK_MS,
+  readStoredRoomSession,
+  shouldRunGhostAutomationController,
+} from "./lib/playerPresence";
 import { GAME_ASSET_PRELOAD_PATHS, preloadImages } from "./utils/assetLoader";
 /* 筐体が消えない組み合わせ: PNG は SlotMachine import、マスクは index.css の data URL、
    drop-shadow／オーラは .slot-cabinet-img-wrap の filter のみ（img に mask+filter 併用しない） */
@@ -260,6 +273,7 @@ export default function App() {
     roomId,
     setRoomId,
     roomData,
+    roomPlayers,
     updateRoom,
     updateRoomById,
     createRoom,
@@ -287,8 +301,13 @@ export default function App() {
   const [pendingInvites, setPendingInvites] = useState([]);
   const [resultsRoomActionLoading, setResultsRoomActionLoading] = useState(false);
   const [kickLoading, setKickLoading] = useState(false);
+  const [leaveGameLoading, setLeaveGameLoading] = useState(false);
+  const [leaveGameConfirmOpen, setLeaveGameConfirmOpen] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const hadRoomDataRef = useRef(false);
   const wasLobbyPlayerRef = useRef(false);
+  const ghostAutomationBusyRef = useRef(false);
+  const reconnectAttemptedRef = useRef(false);
   // 招待制ルーム関連
   const [isPrivateRoom, setIsPrivateRoom] = useState(false);
   const [inviteInput, setInviteInput]     = useState("");
@@ -1107,10 +1126,14 @@ export default function App() {
           setUiError("この更新はホストのみが実行できます。");
           return false;
         }
+      } else if (writeMode === "ghostAutomation") {
+        const cp = authG?.players?.[authG?.currentPlayerIdx];
+        if (!cp?.isGhost && !cp?.isGameOver) return false;
+        if (cp?.id === myId) return false;
       }
       try {
         if (
-          (writeMode === "actorTurn" || writeMode === "goalLandingConfirm") &&
+          (writeMode === "actorTurn" || writeMode === "goalLandingConfirm" || writeMode === "ghostAutomation") &&
           roomId &&
           authG?.gamePhase === "playing" &&
           authG?.subPhase === "day8"
@@ -1123,6 +1146,10 @@ export default function App() {
             const liveGs = liveRoom?.gameState;
             if (writeMode === "goalLandingConfirm") {
               if (!canWriteGoalLandingConfirm(liveGs, myId)) throw new Error("GOAL_CONFIRM_DENIED");
+            } else if (writeMode === "ghostAutomation") {
+              const liveCp = liveGs?.players?.[liveGs?.currentPlayerIdx];
+              if (!liveCp?.isGhost && !liveCp?.isGameOver) throw new Error("GHOST_AUTO_DENIED");
+              if (liveCp?.id === myId) throw new Error("GHOST_AUTO_DENIED");
             } else if (!isActorTurnOnGameState(liveGs, myId)) {
               throw new Error("TURN_CHANGED");
             }
@@ -1155,6 +1182,8 @@ export default function App() {
   performGameStateUpdateRef.current = performGameStateUpdate;
 
   const writeGS = async (newGS) => performGameStateUpdate(newGS, "actorTurn");
+
+  const writeGhostAutomationGS = async (newGS) => performGameStateUpdate(newGS, "ghostAutomation");
 
   const writeGoalLandingConfirm = async (newGS) => performGameStateUpdate(newGS, "goalLandingConfirm");
 
@@ -1283,6 +1312,7 @@ export default function App() {
         createdAt: new Date().toISOString(),
       });
       setRoomId(rid);
+      persistRoomSession(rid, useName);
       setWaitingSessionKey((n) => n + 1);
       setScreen("waiting");
     } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
@@ -1303,7 +1333,14 @@ export default function App() {
       const snap = await fetchRoom(rid);
       if (!snap.exists())                  { setUiError("ルームが見つかりません"); lobbyActionBusyRef.current = false; setLoading(false); return; }
       const data = snap.data();
-      if (data.status !== "lobby")         { setUiError("このルームはすでに開始されています"); lobbyActionBusyRef.current = false; setLoading(false); return; }
+      const alreadyMember = (data.playerIds ?? []).includes(myId);
+      if (data.status !== "lobby" && !alreadyMember) {
+        setUiError("このルームはすでに開始されています");
+        lobbyActionBusyRef.current = false;
+        setLoading(false);
+        return;
+      }
+      if (data.status === "lobby") {
       if (data.playerSlots.length >= 4)    { setUiError("ルームが満員です"); lobbyActionBusyRef.current = false; setLoading(false); return; }
       // 招待制チェック
       if (data.isPrivate && !data.allowedPlayers?.includes(useFullId)) {
@@ -1318,9 +1355,15 @@ export default function App() {
           playerIds:   arrayUnion(myId),
         });
       }
+      }
       setRoomId(rid);
-      setWaitingSessionKey((n) => n + 1);
-      setScreen("waiting");
+      persistRoomSession(rid, useName);
+      if (data.status === "lobby") {
+        setWaitingSessionKey((n) => n + 1);
+        setScreen("waiting");
+      } else {
+        restoreScreenFromRoom(data);
+      }
     } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
     lobbyActionBusyRef.current = false;
     setLoading(false);
@@ -1440,6 +1483,7 @@ export default function App() {
   }, [screen, myName, playerSlots, myId, roomId, handleSelectCharacter]);
 
   const handleReturnToLobby = () => {
+    clearRoomSession();
     setScreen("lobby");
     setRoomId(null);
     setUiError("");
@@ -1448,10 +1492,52 @@ export default function App() {
   const exitRoomToMainMenu = useCallback((message = "") => {
     hadRoomDataRef.current = false;
     wasLobbyPlayerRef.current = false;
+    clearRoomSession();
     setRoomId(null);
     setScreen("lobby");
     setUiError(message);
   }, [setRoomId]);
+
+  const restoreScreenFromRoom = useCallback((data) => {
+    const gsPhase = data?.gameState?.gamePhase;
+    if (data?.status === "lobby") {
+      setScreen("waiting");
+      setWaitingSessionKey((n) => n + 1);
+      return;
+    }
+    if (data?.status === "completed" || gsPhase === "results") {
+      setScreen("results");
+      return;
+    }
+    if (gsPhase === "gameOver") {
+      setScreen("gameover");
+      return;
+    }
+    setScreen("playing");
+  }, []);
+
+  const handleGracefulLeaveGame = useCallback(async () => {
+    if (!roomId || !myId || !roomGs || leaveGameLoading) return false;
+    const patch = buildGracefulLeavePatch(roomGs, myId);
+    if (!patch) return false;
+    setLeaveGameLoading(true);
+    setUiError("");
+    try {
+      await updateCurrentAction("leave");
+      await updateRoom(patch);
+      setLeaveGameConfirmOpen(false);
+      clearRoomSession();
+      setRoomId(null);
+      setScreen("lobby");
+      setUiError("ルームから退室しました。他のプレイヤーは自動操作でゲームが続行されます。");
+      return true;
+    } catch (e) {
+      setUiError(formatFriendlyError(e, "退室処理に失敗しました。しばらくしてから再度お試しください。"));
+      return false;
+    } finally {
+      setLeaveGameLoading(false);
+    }
+  }, [roomId, myId, roomGs, leaveGameLoading, updateCurrentAction, updateRoom, setRoomId]);
 
   const handleHostDisbandRoom = useCallback(async () => {
     if (!roomId || !isHost || !myId) return;
@@ -1550,6 +1636,7 @@ export default function App() {
   const handleConfirmEntry = () => {
     const useName = myName.trim() || genQuickName();
     if (!myName.trim()) setMyName(useName);
+    persistRoomSession(readStoredRoomSession().roomId, useName);
     setMultiOpen(false);
     setMultiAction(null);
     setUiError("");
@@ -1580,6 +1667,7 @@ export default function App() {
         createdAt: new Date().toISOString(),
       });
       setRoomId(rid);
+      persistRoomSession(rid, useName);
       setWaitingSessionKey((n) => n + 1);
       setScreen("waiting");
     } catch (e) { setUiError(formatFriendlyError(e, "一人プレイ用のルームを作成できませんでした。ネットワークを確認のうえ、再度お試しください。")); }
@@ -1610,6 +1698,119 @@ export default function App() {
       })
       .filter(Boolean);
   }, [myFullId, myId]);
+
+  useEffect(() => {
+    if (!authReady || !myId || roomId || reconnectAttemptedRef.current) return;
+    reconnectAttemptedRef.current = true;
+    const { roomId: storedId, playerName } = readStoredRoomSession();
+    if (!storedId) return;
+    if (playerName) setMyName(playerName);
+    let cancelled = false;
+    setReconnecting(true);
+    (async () => {
+      try {
+        const snap = await fetchRoom(storedId);
+        if (cancelled) return;
+        if (!snap.exists()) {
+          clearRoomSession();
+          return;
+        }
+        const data = snap.data();
+        if (!(data.playerIds ?? []).includes(myId)) {
+          clearRoomSession();
+          return;
+        }
+        const inGamePlayers = data.gameState?.players ?? [];
+        if (
+          (data.status === "playing" || data.status === "FINAL_BATTLE") &&
+          inGamePlayers.length > 0 &&
+          !inGamePlayers.some((p) => p.id === myId)
+        ) {
+          clearRoomSession();
+          return;
+        }
+        setRoomId(storedId);
+        restoreScreenFromRoom(data);
+      } catch (e) {
+        console.warn("[reconnect] failed", e);
+      } finally {
+        if (!cancelled) setReconnecting(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, myId, roomId, fetchRoom, restoreScreenFromRoom]);
+
+  useEffect(() => {
+    if (roomId && myName) persistRoomSession(roomId, myName);
+  }, [roomId, myName]);
+
+  useEffect(() => {
+    if (!roomId || !myId) return undefined;
+    const tick = () => {
+      void updateCurrentAction("heartbeat").catch(() => {});
+    };
+    tick();
+    const id = setInterval(tick, HEARTBEAT_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [roomId, myId, updateCurrentAction]);
+
+  useEffect(() => {
+    if (!roomId || !myId || !roomGs || roomData?.isSolo) return;
+    const patch = buildClearSelfPresencePatch(roomGs, myId);
+    if (!patch) return;
+    void updateRoom(patch).catch(() => {});
+  }, [roomId, myId, roomGs, roomData?.isSolo, updateRoom]);
+
+  useEffect(() => {
+    if (!roomId || !roomData || roomData.isSolo) return undefined;
+    if (!shouldRunGhostAutomationController({ roomData, myId, roomPlayers, isHost })) return undefined;
+
+    const markStale = () => {
+      const gs = gsRef.current;
+      if (!gs) return;
+      const patch = buildMarkNetworkGhostPatch(gs, roomPlayers);
+      if (patch) void updateRoom(patch).catch(() => {});
+    };
+
+    markStale();
+    const id = setInterval(markStale, PRESENCE_STALE_CHECK_MS);
+    return () => clearInterval(id);
+  }, [roomId, roomData, myId, roomPlayers, isHost, updateRoom]);
+
+  useEffect(() => {
+    if (!roomId || !roomData || roomData.isSolo) return undefined;
+    if (!shouldRunGhostAutomationController({ roomData, myId, roomPlayers, isHost })) return undefined;
+
+    const tick = async () => {
+      if (ghostAutomationBusyRef.current) return;
+      const gs = gsRef.current;
+      if (!gs || gs.gamePhase !== "playing") return;
+      const cp = gs.players?.[gs.currentPlayerIdx];
+      if (!cp?.isGhost && !cp?.isGameOver) return;
+      if (cp.id === myId) return;
+
+      const nextGs = runGhostAutomationStep(gs, {
+        day8RemainingTurns:
+          Number.isFinite(Number(roomData?.remainingTurns)) && Number(roomData?.remainingTurns) >= 0
+            ? Math.floor(Number(roomData.remainingTurns))
+            : BAL.dice.maxTurns,
+      });
+      if (!nextGs) return;
+
+      ghostAutomationBusyRef.current = true;
+      try {
+        await writeGhostAutomationGS(nextGs);
+      } finally {
+        ghostAutomationBusyRef.current = false;
+      }
+    };
+
+    void tick();
+    const id = setInterval(() => void tick(), GHOST_AUTOMATION_POLL_MS);
+    return () => clearInterval(id);
+  }, [roomId, roomData, myId, roomPlayers, isHost, writeGhostAutomationGS]);
 
   useEffect(() => {
     if (!roomId) {
@@ -1711,12 +1912,14 @@ export default function App() {
           return;
         }
         const data = snap.data();
-        if (data.status !== "lobby") {
+        const alreadyMember = (data.playerIds ?? []).includes(myId);
+        if (data.status !== "lobby" && !alreadyMember) {
           setUiError("このルームはすでに開始されています");
           lobbyActionBusyRef.current = false;
           setLoading(false);
           return;
         }
+        if (data.status === "lobby") {
         if ((data.playerSlots?.length ?? 0) >= 4) {
           setUiError("ルームが満員です");
           lobbyActionBusyRef.current = false;
@@ -1735,9 +1938,15 @@ export default function App() {
             playerIds: arrayUnion(myId),
           });
         }
+        }
         setRoomId(rid);
-        setWaitingSessionKey((n) => n + 1);
-        setScreen("waiting");
+        persistRoomSession(rid, useName);
+        if (data.status === "lobby") {
+          setWaitingSessionKey((n) => n + 1);
+          setScreen("waiting");
+        } else {
+          restoreScreenFromRoom(data);
+        }
         setInvitesPanelOpen(false);
         setPendingInvites([]);
       } catch (e) {
@@ -1746,7 +1955,7 @@ export default function App() {
       lobbyActionBusyRef.current = false;
       setLoading(false);
     },
-    [myId, myFullId, myName, fetchRoom, updateRoomById, setRoomId],
+    [myId, myFullId, myName, fetchRoom, updateRoomById, setRoomId, restoreScreenFromRoom],
   );
 
   /** ゴール直後ターン終了 → waitingSlot（または権利0ならその場で終了処理）へ */
@@ -2869,6 +3078,15 @@ export default function App() {
   // ════════════════════════════════════════════════════════════════════════
   // エントリー画面（初期ページ）
   // ════════════════════════════════════════════════════════════════════════
+  if (reconnecting) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center gap-4 p-8 text-slate-200">
+        <Loader2 size={36} className="animate-spin text-cyan-400" aria-hidden />
+        <p className="text-sm text-slate-400" role="status">ルームに再接続中…</p>
+      </div>
+    );
+  }
+
   if (screen === "entry") return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 pb-12 text-slate-100">
       <div className="w-full max-w-6xl flex flex-col items-center text-center space-y-10">
@@ -3418,9 +3636,24 @@ export default function App() {
                 </div>
               )}
               <span className="text-xs text-slate-600 font-mono border border-slate-700 rounded px-2 py-0.5">{roomId}</span>
+              {gs.players.length > 1 && !roomData?.isSolo && (
+                <button
+                  type="button"
+                  onClick={() => setLeaveGameConfirmOpen(true)}
+                  disabled={leaveGameLoading}
+                  className="rounded-lg border border-rose-500/40 bg-rose-950/30 px-2.5 py-1 text-[11px] font-bold text-rose-200 hover:bg-rose-900/40 transition-colors disabled:opacity-50"
+                >
+                  退室
+                </button>
+              )}
               <div className="flex items-center gap-1.5 text-xs text-slate-400">
                 <Users size={12} className="text-cyan-400" />
-                <span>{gs.players.map(p => p.name).join(" · ")}</span>
+                <span>
+                  {gs.players.map((p) => {
+                    const ghostMark = p.isGhost || p.isGameOver ? " 👻" : "";
+                    return `${p.name}${ghostMark}`;
+                  }).join(" · ")}
+                </span>
               </div>
               {!isMyTurn && (
                 <span className="flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">
@@ -3654,6 +3887,44 @@ export default function App() {
         />
       </div>
       ) : null}
+
+      {leaveGameConfirmOpen && (
+        <div
+          className="fixed inset-0 z-[300] flex items-center justify-center bg-slate-950/75 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="leave-game-title"
+        >
+          <div className="w-full max-w-sm rounded-2xl border border-rose-500/35 bg-slate-900 p-5 shadow-2xl space-y-4">
+            <div className="space-y-2">
+              <p id="leave-game-title" className="text-base font-bold text-slate-100">
+                ルームから退室しますか？
+              </p>
+              <p className="text-sm text-slate-400 leading-relaxed">
+                退室後は自動操作（ゴースト）でゲームが続行されます。再接続する場合は同じブラウザから再度入場してください。
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setLeaveGameConfirmOpen(false)}
+                disabled={leaveGameLoading}
+                className="flex-1 rounded-xl border border-slate-600 bg-slate-800 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-700 transition-colors disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleGracefulLeaveGame()}
+                disabled={leaveGameLoading}
+                className="flex-1 rounded-xl bg-rose-600 py-2.5 text-sm font-bold text-white hover:bg-rose-500 transition-colors disabled:opacity-50"
+              >
+                {leaveGameLoading ? "処理中…" : "退室する"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

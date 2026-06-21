@@ -301,6 +301,106 @@ service cloud.firestore {
         && slotIdsMatchPlayerIds(after.playerSlots, after.playerIds);
     }
 
+    function actorIsNetworkAutomated(gs) {
+      let cp = gs.currentPlayerIdx;
+      if (!(cp is int) || cp < 0 || cp >= gs.players.size()) return false;
+      let ap = gs.players[cp];
+      return ap is map && (ap.isGhost == true || ap.isGameOver == true);
+    }
+
+    function networkGhostMarkPlayerPair(beforeP, afterP) {
+      return afterP == beforeP
+        || (
+          beforeP.isGhost != true
+          && afterP.isGhost == true
+          && afterP.diff(beforeP).affectedKeys().hasOnly(['isGhost'])
+        );
+    }
+
+    function networkGhostMarkPlayersOk(gs0, gs1) {
+      let n = gs0.players.size();
+      return n == gs1.players.size()
+        && (n < 1 || networkGhostMarkPlayerPair(gs0.players[0], gs1.players[0]))
+        && (n < 2 || networkGhostMarkPlayerPair(gs0.players[1], gs1.players[1]))
+        && (n < 3 || networkGhostMarkPlayerPair(gs0.players[2], gs1.players[2]))
+        && (n < 4 || networkGhostMarkPlayerPair(gs0.players[3], gs1.players[3]));
+    }
+
+    function presenceSelfPlayerPair(beforeP, afterP) {
+      return beforeP.id != uid()
+        || afterP.diff(beforeP).affectedKeys().hasOnly(['isGhost', 'isGameOver']);
+    }
+
+    function presenceSelfPlayersOk(gs0, gs1) {
+      let n = gs0.players.size();
+      return n == gs1.players.size()
+        && (n < 1 || presenceSelfPlayerPair(gs0.players[0], gs1.players[0]))
+        && (n < 2 || presenceSelfPlayerPair(gs0.players[1], gs1.players[1]))
+        && (n < 3 || presenceSelfPlayerPair(gs0.players[2], gs1.players[2]))
+        && (n < 4 || presenceSelfPlayerPair(gs0.players[3], gs1.players[3]));
+    }
+
+    function presenceGhostMarkValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      return (before.status == 'playing' || before.status == 'FINAL_BATTLE')
+        && uid() in before.playerIds
+        && before.gameState is map
+        && after.gameState is map
+        && affected.hasOnly(['gameState'])
+        && before.gameState.diff(after.gameState).affectedKeys().hasOnly(['players'])
+        && networkGhostMarkPlayersOk(before.gameState, after.gameState)
+        && after.playerSlots == before.playerSlots
+        && after.playerIds == before.playerIds
+        && after.hostId == before.hostId;
+    }
+
+    function presenceSelfPatchValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      return (before.status == 'playing' || before.status == 'FINAL_BATTLE')
+        && uid() in before.playerIds
+        && before.gameState is map
+        && after.gameState is map
+        && affected.hasOnly(['gameState'])
+        && before.gameState.diff(after.gameState).affectedKeys().hasOnly(['players'])
+        && presenceSelfPlayersOk(before.gameState, after.gameState)
+        && after.playerSlots == before.playerSlots
+        && after.playerIds == before.playerIds
+        && after.hostId == before.hostId;
+    }
+
+    function ghostAutomationTurnValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      let gs0 = before.gameState;
+      let gs1 = after.gameState;
+      return (before.status == 'playing' || before.status == 'FINAL_BATTLE')
+        && gs0 is map
+        && gs1 is map
+        && actorIsNetworkAutomated(gs0)
+        && uid() in before.playerIds
+        && gs0.players[gs0.currentPlayerIdx].id != uid()
+        && (
+          affected.hasOnly(['gameState'])
+          || affected.hasOnly(['gameState', 'status'])
+          || affected.hasOnly(['gameState', 'remainingTurns', 'completedPlayers'])
+          || affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers'])
+        )
+        && gs1.players is list
+        && slotsInRange(gs1.players)
+        && after.remainingTurns is int
+        && after.remainingTurns >= 0
+        && after.completedPlayers is list
+        && after.playerSlots == before.playerSlots
+        && after.playerIds == before.playerIds
+        && after.hostId == before.hostId
+        && ghostProxyMoneyOkIfGhostActor(before, gs1);
+    }
+
     function hostKickFromLobbyValid() {
       let before = resource.data;
       let after = request.resource.data;
@@ -370,6 +470,9 @@ service cloud.firestore {
               || hostContinueToLobbyValid()
               || playerLeaveRoomValid()
               || hostKickFromLobbyValid()
+              || presenceGhostMarkValid()
+              || presenceSelfPatchValid()
+              || ghostAutomationTurnValid()
             )
           )
         );
