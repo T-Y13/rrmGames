@@ -26,3 +26,19 @@ export function buildLeaveRoomPatch(roomData, uid) {
   const playerIds = (roomData?.playerIds ?? []).filter((id) => id !== uid);
   return { playerSlots, playerIds };
 }
+
+/** ホストキック（待機室）: 対象を playerIds / playerSlots から除外。招待制は allowedPlayers も除外 */
+export function buildKickPlayerPatch(roomData, targetUid) {
+  if (!targetUid || targetUid === roomData?.hostId) return null;
+  const playerSlots = (roomData?.playerSlots ?? []).filter((s) => s.id !== targetUid);
+  const playerIds = (roomData?.playerIds ?? []).filter((id) => id !== targetUid);
+  if (playerIds.length === (roomData?.playerIds ?? []).length) return null;
+
+  const patch = { playerSlots, playerIds };
+  const kickedSlot = (roomData?.playerSlots ?? []).find((s) => s.id === targetUid);
+  const kickedFullId = kickedSlot?.fullId;
+  if (roomData?.isPrivate && kickedFullId && Array.isArray(roomData.allowedPlayers)) {
+    patch.allowedPlayers = roomData.allowedPlayers.filter((fid) => fid !== kickedFullId);
+  }
+  return patch;
+}

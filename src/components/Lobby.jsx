@@ -200,32 +200,6 @@ export default function Lobby({
 
 
 
-        {!multiplayerLocked && (
-          <button
-            type="button"
-            onClick={onFetchInvites}
-            disabled={inviteCheckDisabled}
-            className={[
-              "w-full rounded-2xl py-3.5 font-semibold transition-all flex items-center justify-center gap-2 shadow-lg",
-              hasInvites
-                ? "bg-rose-600 hover:bg-rose-500 text-white ring-2 ring-rose-400/50 animate-pulse"
-                : "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700",
-              inviteCheckDisabled ? "opacity-60" : "active:scale-[0.98]",
-            ].join(" ")}
-          >
-            <span className="text-lg">🔔</span>
-            <span>
-              {invitesLoading && !invitesProbeReady
-                ? "招待を確認中…"
-                : hasInvites
-                  ? `招待が ${pendingInvites.length} 件あります`
-                  : "招待を確認"}
-            </span>
-          </button>
-        )}
-
-
-
         <div className="relative">
 
           <button
@@ -454,134 +428,85 @@ export default function Lobby({
 
 
 
-            <button
-
-              type="button"
-
-              onClick={onFetchInvites}
-
-              disabled={inviteCheckDisabled}
-
-              className={[
-
-                "w-full rounded-xl py-3.5 font-semibold transition-all flex flex-col items-center gap-0.5",
-
-                hasInvites
-
-                  ? "bg-rose-700 hover:bg-rose-600 active:scale-[0.98] text-white"
-
-                  : "bg-slate-700 hover:bg-slate-600 active:scale-[0.98] text-slate-200 border border-slate-600",
-
-                inviteCheckDisabled ? "opacity-50" : "",
-
-              ].join(" ")}
-
-            >
-
-              <span className="text-base font-bold">🔔 招待を確認</span>
-
-              <span className={`text-xs opacity-80 ${hasInvites ? "text-rose-200" : "text-slate-400"}`}>
-
-                {invitesLoading && !invitesProbeReady
-
-                  ? "招待を確認中…"
-
-                  : hasInvites
-
-                    ? `${pendingInvites.length}件の招待を表示`
-
-                    : invitesProbeReady
-
-                      ? "タップして最新の招待を取得"
-
-                      : "自分宛ての招待ルームを検索"}
-
-              </span>
-
-            </button>
-
-
-
-            {invitesPanelOpen && (
-
-              <div className="rounded-xl border border-rose-500/30 bg-slate-800/80 p-3 space-y-2">
-
-                {invitesLoading ? (
-
-                  <p className="flex items-center justify-center gap-2 py-4 text-sm text-slate-400" role="status">
-
-                    <Loader2 size={18} className="animate-spin shrink-0" aria-hidden />
-
-                    招待を読み込み中…
-
-                  </p>
-
-                ) : pendingInvites.length === 0 ? (
-
-                  <p className="py-3 text-center text-sm text-slate-400">表示できる招待はありません</p>
-
-                ) : (
-
-                  <ul className="space-y-2" role="list">
-
-                    {pendingInvites.map((inv) => (
-
-                      <li
-
-                        key={inv.roomId}
-
-                        className="flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5"
-
-                      >
-
-                        <div className="min-w-0 flex-1">
-
-                          <p className="text-sm font-semibold text-slate-100 truncate">
-
-                            招待者: {inv.hostName}
-
-                          </p>
-
-                          <p className="text-xs text-slate-400 mt-0.5">
-
-                            ルームID{" "}
-
-                            <span className="font-mono tracking-widest text-rose-200/90">{inv.roomId}</span>
-
-                          </p>
-
-                        </div>
-
-                        <button
-
-                          type="button"
-
-                          onClick={() => onJoinInvite(inv.roomId)}
-
-                          disabled={loading}
-
-                          className="shrink-0 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-cyan-400 transition-colors disabled:opacity-50"
-
-                        >
-
-                          参加
-
-                        </button>
-
-                      </li>
-
-                    ))}
-
-                  </ul>
-
-                )}
-
-              </div>
-
-            )}
-
           </div>
 
+        )}
+
+
+
+        {!multiplayerLocked && (
+          <>
+            <button
+              type="button"
+              onClick={onFetchInvites}
+              disabled={inviteCheckDisabled}
+              className={[
+                "w-full rounded-2xl py-3.5 font-semibold transition-all flex flex-col items-center gap-0.5 shadow-lg",
+                hasInvites
+                  ? "bg-rose-600 hover:bg-rose-500 text-white ring-2 ring-rose-400/50 animate-pulse active:scale-[0.98]"
+                  : "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 active:scale-[0.98]",
+                inviteCheckDisabled ? "opacity-60" : "",
+              ].join(" ")}
+            >
+              <span className="text-base font-bold flex items-center gap-2">
+                <span className="text-lg">🔔</span>
+                {invitesLoading && !invitesProbeReady
+                  ? "招待を確認中…"
+                  : hasInvites
+                    ? `招待が ${pendingInvites.length} 件あります`
+                    : "招待を確認"}
+              </span>
+              <span className={`text-xs opacity-80 ${hasInvites ? "text-rose-200" : "text-slate-400"}`}>
+                {invitesLoading && !invitesProbeReady
+                  ? "検索中…"
+                  : hasInvites
+                    ? "タップして一覧を表示"
+                    : invitesProbeReady
+                      ? "タップして最新の招待を取得"
+                      : "自分宛ての招待ルームを検索"}
+              </span>
+            </button>
+
+            {invitesPanelOpen && (
+              <div className="rounded-xl border border-rose-500/30 bg-slate-800/80 p-3 space-y-2">
+                {invitesLoading ? (
+                  <p className="flex items-center justify-center gap-2 py-4 text-sm text-slate-400" role="status">
+                    <Loader2 size={18} className="animate-spin shrink-0" aria-hidden />
+                    招待を読み込み中…
+                  </p>
+                ) : pendingInvites.length === 0 ? (
+                  <p className="py-3 text-center text-sm text-slate-400">表示できる招待はありません</p>
+                ) : (
+                  <ul className="space-y-2" role="list">
+                    {pendingInvites.map((inv) => (
+                      <li
+                        key={inv.roomId}
+                        className="flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-slate-100 truncate">
+                            招待者: {inv.hostName}
+                          </p>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            ルームID{" "}
+                            <span className="font-mono tracking-widest text-rose-200/90">{inv.roomId}</span>
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onJoinInvite(inv.roomId)}
+                          disabled={loading}
+                          className="shrink-0 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-cyan-400 transition-colors disabled:opacity-50"
+                        >
+                          参加
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </>
         )}
 
 

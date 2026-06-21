@@ -637,6 +637,246 @@ function CharacterLobbyPrep({
   );
 }
 
+/** 招待制は allowedPlayers + 参加スロット、公開は参加スロットのみ */
+function buildRoomRosterEntries(isPrivate, allowedPlayers, playerSlots) {
+  if (!isPrivate) {
+    return playerSlots.map((slot) => ({
+      fullId: slot.fullId || slot.name,
+      slot,
+      joined: true,
+    }));
+  }
+
+  const slotsByFullId = new Map();
+  for (const slot of playerSlots) {
+    if (slot.fullId) slotsByFullId.set(slot.fullId, slot);
+  }
+
+  const seen = new Set();
+  const entries = [];
+
+  for (const fullId of allowedPlayers ?? []) {
+    if (!fullId || seen.has(fullId)) continue;
+    seen.add(fullId);
+    const slot = slotsByFullId.get(fullId);
+    entries.push({ fullId, slot: slot ?? null, joined: !!slot });
+  }
+
+  for (const slot of playerSlots) {
+    const fid = slot.fullId;
+    if (!fid || seen.has(fid)) continue;
+    seen.add(fid);
+    entries.push({ fullId: fid, slot, joined: true });
+  }
+
+  return entries;
+}
+
+function RoomMemberRow({ entry, hostId, myId, isHost, kickLoading, onRequestKick }) {
+  const { fullId, slot, joined } = entry;
+  const ck = slot?.character;
+  const c = ck ? CHARACTERS[ck] : null;
+  const rowIsHost = slot?.id === hostId;
+  const rowIsYou = slot?.id === myId;
+  const canKick = isHost && joined && slot?.id && slot.id !== hostId;
+
+  return (
+    <div className="flex items-center gap-2 rounded-lg bg-slate-800/80 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-mono text-slate-200 truncate select-all">{fullId}</p>
+        {(rowIsHost || rowIsYou) && (
+          <div className="flex flex-wrap gap-1.5 mt-0.5">
+            {rowIsHost && <span className="text-[10px] font-semibold text-amber-400">ホスト</span>}
+            {rowIsYou && (
+              <span className="text-[10px] font-semibold text-cyan-400 border border-cyan-400/40 rounded px-1">
+                YOU
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+      {canKick && (
+        <button
+          type="button"
+          onClick={() => onRequestKick({ uid: slot.id, fullId, name: slot.name || fullId })}
+          disabled={kickLoading}
+          className="shrink-0 rounded-lg border border-rose-500/40 bg-rose-950/40 px-2.5 py-1.5 text-[11px] font-bold text-rose-200 hover:bg-rose-900/50 hover:text-rose-50 transition-colors disabled:opacity-40"
+        >
+          退室させる
+        </button>
+      )}
+      <div className="flex flex-col items-end justify-center min-w-[6.5rem] min-h-[2.25rem] gap-0.5 shrink-0">
+        {joined && (
+          <>
+            <span className="text-emerald-400 text-sm leading-none" aria-label="参加済み" title="参加済み">
+              ✓
+            </span>
+            {ck ? (
+              <span className="flex items-center gap-1 text-xs">
+                <CharacterIcon
+                  characterType={ck}
+                  imgClassName="h-4 w-4 object-contain shrink-0"
+                  spanClassName="text-sm leading-none"
+                />
+                <span className={c.color}>{c.label}</span>
+              </span>
+            ) : (
+              <span className="text-[10px] text-amber-400/90 font-medium">未選択</span>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function KickConfirmDialog({ target, kickLoading, onCancel, onConfirm }) {
+  if (!target) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="kick-confirm-title"
+    >
+      <div className="w-full max-w-sm rounded-2xl border border-rose-500/35 bg-slate-900 p-5 shadow-2xl shadow-black/40 space-y-4">
+        <div className="space-y-2">
+          <p id="kick-confirm-title" className="text-base font-bold text-slate-100">
+            ルームから退室させますか？
+          </p>
+          <p className="text-sm text-slate-400 leading-relaxed">
+            <span className="font-mono text-slate-200">{target.fullId}</span>
+            を待機室から退室させます。招待制ルームでは再参加にはホストの再招待が必要です。
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={kickLoading}
+            className="flex-1 rounded-xl border border-slate-600 bg-slate-800 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-700 transition-colors disabled:opacity-50"
+          >
+            キャンセル
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(target.uid)}
+            disabled={kickLoading}
+            className="flex-1 rounded-xl bg-rose-600 py-2.5 text-sm font-bold text-white hover:bg-rose-500 transition-colors disabled:opacity-50"
+          >
+            {kickLoading ? "処理中…" : "退室させる"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RoomMemberRoster({
+  isPrivate,
+  isHost,
+  hostId,
+  myId,
+  allowedPlayers = [],
+  playerSlots = [],
+  inviteInput,
+  onInviteInputChange,
+  inviteError,
+  onInvitePlayer,
+  onKickPlayer,
+  kickLoading = false,
+}) {
+  const [kickConfirmTarget, setKickConfirmTarget] = useState(null);
+  const entries = useMemo(
+    () => buildRoomRosterEntries(isPrivate, allowedPlayers, playerSlots),
+    [isPrivate, allowedPlayers, playerSlots],
+  );
+  const joinedCount = playerSlots.length;
+  const showInviteForm = isPrivate && isHost;
+  const panelClass = isPrivate
+    ? "border-rose-500/30 bg-rose-500/5"
+    : "border-slate-800 bg-slate-900";
+
+  return (
+    <div className={`rounded-2xl border p-4 space-y-3 ${panelClass}`}>
+      <div>
+        <p className={`text-xs font-semibold ${isPrivate ? "text-rose-300" : "text-slate-300"}`}>
+          {showInviteForm ? "🔒 招待管理（ホスト専用）" : isPrivate ? "🔒 メンバー" : "👥 メンバー"}
+        </p>
+        <p className="text-[11px] text-slate-500 mt-0.5">
+          {isPrivate
+            ? `招待 ${(allowedPlayers ?? []).length}名 · 参加 ${joinedCount}/4`
+            : `参加 ${joinedCount}/4`}
+        </p>
+      </div>
+
+      {showInviteForm && (
+        <div>
+          <label className="text-xs text-slate-300 font-medium block mb-1.5">招待するプレイヤー（Name#ID）</label>
+          <div className="flex gap-2">
+            <input
+              value={inviteInput}
+              onChange={(e) => onInviteInputChange(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && onInvitePlayer()}
+              className="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-mono focus:border-rose-400 focus:outline-none"
+              placeholder="例: 闇月リリム#1234"
+            />
+            <button
+              type="button"
+              onClick={onInvitePlayer}
+              className="rounded-xl bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 text-sm font-bold transition-colors"
+            >
+              招待
+            </button>
+          </div>
+          <p className="text-xs text-slate-500 mt-1.5">
+            ※ 相手の画面に表示されている「Name#ID」を全文コピーして入力してください
+          </p>
+          {inviteError && <p className="text-xs text-rose-400 mt-1">{inviteError}</p>}
+        </div>
+      )}
+
+      {entries.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="grid grid-cols-[1fr_auto] gap-x-3 px-1 text-[10px] font-semibold text-slate-500">
+            <span>{isPrivate ? "招待済み" : "プレイヤー"}</span>
+            <span className="text-right min-w-[6.5rem]">参加 / キャラ</span>
+          </div>
+          {entries.map((entry) => (
+            <RoomMemberRow
+              key={entry.fullId}
+              entry={entry}
+              hostId={hostId}
+              myId={myId}
+              isHost={isHost}
+              kickLoading={kickLoading}
+              onRequestKick={setKickConfirmTarget}
+            />
+          ))}
+        </div>
+      )}
+
+      <KickConfirmDialog
+        target={kickConfirmTarget}
+        kickLoading={kickLoading}
+        onCancel={() => setKickConfirmTarget(null)}
+        onConfirm={async (uid) => {
+          const ok = await onKickPlayer?.(uid);
+          if (ok) setKickConfirmTarget(null);
+        }}
+      />
+
+      {joinedCount < 2 && (
+        <p className="text-xs text-slate-500 text-center pt-0.5 flex items-center justify-center gap-2">
+          <Loader2 size={12} className="animate-spin" />
+          他のプレイヤーを待っています… (1人でも開始できます)
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** 待機室（キャラ選択・ホスト開始など） */
 export default function WaitingRoom({
   waitingSessionKey = 0,
@@ -659,6 +899,8 @@ export default function WaitingRoom({
   onInviteInputChange,
   inviteError,
   onInvitePlayer,
+  onKickPlayer,
+  kickLoading = false,
   seVolume,
   bgmVolume,
   onSeVolumeChange,
@@ -754,27 +996,20 @@ export default function WaitingRoom({
             <p className="text-xs text-slate-500">このIDをホストの「招待するプレイヤー」欄に入力してもらってください</p>
           </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4 space-y-2">
-            <p className="text-xs text-slate-400 mb-2">参加済みプレイヤー ({playerSlots.length}/4)</p>
-            {playerSlots.map((slot, i) => (
-              <div key={slot.id} className="flex items-center gap-3 rounded-lg bg-slate-800 px-3 py-2">
-                <span className="text-sm font-medium">
-                  {i + 1}. {slot.name}
-                </span>
-                {slot.fullId && <span className="text-xs text-slate-500 font-mono">#{slot.fullId.split("#")[1]}</span>}
-                {slot.id === roomData?.hostId && <span className="text-xs text-amber-400 ml-auto">ホスト</span>}
-                {slot.id === myId && (
-                  <span className="text-xs text-cyan-400 ml-auto border border-cyan-400/40 rounded px-1">YOU</span>
-                )}
-              </div>
-            ))}
-            {playerSlots.length < 2 && (
-              <p className="text-xs text-slate-500 text-center pt-1 flex items-center justify-center gap-2">
-                <Loader2 size={12} className="animate-spin" />
-                他のプレイヤーを待っています… (1人でも開始できます)
-              </p>
-            )}
-          </div>
+          <RoomMemberRoster
+            isPrivate={!!roomData?.isPrivate}
+            isHost={isHost}
+            hostId={roomData?.hostId}
+            myId={myId}
+            allowedPlayers={roomData?.allowedPlayers}
+            playerSlots={playerSlots}
+            inviteInput={inviteInput}
+            onInviteInputChange={onInviteInputChange}
+            inviteError={inviteError}
+            onInvitePlayer={onInvitePlayer}
+            onKickPlayer={onKickPlayer}
+            kickLoading={kickLoading}
+          />
 
           <CharacterLobbyPrep
             waitingSessionKey={waitingSessionKey}
@@ -786,71 +1021,6 @@ export default function WaitingRoom({
             unlockPlayerNameForSecret={unlockPlayerNameForSecret}
             onSecretCharacterSelected={onSecretCharacterSelected}
           />
-
-          <div className="rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-2">
-            <p className="text-[11px] font-semibold text-slate-500 mb-1.5">全員のキャラ選択状況</p>
-            <div className="space-y-1">
-              {playerSlots.map((slot) => {
-                const ck = slot.character;
-                const c = ck ? CHARACTERS[ck] : null;
-                return (
-                  <div key={slot.id} className="flex items-center gap-2 text-xs text-slate-400">
-                    <span>
-                      {slot.name}
-                      {slot.id === myId ? " (YOU)" : ""}
-                    </span>
-                    <span className="ml-auto flex items-center gap-1">
-                      {ck ? (
-                        <>
-                          <CharacterIcon
-                            characterType={ck}
-                            imgClassName="h-4 w-4 object-contain shrink-0"
-                            spanClassName="text-sm leading-none"
-                          />
-                          <span className={c.color}>{c.label}</span>
-                        </>
-                      ) : (
-                        <span className="text-amber-400/90 font-medium">未選択</span>
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {isHost && roomData?.isPrivate && (
-            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-4 space-y-3">
-              <p className="text-xs font-semibold text-rose-300">🔒 招待管理（ホスト専用）</p>
-              <div>
-                <label className="text-xs text-slate-300 font-medium block mb-1.5">招待するプレイヤー（Name#ID）</label>
-                <div className="flex gap-2">
-                  <input
-                    value={inviteInput}
-                    onChange={(e) => onInviteInputChange(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && onInvitePlayer()}
-                    className="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-mono focus:border-rose-400 focus:outline-none"
-                    placeholder="例: 闇月リリム#1234"
-                  />
-                  <button type="button" onClick={onInvitePlayer} className="rounded-xl bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 text-sm font-bold transition-colors">
-                    招待
-                  </button>
-                </div>
-                <p className="text-xs text-slate-500 mt-1.5">※ 相手の画面に表示されている「Name#ID」を全文コピーして入力してください</p>
-                {inviteError && <p className="text-xs text-rose-400 mt-1">{inviteError}</p>}
-              </div>
-              {roomData.allowedPlayers?.length > 0 && (
-                <div className="space-y-1">
-                  <p className="text-xs text-slate-500">招待済み ({roomData.allowedPlayers.length}名)</p>
-                  {roomData.allowedPlayers.map((fid) => (
-                    <div key={fid} className="flex items-center gap-2 rounded bg-slate-800 px-2 py-1 text-xs font-mono text-slate-300">
-                      <span className="text-emerald-400">✓</span> {fid}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
 
           {isHost ? (
             <button

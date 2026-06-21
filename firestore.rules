@@ -301,6 +301,31 @@ service cloud.firestore {
         && slotIdsMatchPlayerIds(after.playerSlots, after.playerIds);
     }
 
+    function hostKickFromLobbyValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      let rosterOk = before.status == 'lobby'
+        && uid() == before.hostId
+        && lobbyImmutableCore(before, after)
+        && after.playerIds.size() == before.playerIds.size() - 1
+        && after.playerSlots.size() == before.playerSlots.size() - 1
+        && before.hostId in after.playerIds
+        && before.playerIds.hasAll(after.playerIds)
+        && slotsInRange(after.playerSlots)
+        && idsInRange(after.playerIds)
+        && slotIdsMatchPlayerIds(after.playerSlots, after.playerIds);
+      return rosterOk
+        && (
+          affected.hasOnly(['playerSlots', 'playerIds'])
+          || (
+            affected.hasOnly(['playerSlots', 'playerIds', 'allowedPlayers'])
+            && after.allowedPlayers is list
+            && before.allowedPlayers.hasAll(after.allowedPlayers)
+          )
+        );
+    }
+
     function createRoomValid(rid) {
       let d = request.resource.data;
       return signedIn()
@@ -344,6 +369,7 @@ service cloud.firestore {
               || playGameStatePatchValid()
               || hostContinueToLobbyValid()
               || playerLeaveRoomValid()
+              || hostKickFromLobbyValid()
             )
           )
         );

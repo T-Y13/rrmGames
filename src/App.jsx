@@ -95,6 +95,7 @@ import { publicAssetUrl } from "./lib/publicAssetUrl";
 import { formatFriendlyError } from "./lib/formatFriendlyError";
 import {
   buildHostContinueToLobbyPatch,
+  buildKickPlayerPatch,
   buildLeaveRoomPatch,
 } from "./lib/roomLifecycle";
 import { GAME_ASSET_PRELOAD_PATHS, preloadImages } from "./utils/assetLoader";
@@ -285,7 +286,9 @@ export default function App() {
   const [invitesPanelOpen, setInvitesPanelOpen] = useState(false);
   const [pendingInvites, setPendingInvites] = useState([]);
   const [resultsRoomActionLoading, setResultsRoomActionLoading] = useState(false);
+  const [kickLoading, setKickLoading] = useState(false);
   const hadRoomDataRef = useRef(false);
+  const wasLobbyPlayerRef = useRef(false);
   // 招待制ルーム関連
   const [isPrivateRoom, setIsPrivateRoom] = useState(false);
   const [inviteInput, setInviteInput]     = useState("");
@@ -1442,11 +1445,12 @@ export default function App() {
     setUiError("");
   };
 
-  const exitRoomToMainMenu = useCallback(() => {
+  const exitRoomToMainMenu = useCallback((message = "") => {
     hadRoomDataRef.current = false;
+    wasLobbyPlayerRef.current = false;
     setRoomId(null);
     setScreen("lobby");
-    setUiError("");
+    setUiError(message);
   }, [setRoomId]);
 
   const handleHostDisbandRoom = useCallback(async () => {
@@ -1508,6 +1512,30 @@ export default function App() {
       setInviteInput(""); setInviteError("");
     } catch (e) { setInviteError(formatFriendlyError(e, "招待の追加に失敗しました。しばらくしてから再度お試しください。")); }
   };
+
+  const handleHostKickPlayer = useCallback(async (targetUid) => {
+    if (lobbyActionBusyRef.current || kickLoading) return false;
+    if (!roomId || !isHost || !roomData || roomData.status !== "lobby") return false;
+    if (!targetUid || targetUid === myId || targetUid === roomData.hostId) return false;
+
+    const patch = buildKickPlayerPatch(roomData, targetUid);
+    if (!patch) return false;
+
+    lobbyActionBusyRef.current = true;
+    setKickLoading(true);
+    setUiError("");
+    try {
+      await updateRoom(patch);
+      lobbyActionBusyRef.current = false;
+      setKickLoading(false);
+      return true;
+    } catch (e) {
+      setUiError(formatFriendlyError(e, "プレイヤーの退室処理に失敗しました。しばらくしてから再度お試しください。"));
+      lobbyActionBusyRef.current = false;
+      setKickLoading(false);
+      return false;
+    }
+  }, [roomId, isHost, roomData, myId, kickLoading, updateRoom]);
 
   // ─── 自分のIDをクリップボードにコピー ──────────────────────────────
   const handleCopyMyId = () => {
@@ -1582,6 +1610,29 @@ export default function App() {
       })
       .filter(Boolean);
   }, [myFullId, myId]);
+
+  useEffect(() => {
+    if (!roomId) {
+      wasLobbyPlayerRef.current = false;
+      return;
+    }
+    if (!roomData || !myId) return;
+
+    const inRoom = (roomData.playerIds ?? []).includes(myId);
+    if (inRoom) {
+      wasLobbyPlayerRef.current = true;
+      return;
+    }
+
+    if (
+      wasLobbyPlayerRef.current &&
+      roomData.status === "lobby" &&
+      screen === "waiting" &&
+      !roomData.isSolo
+    ) {
+      exitRoomToMainMenu("ホストによりルームから退室させられました。");
+    }
+  }, [roomId, roomData, myId, screen, exitRoomToMainMenu]);
 
   useEffect(() => {
     if (screen !== "lobby" || !myFullId || !myId) return undefined;
@@ -2935,6 +2986,8 @@ export default function App() {
       onInviteInputChange={setInviteInput}
       inviteError={inviteError}
       onInvitePlayer={handleInvitePlayer}
+      onKickPlayer={handleHostKickPlayer}
+      kickLoading={kickLoading}
       seVolume={seVolume}
       bgmVolume={bgmVolume}
       onSeVolumeChange={handleSeVolumeChange}
