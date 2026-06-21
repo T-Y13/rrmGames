@@ -94,9 +94,7 @@ export default function Lobby({
 
   const hasInvites = pendingInvites.length > 0;
 
-  const noInvites = invitesProbeReady && !hasInvites;
-
-  const inviteCheckDisabled = loading || invitesLoading || noInvites;
+  const inviteCheckDisabled = loading || invitesLoading;
 
 
 
@@ -199,6 +197,32 @@ export default function Lobby({
           )}
 
         </button>
+
+
+
+        {!multiplayerLocked && (
+          <button
+            type="button"
+            onClick={onFetchInvites}
+            disabled={inviteCheckDisabled}
+            className={[
+              "w-full rounded-2xl py-3.5 font-semibold transition-all flex items-center justify-center gap-2 shadow-lg",
+              hasInvites
+                ? "bg-rose-600 hover:bg-rose-500 text-white ring-2 ring-rose-400/50 animate-pulse"
+                : "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700",
+              inviteCheckDisabled ? "opacity-60" : "active:scale-[0.98]",
+            ].join(" ")}
+          >
+            <span className="text-lg">🔔</span>
+            <span>
+              {invitesLoading && !invitesProbeReady
+                ? "招待を確認中…"
+                : hasInvites
+                  ? `招待が ${pendingInvites.length} 件あります`
+                  : "招待を確認"}
+            </span>
+          </button>
+        )}
 
 
 
@@ -438,17 +462,17 @@ export default function Lobby({
 
               disabled={inviteCheckDisabled}
 
-              title={noInvites ? "現在、参加できる招待はありません" : undefined}
-
               className={[
 
                 "w-full rounded-xl py-3.5 font-semibold transition-all flex flex-col items-center gap-0.5",
 
-                noInvites
+                hasInvites
 
-                  ? "pointer-events-none cursor-not-allowed border border-slate-700 bg-slate-800 text-slate-500 opacity-55 grayscale"
+                  ? "bg-rose-700 hover:bg-rose-600 active:scale-[0.98] text-white"
 
-                  : "bg-rose-700 hover:bg-rose-600 active:scale-[0.98] text-white disabled:opacity-50",
+                  : "bg-slate-700 hover:bg-slate-600 active:scale-[0.98] text-slate-200 border border-slate-600",
+
+                inviteCheckDisabled ? "opacity-50" : "",
 
               ].join(" ")}
 
@@ -456,21 +480,21 @@ export default function Lobby({
 
               <span className="text-base font-bold">🔔 招待を確認</span>
 
-              <span className={`text-xs opacity-80 ${noInvites ? "text-slate-500" : "text-rose-300"}`}>
+              <span className={`text-xs opacity-80 ${hasInvites ? "text-rose-200" : "text-slate-400"}`}>
 
                 {invitesLoading && !invitesProbeReady
 
                   ? "招待を確認中…"
 
-                  : noInvites
+                  : hasInvites
 
-                    ? "招待はありません"
+                    ? `${pendingInvites.length}件の招待を表示`
 
-                    : hasInvites
+                    : invitesProbeReady
 
-                      ? `${pendingInvites.length}件の招待を表示`
+                      ? "タップして最新の招待を取得"
 
-                      : "自分宛ての招待ルームを一覧表示"}
+                      : "自分宛ての招待ルームを検索"}
 
               </span>
 

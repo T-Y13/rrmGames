@@ -1584,33 +1584,42 @@ export default function App() {
   }, [myFullId, myId]);
 
   useEffect(() => {
-    if (screen !== "lobby" || !multiOpen || !myFullId || !myId) return undefined;
+    if (screen !== "lobby" || !myFullId || !myId) return undefined;
     let cancelled = false;
-    setInvitesProbeReady(false);
-    setInvitesLoading(true);
-    void queryPendingInvites()
-      .then((list) => {
+
+    const refreshInvites = async () => {
+      try {
+        const list = await queryPendingInvites();
         if (cancelled) return;
         setPendingInvites(list);
         setInvitesProbeReady(true);
-      })
-      .catch(() => {
+        if (list.length > 0) setInvitesPanelOpen(true);
+      } catch (e) {
         if (cancelled) return;
         setPendingInvites([]);
         setInvitesProbeReady(true);
-      })
-      .finally(() => {
-        if (!cancelled) setInvitesLoading(false);
-      });
+        console.warn("[invites] query failed", e);
+      }
+    };
+
+    setInvitesLoading(true);
+    void refreshInvites().finally(() => {
+      if (!cancelled) setInvitesLoading(false);
+    });
+
+    const interval = setInterval(() => {
+      void refreshInvites();
+    }, 20000);
+
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
-  }, [screen, multiOpen, myFullId, myId, queryPendingInvites]);
+  }, [screen, myFullId, myId, queryPendingInvites]);
 
   const handleFetchInvites = useCallback(async () => {
     if (lobbyActionBusyRef.current) return;
     if (!myFullId || !myId) return;
-    if (invitesProbeReady && pendingInvites.length === 0) return;
     lobbyActionBusyRef.current = true;
     setInvitesPanelOpen(true);
     setInvitesLoading(true);
@@ -1620,7 +1629,9 @@ export default function App() {
       setPendingInvites(list);
       setInvitesProbeReady(true);
       if (list.length === 0) {
-        setUiError("招待されているルームが見つかりませんでした");
+        setUiError("招待されているルームが見つかりませんでした。ホストにあなたの ID（Name#1234）を共有してもらってください。");
+      } else {
+        setUiError("");
       }
     } catch (e) {
       setPendingInvites([]);
@@ -1629,7 +1640,7 @@ export default function App() {
     }
     lobbyActionBusyRef.current = false;
     setInvitesLoading(false);
-  }, [myFullId, myId, invitesProbeReady, pendingInvites.length, queryPendingInvites]);
+  }, [myFullId, myId, queryPendingInvites]);
 
   const handleJoinInvite = useCallback(
     async (rid) => {
