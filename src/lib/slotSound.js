@@ -23,6 +23,27 @@ export function createSlotSoundManager() {
   let menuBgmDesired = false;
   let menuBgmStartInFlight = false;
   let menuBgmPointerUnlockScheduled = false;
+  let day8BgmPointerUnlockHandler = null;
+  let menuBgmPointerUnlockHandler = null;
+  let dailyBgmPointerUnlockHandler = null;
+
+  function cancelPendingBgmPointerUnlocks() {
+    if (dailyBgmPointerUnlockHandler) {
+      document.removeEventListener("pointerdown", dailyBgmPointerUnlockHandler);
+      dailyBgmPointerUnlockHandler = null;
+    }
+    dailyBgmPointerUnlockScheduled = false;
+    if (menuBgmPointerUnlockHandler) {
+      document.removeEventListener("pointerdown", menuBgmPointerUnlockHandler);
+      menuBgmPointerUnlockHandler = null;
+    }
+    menuBgmPointerUnlockScheduled = false;
+    if (day8BgmPointerUnlockHandler) {
+      document.removeEventListener("pointerdown", day8BgmPointerUnlockHandler);
+      day8BgmPointerUnlockHandler = null;
+    }
+    day8BgmPointerUnlockScheduled = false;
+  }
   const cache = {};
 
   function clamp01(v) {
@@ -154,13 +175,15 @@ export function createSlotSoundManager() {
 
   function queueDailyBgmPointerUnlockRetry() {
     if (dailyBgmPointerUnlockScheduled || !dailyBgmDesired || muted) return;
+    cancelPendingBgmPointerUnlocks();
     dailyBgmPointerUnlockScheduled = true;
     const onPointer = () => {
       dailyBgmPointerUnlockScheduled = false;
-      document.removeEventListener("pointerdown", onPointer, true);
+      dailyBgmPointerUnlockHandler = null;
       tryStartDailyBgmPlayback();
     };
-    document.addEventListener("pointerdown", onPointer, { capture: true, once: true });
+    dailyBgmPointerUnlockHandler = onPointer;
+    document.addEventListener("pointerdown", onPointer, { once: true });
   }
 
   function tryStartDailyBgmPlayback() {
@@ -215,13 +238,15 @@ export function createSlotSoundManager() {
 
   function queueMenuBgmPointerUnlockRetry() {
     if (menuBgmPointerUnlockScheduled || !menuBgmDesired || muted) return;
+    cancelPendingBgmPointerUnlocks();
     menuBgmPointerUnlockScheduled = true;
     const onPointer = () => {
       menuBgmPointerUnlockScheduled = false;
-      document.removeEventListener("pointerdown", onPointer, true);
+      menuBgmPointerUnlockHandler = null;
       tryStartMenuBgmPlayback();
     };
-    document.addEventListener("pointerdown", onPointer, { capture: true, once: true });
+    menuBgmPointerUnlockHandler = onPointer;
+    document.addEventListener("pointerdown", onPointer, { once: true });
   }
 
   function tryStartMenuBgmPlayback() {
@@ -265,13 +290,15 @@ export function createSlotSoundManager() {
 
   function queueDay8BgmPointerUnlockRetry() {
     if (day8BgmPointerUnlockScheduled || !day8BgmDesired || muted) return;
+    cancelPendingBgmPointerUnlocks();
     day8BgmPointerUnlockScheduled = true;
     const onPointer = () => {
       day8BgmPointerUnlockScheduled = false;
-      document.removeEventListener("pointerdown", onPointer, true);
+      day8BgmPointerUnlockHandler = null;
       tryStartDay8BgmPlayback();
     };
-    document.addEventListener("pointerdown", onPointer, { capture: true, once: true });
+    day8BgmPointerUnlockHandler = onPointer;
+    document.addEventListener("pointerdown", onPointer, { once: true });
   }
 
   function tryStartDay8BgmPlayback() {
@@ -365,6 +392,17 @@ export function createSlotSoundManager() {
 
     stopMenuBgm() {
       stopMenuBgmInternal();
+    },
+
+    /** ボタン操作と同じジェスチャーで AudioContext / BGM 再生を再試行（1回目クリック奪取の防止） */
+    resumeFromUserGesture() {
+      cancelPendingBgmPointerUnlocks();
+      try {
+        getCtx();
+      } catch (_) {}
+      if (menuBgmDesired) tryStartMenuBgmPlayback();
+      else if (day8BgmDesired) tryStartDay8BgmPlayback();
+      else if (dailyBgmDesired) tryStartDailyBgmPlayback();
     },
 
     setMuted(v) {

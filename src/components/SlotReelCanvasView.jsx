@@ -67,6 +67,40 @@ function drawSpotlight(ctx, w, h) {
   ctx.fillRect(0, 0, w, h);
 }
 
+/** 中央ライン＋◀▶マーク（Canvas 内に描画して DOM 重ねのチラつきを防ぐ） */
+function drawPaylineOverlay(ctx, w, h) {
+  const midY = h * 0.5;
+  const lineGrad = ctx.createLinearGradient(0, 0, w, 0);
+  lineGrad.addColorStop(0, "rgba(248, 113, 113, 0)");
+  lineGrad.addColorStop(0.12, "rgba(248, 113, 113, 0.15)");
+  lineGrad.addColorStop(0.5, "rgba(239, 68, 68, 0.95)");
+  lineGrad.addColorStop(0.88, "rgba(248, 113, 113, 0.15)");
+  lineGrad.addColorStop(1, "rgba(248, 113, 113, 0)");
+
+  ctx.save();
+  ctx.strokeStyle = lineGrad;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = "rgba(239, 68, 68, 0.45)";
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.moveTo(0, midY);
+  ctx.lineTo(w, midY);
+  ctx.stroke();
+  ctx.restore();
+
+  const markSize = Math.max(7, Math.min(w * 0.045, 11));
+  ctx.save();
+  ctx.font = `700 ${markSize}px "Segoe UI Emoji", "Apple Color Emoji", sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "rgba(248, 113, 113, 0.95)";
+  ctx.shadowColor = "rgba(239, 68, 68, 0.75)";
+  ctx.shadowBlur = 8;
+  ctx.fillText("▶", markSize * 0.9, midY);
+  ctx.fillText("◀", w - markSize * 0.9, midY);
+  ctx.restore();
+}
+
 function drawColumn(
   ctx,
   colX,
@@ -162,6 +196,8 @@ export default function SlotReelCanvasView({
   reachCol = -1,
   machine,
   isSpinFrozenRef,
+  /** true の間は settled を通知しない（2リール停止時の当選マーク誤点灯防止） */
+  spinSessionActive = false,
   onReelsSettledChange,
   className = "",
   style,
@@ -175,6 +211,21 @@ export default function SlotReelCanvasView({
   const prevColumnsRef = useRef(reelColumns);
   const settledRef = useRef(true);
   const onSettledRef = useRef(onReelsSettledChange);
+  const spinSessionActiveRef = useRef(spinSessionActive);
+  const columnSpinningRef = useRef(columnSpinning);
+  const paylineWinFxRef = useRef(paylineWinFx);
+  const bouncingColRef = useRef(bouncingCol);
+  const slipColsRef = useRef(slipCols);
+  const reachColRef = useRef(reachCol);
+  const machineRef = useRef(machine);
+
+  spinSessionActiveRef.current = spinSessionActive;
+  columnSpinningRef.current = columnSpinning;
+  paylineWinFxRef.current = paylineWinFx;
+  bouncingColRef.current = bouncingCol;
+  slipColsRef.current = slipCols;
+  reachColRef.current = reachCol;
+  machineRef.current = machine;
 
   useEffect(() => {
     onSettledRef.current = onReelsSettledChange;
@@ -225,14 +276,18 @@ export default function SlotReelCanvasView({
       winPulseRef.current += dt;
 
       const frozen = typeof isSpinFrozenRef?.current === "number" && performance.now() < isSpinFrozenRef.current;
-      const anyColumnSpinning = columnSpinning?.some((s, i) => s && !frozen) ?? false;
+      const columnSpinningLive = columnSpinningRef.current;
+      const anyColumnSpinning = columnSpinningLive?.some((s, i) => s && !frozen) ?? false;
 
       colStatesRef.current.forEach((st, i) => {
-        const spinning = columnSpinning?.[i] && !frozen;
+        const wantsSpin = Boolean(columnSpinningLive?.[i]);
+        const spinning = wantsSpin && !frozen;
 
         if (spinning) {
           st.phase = "spin";
           st.scrollRows -= SPIN_SPEED_ROWS * dt;
+        } else if (frozen && wantsSpin && st.phase === "spin") {
+          /* リーチカットイン等：回転列は止めずスクロール位置を保持 */
         } else if (st.phase === "stopping") {
           const k = 1 - Math.exp(-STOP_SNAP_RATE * dt);
           st.scrollRows += (0 - st.scrollRows) * k;
@@ -242,7 +297,7 @@ export default function SlotReelCanvasView({
           }
         } else if (st.phase === "stopped") {
           st.scrollRows = 0;
-        } else if (!spinning) {
+        } else if (!wantsSpin) {
           st.phase = "stopped";
           st.scrollRows = 0;
         }
@@ -255,7 +310,7 @@ export default function SlotReelCanvasView({
       });
 
       const allColsSettled = colStatesRef.current.every(columnIsSettled);
-      emitSettled(allColsSettled && !anyColumnSpinning);
+      emitSettled(allColsSettled && !anyColumnSpinning && !spinSessionActiveRef.current);
 
       const parent = canvas.parentElement;
       if (!parent) {
@@ -284,17 +339,23 @@ export default function SlotReelCanvasView({
       ctx.fillStyle = "#0a0d14";
       ctx.fillRect(0, 0, w, h);
 
+      const paylineWin = paylineWinFxRef.current;
+      const bounceCol = bouncingColRef.current;
+      const slipLive = slipColsRef.current;
+      const reachCi = reachColRef.current;
+      const machineLive = machineRef.current;
+
       for (let ci = 0; ci < 3; ci += 1) {
         const colX = ci * (colW + gap);
         drawColumn(ctx, colX, colW, h, colStatesRef.current[ci], {
-          spinning: columnSpinning?.[ci] && !frozen,
-          paylineWin: paylineWinFx,
-          bounce: bouncingCol === ci,
-          slipActive: slipCols?.[ci],
-          machine,
+          spinning: columnSpinningLive?.[ci] && !frozen,
+          paylineWin,
+          bounce: bounceCol === ci,
+          slipActive: slipLive?.[ci],
+          machine: machineLive,
           winPulse: winPulseRef.current,
         });
-        if (reachCol === ci) {
+        if (reachCi === ci) {
           ctx.save();
           ctx.strokeStyle = "rgba(251, 191, 36, 0.65)";
           ctx.lineWidth = 2;
@@ -304,15 +365,15 @@ export default function SlotReelCanvasView({
       }
 
       drawSpotlight(ctx, w, h);
+      drawPaylineOverlay(ctx, w, h);
       rafRef.current = requestAnimationFrame(tick);
     };
 
     rafRef.current = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(rafRef.current);
-      lastTsRef.current = 0;
     };
-  }, [columnSpinning, paylineWinFx, bouncingCol, slipCols, reachCol, machine, isSpinFrozenRef]);
+  }, [isSpinFrozenRef]);
 
   return (
     <canvas

@@ -1,6 +1,7 @@
 import React from "react";
 
 import { GAME_TITLE_SHORT } from "../constants/branding";
+import { clearRoomSession } from "../lib/playerPresence";
 
 export class AppErrorBoundary extends React.Component {
   constructor(props) {
@@ -19,6 +20,11 @@ export class AppErrorBoundary extends React.Component {
   }
 
   handleReload = () => {
+    window.location.reload();
+  };
+
+  handleReturnToEntry = () => {
+    clearRoomSession();
     window.location.reload();
   };
 
@@ -44,6 +50,13 @@ export class AppErrorBoundary extends React.Component {
                 className="rounded-xl bg-cyan-500 px-6 py-3 font-bold text-slate-950 hover:bg-cyan-400 transition-colors"
               >
                 ページを再読み込み
+              </button>
+              <button
+                type="button"
+                onClick={this.handleReturnToEntry}
+                className="rounded-xl border border-slate-600 bg-slate-800 px-6 py-3 font-bold text-slate-200 hover:bg-slate-700 transition-colors"
+              >
+                セッションをリセットして開始画面へ
               </button>
             </div>
           </div>

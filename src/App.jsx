@@ -15,20 +15,25 @@ import { Loader2, TrendingUp, TrendingDown, Trophy, Users } from "lucide-react";
 
 import { CharacterIcon } from "./components/CharacterPieces";
 import BoardGamePhase from "./components/BoardGamePhase";
+import SoundSettingsControl from "./components/SoundSettingsControl";
 import PonCutin from "./components/PonCutin";
 import TaxiTrafficJamCutin from "./components/TaxiTrafficJamCutin";
 import DailyActionPhase from "./components/DailyActionPhase";
+import DailyActionSpectatorMirror from "./components/DailyActionSpectatorMirror";
 import DailySlotTrainingModal from "./components/DailySlotTrainingModal";
 import FinalBattleStage from "./components/FinalBattleStage";
 import Lobby from "./components/Lobby";
 import SSRainParticles from "./components/SSRainParticles";
 import SlotContainer from "./components/SlotContainer";
 import SlotSpinBroadcastOverlay from "./components/SlotSpinBroadcastOverlay";
+import ProgressivePotDisplay from "./components/ProgressivePotDisplay";
 import TurnManager from "./components/TurnManager";
 import WaitingRoom from "./components/WaitingRoom";
 import TopRightHud from "./components/TopRightHud";
+import CopyClipboardButton from "./components/CopyClipboardButton";
 import PlayingPlayerSidebar from "./components/PlayingPlayerSidebar";
 import ResultsRoomActions from "./components/ResultsRoomActions";
+import AssetHistoryChart from "./components/AssetHistoryChart";
 import StreamTypeCutin from "./components/StreamTypeCutin";
 import WorkCutin from "./components/WorkCutin";
 import { GAME_STYLES } from "./constants/gameAnimationsCss";
@@ -39,6 +44,7 @@ import {
   FINAL_BATTLE_HOST_DELAY_LEGACY_MS,
   FINAL_BATTLE_HOST_PRE_DAY8_MS,
   FINAL_BATTLE_SPLASH_MS,
+  INITIAL_PROGRESSGRESSIVE_POT,
   LAST_DAILY_DAY,
   SECRET_RIRIMU_CHARACTER_KEY,
   SECRET_RIRIMU_UNLOCK_PLAYER_NAME,
@@ -55,6 +61,43 @@ import {
   TITLE_LOGO_PATH,
 } from "./constants/branding";
 import { useFirebaseGame } from "./hooks/useFirebaseGame";
+import { useDailyCutinSpectatorSync } from "./hooks/useDailyCutinSpectatorSync";
+import {
+  buildDailyCutinSessionId,
+  DAILY_CUTIN_PHASE,
+  DAILY_CUTIN_SYNC_DEFAULTS,
+  dailyCutinSpectatorStatusLabel,
+  localDailyCutinSpectatorLabel,
+  mergeDailyCutinFieldsIntoGameState,
+  pickDailyCutinBroadcastFields,
+  readDailyCutinBroadcast,
+} from "./lib/dailyCutinSync";
+import {
+  backfillInvitedAuthUids,
+  buildCancelInvitePatch,
+  buildInviteRoomPatch,
+  fetchInviteInboxRoomIds,
+  pushInviteInbox,
+  registerFullIdIndex,
+  removeInviteFromInbox,
+  resolveInviteeUid,
+} from "./lib/inviteDiscovery";
+import useSugorokuMovementFx from "./hooks/useSugorokuMovementFx";
+import { buildDailyActionFx, DAILY_ACTION_FX_CLEAR_MS, attachDailyActionFxForDailyPhase, clearDailyActionFx } from "./lib/dailyActionFx";
+import { buildMovementFx, holdMoverForMovementFx, buildOrphanedMovementFxPatch, isMovementFxForPlayer, isTaxiDeferredMovementFx, runTileEffectPresentation, tileEffectExplainDurationMs } from "./lib/sugorokuMovementFx";
+import {
+  amuletPreActionLine,
+  buildDailyActionLogEntry,
+  legacyExtrasLine,
+  livingExpenseLines,
+  ponFireLines,
+  ponGainLine,
+  ponNoFireLine,
+  shrineActionLines,
+  slotActionLines,
+  streamActionLines,
+  workActionLines,
+} from "./lib/dailyActionLog";
 import {
   canWriteGoalLandingConfirm,
   isActorTurnOnGameState,
@@ -67,6 +110,7 @@ import {
   applySplashDamage,
   applyVirtueIncomeBoost,
   applyVirtueWave,
+  applyDay8SlotSpinToFreshGameState,
   clamp,
   clampMoney,
   computeAdvanceDaily,
@@ -90,6 +134,7 @@ import {
   toEpochMsMaybe,
   rand,
   virtueIncomeMult,
+  DAILY_SLOT_SYNC_DEFAULTS,
 } from "./utils/gameLogic";
 import { publicAssetUrl } from "./lib/publicAssetUrl";
 import { formatFriendlyError } from "./lib/formatFriendlyError";
@@ -98,7 +143,8 @@ import {
   buildKickPlayerPatch,
   buildLeaveRoomPatch,
 } from "./lib/roomLifecycle";
-import { runGhostAutomationStep } from "./lib/ghostPlayerAutomation";
+import { runGhostAutomationStep, finishGhostSlotBurst } from "./lib/ghostPlayerAutomation";
+import { computeProgressivePotDelta } from "./lib/progressivePot";
 import {
   buildClearSelfPresencePatch,
   buildGracefulLeavePatch,
@@ -111,6 +157,20 @@ import {
   readStoredRoomSession,
   shouldRunGhostAutomationController,
 } from "./lib/playerPresence";
+import {
+  applyDay8RoundTracking,
+  normalizeCompletedPlayers,
+  shouldMarkDay8TurnComplete,
+} from "./lib/day8RoundTracking";
+import {
+  computeDay7TransitionFxHoldMs,
+  DAILY_STREAM_CUTIN_MS,
+  DAILY_STREAM_PON_OVERLAY_MS,
+  DAILY_STREAM_FAIL_HOLD_MS,
+  DAILY_WORK_CUTIN_MS,
+  DAILY_WORK_PON_OVERLAY_MS,
+  isDailyOutgoingFxActive,
+} from "./lib/day7TransitionFx";
 import { GAME_ASSET_PRELOAD_PATHS, preloadImages } from "./utils/assetLoader";
 /* 筐体が消えない組み合わせ: PNG は SlotMachine import、マスクは index.css の data URL、
    drop-shadow／オーラは .slot-cabinet-img-wrap の filter のみ（img に mask+filter 併用しない） */
@@ -144,6 +204,39 @@ function loadSoundVolume(key, fallback) {
   }
 }
 
+function applyFxMoneyRevealToPlayers(players, reveal) {
+  if (!reveal || !Array.isArray(players)) return players;
+  return players.map((p) =>
+    p.id === reveal.playerId ? { ...p, stats: { ...p.stats, money: reveal.moneyAfter } } : p,
+  );
+}
+
+function isFirestoreAlreadyExistsError(e) {
+  return (
+    e?.code === "already-exists" ||
+    (typeof e?.message === "string" && e.message.toLowerCase().includes("already exists"))
+  );
+}
+
+/** 6桁IDの衝突時は自動で別IDを再試行 */
+async function createRoomWithRetry(createRoomFn, payload, maxAttempts = 8) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const rid = genRoomId();
+    try {
+      await createRoomFn(rid, payload);
+      return rid;
+    } catch (e) {
+      if (isFirestoreAlreadyExistsError(e)) {
+        lastErr = e;
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr ?? new Error("ルームIDの採番に失敗しました");
+}
+
 /** 「進む／戻る」マス効果の中間マス（Firestore 先行書き込み用）：go/miss 確定前は移動中で統一 */
 function buildDay8TileSlideMidpointPlayers(playersArr, moverIdx, midPos) {
   return playersArr.map((pl, i) =>
@@ -159,94 +252,6 @@ function buildDay8TileSlideMidpointPlayers(playersArr, moverIdx, midPos) {
           slotPullsThisSeat: 0,
         },
   );
-}
-
-function normalizeCompletedPlayers(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((id) => typeof id === "string" && id.length > 0);
-}
-
-function deriveDay8RoundStateFromRoom(roomDoc) {
-  const remainingRaw = Number(roomDoc?.remainingTurns);
-  const remaining =
-    Number.isFinite(remainingRaw) && remainingRaw >= 0
-      ? Math.floor(remainingRaw)
-      : BAL.dice.maxTurns;
-  return {
-    remainingTurns: remaining,
-    completedPlayers: normalizeCompletedPlayers(roomDoc?.completedPlayers),
-  };
-}
-
-function applyDay8RoundTracking(roomDoc, nextGs, actorUid) {
-  const prevGs = roomDoc?.gameState;
-  let trackedGs = nextGs;
-  let { remainingTurns, completedPlayers } = deriveDay8RoundStateFromRoom(roomDoc);
-
-  const entersDay8 =
-    nextGs?.gamePhase === "playing" &&
-    nextGs?.subPhase === "day8" &&
-    !(prevGs?.gamePhase === "playing" && prevGs?.subPhase === "day8");
-  if (entersDay8) {
-    remainingTurns = BAL.dice.maxTurns;
-    completedPlayers = [];
-  }
-
-  const inDay8Before = prevGs?.gamePhase === "playing" && prevGs?.subPhase === "day8";
-  const actorIdx = prevGs?.currentPlayerIdx;
-  const actorIdBefore =
-    Number.isInteger(actorIdx) && Array.isArray(prevGs?.players) ? prevGs.players[actorIdx]?.id : null;
-  const actorPrev =
-    Number.isInteger(actorIdx) && Array.isArray(prevGs?.players) ? prevGs.players[actorIdx] : null;
-  const actorNext =
-    Number.isInteger(actorIdx) && Array.isArray(nextGs?.players) ? nextGs.players[actorIdx] : null;
-  const actorMoveTurnsIncreased =
-    Number(actorNext?.moveTurns ?? -1) > Number(actorPrev?.moveTurns ?? -1);
-  const turnAdvanced =
-    inDay8Before &&
-    ((nextGs?.gamePhase !== "playing" || nextGs?.subPhase !== "day8") ||
-      Number(nextGs?.currentPlayerIdx) !== Number(prevGs?.currentPlayerIdx));
-  /** 手番 index が変わらないソロ等：スロット1席終了で slotPullsThisSeat がアウトゴーイングにより 0 に戻る */
-  const day8SlotSeatClosedSameIdx =
-    inDay8Before &&
-    Number(prevGs?.currentPlayerIdx) === Number(nextGs?.currentPlayerIdx) &&
-    actorPrev?.movePhase === "arrived" &&
-    Number(actorPrev?.slotPullsThisSeat ?? 0) > 0 &&
-    Number(actorNext?.slotPullsThisSeat ?? 0) === 0;
-  const actionCompleted = turnAdvanced || actorMoveTurnsIncreased || day8SlotSeatClosedSameIdx;
-
-  if (
-    inDay8Before &&
-    actionCompleted &&
-    actorIdBefore &&
-    actorIdBefore === actorUid &&
-    actorPrev?.alive !== false
-  ) {
-    if (!completedPlayers.includes(actorUid)) completedPlayers = [...completedPlayers, actorUid];
-    const aliveIds = (prevGs.players ?? [])
-      .filter((p) => p?.alive !== false && typeof p?.id === "string")
-      .map((p) => p.id);
-    const completedAliveCount = aliveIds.filter((id) => completedPlayers.includes(id)).length;
-    if (aliveIds.length > 0 && completedAliveCount >= aliveIds.length) {
-      remainingTurns = Math.max(0, remainingTurns - 1);
-      completedPlayers = [];
-      const roundsUsed = Math.max(0, BAL.dice.maxTurns - remainingTurns);
-      if (Array.isArray(trackedGs?.players)) {
-        trackedGs = {
-          ...trackedGs,
-          players: trackedGs.players.map((pl) =>
-            pl?.alive !== false ? { ...pl, moveTurns: Math.max(Number(pl.moveTurns) || 0, roundsUsed) } : pl,
-          ),
-        };
-      }
-    }
-  }
-
-  return {
-    gameState: trackedGs,
-    remainingTurns,
-    completedPlayers,
-  };
 }
 
 /** 7日目ラスト→決戦直前：書き込み前に育成画面のままステータス・ログだけ反映（決戦UIへは即切り替えない） */
@@ -301,12 +306,17 @@ export default function App() {
   const [pendingInvites, setPendingInvites] = useState([]);
   const [resultsRoomActionLoading, setResultsRoomActionLoading] = useState(false);
   const [kickLoading, setKickLoading] = useState(false);
+  const [cancelInviteLoading, setCancelInviteLoading] = useState(null);
   const [leaveGameLoading, setLeaveGameLoading] = useState(false);
   const [leaveGameConfirmOpen, setLeaveGameConfirmOpen] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const hadRoomDataRef = useRef(false);
+  /** hadRoomDataRef が立った roomId（別ルーム作成中の一瞬 null と区別する） */
+  const roomIdWithDataRef = useRef(null);
   const wasLobbyPlayerRef = useRef(false);
+  const lobbyInviteAutoProbeDoneRef = useRef(false);
   const ghostAutomationBusyRef = useRef(false);
+  const leaveInFlightRef = useRef(false);
   const reconnectAttemptedRef = useRef(false);
   // 招待制ルーム関連
   const [isPrivateRoom, setIsPrivateRoom] = useState(false);
@@ -378,13 +388,22 @@ export default function App() {
   const [ponCutin, setPonCutin] = useState(null);
   /** { title, lines } — すごろくマス効果の短いポップアップ */
   const [sugorokuTileFxToast, setSugorokuTileFxToast] = useState(null);
+  /** マス効果のお金±表示後、Firestore 反映前に UI だけ資金を更新 */
+  const [fxMoneyReveal, setFxMoneyReveal] = useState(null);
+  /** タクシー追いマス等 movementFx 外での盤面 ±G 浮動表示 */
+  const [boardMoneyFloatDelta, setBoardMoneyFloatDelta] = useState(null);
+  const movementFxFinalMoneyRef = useRef(null);
   /** PON転倒：マスホップ完了後にのみ BoardViewport からコールバックを受ける */
   const [ponHopCompleteEnabled, setPonHopCompleteEnabled] = useState(false);
   const ponHopGateRef = useRef(false);
   /** PON転倒＋「進む／戻る」マス効果：第2ホップ前に解除 */
   const ponTileSlideTimerRef = useRef(null);
+  /** movementFx 完了後に手番プレイヤーだけが実行する Firestore コミット */
+  const movementFxPendingCommitRef = useRef(null);
+  const movementFxRecoveryKeyRef = useRef(null);
   /** タクシー書き込み直後にマス効果トーストを表示 */
   const pendingSugorokuTileFxToastRef = useRef(null);
+  const pendingTileEffectMetaRef = useRef(null);
   const sugorokuTileFxToastTimerRef = useRef(null);
   /** 7日目デイリー：Firestore 同期前に一覧・ログへ結果を反映（仕事・配信・神社・デイリースロット） */
   const [day7DailyOptimisticGs, setDay7DailyOptimisticGs] = useState(null);
@@ -406,13 +425,24 @@ export default function App() {
   const [workCutin, setWorkCutin] = useState(null);
   const workCutinTimerRef = useRef(null);
   const workFxChainTimeoutsRef = useRef([]);
+  const dailyCutinSessionIdRef = useRef(null);
+  const pendingDailyCutinBroadcastRef = useRef(null);
+  /** マルチ日常：カットイン終了後にターン進行 writeGS を送る */
+  const pendingDailyTurnWriteRef = useRef(null);
+  const dailyTurnWriteTimerRef = useRef(null);
+  const lastSelfGhostClearAttemptRef = useRef(0);
   const [turnChangeBannerTurns, setTurnChangeBannerTurns] = useState(null);
   const [pendingTurnBannerTurns, setPendingTurnBannerTurns] = useState(null);
-  const prevDay8TurnKeyRef = useRef(null);
   /** 8日目：残りラウンド（room.remainingTurns）が減ったときにターン変更カットインを予約（ソロ・マルチ共通） */
   const prevDay8RemainingTurnsRef = useRef(null);
   const turnChangeBannerTimerRef = useRef(null);
   const turnChangeBannerDelayTimerRef = useRef(null);
+  /** 8日目：移動／タクシー／PON など視覚演出中はターン切替カットインを出さない（同期 ref） */
+  const day8VisualActionLockRef = useRef(false);
+  const deferredTurnBannerTurnsRef = useRef(null);
+  const taxiVisualActiveRef = useRef(false);
+  const [day8VisualActionLocked, setDay8VisualActionLocked] = useState(false);
+  const [turnBannerFlushEpoch, setTurnBannerFlushEpoch] = useState(0);
   const pieceHoppingClearTimerRef = useRef(null);
   const [gameOverSplashMsg, setGameOverSplashMsg] = useState(null);
   const gameOverSplashTimerRef = useRef(null);
@@ -449,6 +479,11 @@ export default function App() {
     playManagedAudio("select", RIRIMU_SELECT_SE_FILE);
   }, [playManagedAudio]);
 
+  /** メニューBGM 等の自動再生解除を、ボタン操作と同じクリックで済ませる */
+  const resumeSoundFromUserGesture = useCallback(() => {
+    soundRef.current?.resumeFromUserGesture?.();
+  }, []);
+
   /** すごろく駒ホップ中はターン変更カットイン等を抑止する（所要は gameLogic のホップ時間に合わせる） */
   const schedulePieceHopBlockingMs = useCallback((ms) => {
     if (pieceHoppingClearTimerRef.current) {
@@ -461,6 +496,41 @@ export default function App() {
       pieceHoppingClearTimerRef.current = null;
       setPieceHopping(false);
     }, safe);
+  }, []);
+
+  const queueDay8TurnChangeBanner = useCallback((turnsLeft) => {
+    if (typeof turnsLeft !== "number" || !Number.isFinite(turnsLeft)) return;
+    const v = Math.max(0, Math.floor(turnsLeft));
+    if (day8VisualActionLockRef.current) {
+      deferredTurnBannerTurnsRef.current = v;
+      return;
+    }
+    setPendingTurnBannerTurns(v);
+  }, []);
+
+  const beginDay8VisualAction = useCallback(() => {
+    day8VisualActionLockRef.current = true;
+    setDay8VisualActionLocked(true);
+    if (turnChangeBannerDelayTimerRef.current) {
+      clearTimeout(turnChangeBannerDelayTimerRef.current);
+      turnChangeBannerDelayTimerRef.current = null;
+    }
+    if (turnChangeBannerTimerRef.current) {
+      clearTimeout(turnChangeBannerTimerRef.current);
+      turnChangeBannerTimerRef.current = null;
+    }
+    setTurnChangeBannerTurns(null);
+  }, []);
+
+  const releaseDay8VisualActionLock = useCallback(() => {
+    const hadDeferred = deferredTurnBannerTurnsRef.current != null;
+    day8VisualActionLockRef.current = false;
+    setDay8VisualActionLocked(false);
+    if (hadDeferred) {
+      setPendingTurnBannerTurns(deferredTurnBannerTurnsRef.current);
+      deferredTurnBannerTurnsRef.current = null;
+    }
+    if (hadDeferred) setTurnBannerFlushEpoch((n) => n + 1);
   }, []);
 
   useEffect(() => {
@@ -483,6 +553,14 @@ export default function App() {
   // ─── 派生値 ──────────────────────────────────────────────────────────
   const myFullId    = myName.trim() ? `${myName.trim()}#${myTag}` : "";  // Name#1234 形式
   const roomGs      = roomData?.gameState ?? null;
+  const dailyOutgoingFxActive = isDailyOutgoingFxActive({
+    streamTypeCutin,
+    streamPonFireOverlay,
+    streamFailOverlay,
+    workCutin,
+    workPonHud,
+    shrinePhase,
+  });
   const gs          = day7DailyOptimisticGs ?? roomGs;
   const playerSlots = roomData?.playerSlots ?? [];
   const isHost      = roomData?.hostId === myId;
@@ -501,7 +579,15 @@ export default function App() {
     myPlayerAlive &&
     roomCompletedPlayers.includes(myId);
   const isMyTurn = rawIsMyTurn && !isMyDay8RoundCompleted;
-  const cpGs        = gs?.players?.[gs?.currentPlayerIdx] ?? null;
+  const cpGs = useMemo(() => {
+    if (!gs) return null;
+    const players = applyFxMoneyRevealToPlayers(gs.players, fxMoneyReveal);
+    return players[gs.currentPlayerIdx] ?? null;
+  }, [gs, fxMoneyReveal]);
+  const gsPlayersForUi = useMemo(
+    () => applyFxMoneyRevealToPlayers(gs?.players, fxMoneyReveal) ?? [],
+    [gs?.players, fxMoneyReveal],
+  );
   const day8RemainingTurns =
     Number.isFinite(Number(roomData?.remainingTurns)) && Number(roomData?.remainingTurns) >= 0
       ? Math.floor(Number(roomData?.remainingTurns))
@@ -511,7 +597,9 @@ export default function App() {
   const displayDice  = isDiceRolling ? localDice : (gs?.lastDiceRolls ?? []);
   const playingMain = gs?.gamePhase === "playing";
   /** gamePhase だけ欠けた古いスナップショットでも演出を出す */
-  const isFinalBattleUIMode = gs?.gamePhase === "finalBattle" || gs?.subPhase === "finalBattle";
+  const isFinalBattleUIMode =
+    (gs?.gamePhase === "finalBattle" || gs?.subPhase === "finalBattle") && !dailyOutgoingFxActive;
+  const showSugorokuBoard = gs?.subPhase !== "daily" && !dailyOutgoingFxActive;
   const cpIsWaitingSlot = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "waitingSlot";
   /** 手番が別プレイヤーでも、自分が goalLanding なら GOAL 確認 UI を出す */
   const goalLandingSelf =
@@ -523,25 +611,222 @@ export default function App() {
       ? gs.players?.find((pl) => pl.movePhase === "goalLanding") ?? null
       : null;
   const cpIsSlot     = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "arrived";
+  const cpIsNetworkAutomatedTurn =
+    !!cpGs && (cpGs.isGhost === true || cpGs.isGameOver === true);
   const slotPhase = gs?.slotPhase ?? "idle";
   const showSlotSpinBroadcastMirror =
     playingMain &&
     gs?.subPhase === "day8" &&
     (slotPhase === "spinning" || slotPhase === "completed") &&
-    !(isMyTurn && cpIsSlot);
+    !(isMyTurn && cpIsSlot && !cpIsNetworkAutomatedTurn);
+  const showProgressivePotHud =
+    playingMain &&
+    gs?.subPhase === "day8" &&
+    (gs?.players?.length ?? 0) > 1 &&
+    !roomData?.isSolo;
   const cpIsGhostPick = playingMain && gs?.subPhase === "day8" && isGhostPickTargetPhase(cpGs);
   const isDay8Moving =
     playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "moving" && cpGs?.alive !== false;
   const boardProgress = cpGs ? Math.min(100, (cpGs.position / BOARD_GOAL) * 100) : 0;
   const day8DiceRollCount = Array.isArray(gs?.lastDiceRolls) ? gs.lastDiceRolls.length : 0;
+
+  const handleMovementFxSequenceCompleteRef = useRef(async () => {});
+
+  const showTileEffectExplain = useCallback((tileEffect) => {
+    const lines = (tileEffect?.titles ?? []).filter(
+      (line) => typeof line === "string" && !/^[+-]\d+G$/.test(line.trim()),
+    );
+    if (!lines.length) return;
+    if (sugorokuTileFxToastTimerRef.current) clearTimeout(sugorokuTileFxToastTimerRef.current);
+    setSugorokuTileFxToast({ lines, kind: tileEffect?.kind ?? null });
+    sugorokuTileFxToastTimerRef.current = setTimeout(() => {
+      setSugorokuTileFxToast(null);
+      sugorokuTileFxToastTimerRef.current = null;
+    }, tileEffectExplainDurationMs(tileEffect) + 300);
+  }, []);
+
+  const handleTileEffectMoneyApplied = useCallback((fx) => {
+    const moneyAfter = movementFxFinalMoneyRef.current?.moneyAfter;
+    if (!fx?.playerId || moneyAfter == null) return;
+    setFxMoneyReveal({ playerId: fx.playerId, moneyAfter });
+  }, []);
+
+  const movementFxSync = useSugorokuMovementFx({
+    movementFx: roomGs?.movementFx ?? null,
+    currentPlayerId: cpGs?.id ?? null,
+    currentPlayerPosition: cpGs?.position ?? null,
+    schedulePieceHopBlockingMs,
+    onSequenceComplete: (fx) => handleMovementFxSequenceCompleteRef.current(fx),
+    onTileExplain: showTileEffectExplain,
+    onMoneyApplied: handleTileEffectMoneyApplied,
+  });
+
+  /** 8日目移動中は観戦者にも盤面を見せ、フルスクリーン待ち UI は出さない */
+  const isDay8SharedMoveWatch =
+    isDay8Moving && !isMyTurn && !goalLandingSelf;
+  const isDailyPhase = playingMain && gs?.subPhase === "daily";
+  const isMultiplayerRoom = (gs?.players?.length ?? 0) > 1 && !roomData?.isSolo;
+  const dailySlotPhase = roomGs?.dailySlotPhase ?? "idle";
+  const dailyCutinBroadcast = useMemo(
+    () => readDailyCutinBroadcast(roomData, roomGs),
+    [
+      roomData?.dailyCutinPhase,
+      roomData?.dailyCutinSessionId,
+      roomData?.dailyCutinPayload,
+      roomGs?.dailyCutinPhase,
+      roomGs?.dailyCutinSessionId,
+      roomGs?.dailyCutinPayload,
+    ],
+  );
+  const dailyCutinPhase = dailyCutinBroadcast.phase;
+  /** 1〜7日目：他プレイヤーのデイリースロット筐体を同期表示 */
+  const showDailySlotSpectatorMirror =
+    isDailyPhase && isMultiplayerRoom && !isMyTurn && !!cpGs && dailySlotPhase !== "idle";
+  /** 観戦フックは Firestore idle と local state の競合で enabled が落ちないよう固定条件にする */
+  const spectatorCutinSyncEnabled =
+    isDailyPhase && isMultiplayerRoom && !isMyTurn && !showDailySlotSpectatorMirror;
+  /** 1〜7日目：仕事・配信・神社カットイン観戦 */
+  const spectatorDailyCutinUiActive =
+    isDailyPhase &&
+    isMultiplayerRoom &&
+    !isMyTurn &&
+    !showDailySlotSpectatorMirror &&
+    (dailyCutinPhase !== "idle" ||
+      workCutin != null ||
+      streamTypeCutin != null ||
+      shrinePhase != null ||
+      workPonHud != null ||
+      streamPonFireOverlay ||
+      streamFailOverlay);
+  const showDailyCutinSpectator = spectatorDailyCutinUiActive;
+  const dailyCutinSpectatorBannerLabel =
+    dailyCutinSpectatorStatusLabel(dailyCutinPhase, cpGs?.name) ??
+    localDailyCutinSpectatorLabel(cpGs?.name, {
+      workCutin,
+      streamTypeCutin,
+      shrinePhase,
+      workPonHud,
+      streamPonFireOverlay,
+      streamFailOverlay,
+    });
+  /** 1〜7日目：手番以外に行動選択 UI をミラー表示（マルチのみ） */
+  const showDailyActionSpectatorMirror =
+    isDailyPhase &&
+    isMultiplayerRoom &&
+    !isMyTurn &&
+    !!cpGs &&
+    !goalLandingSelf;
+  const hideBlockingObserverWait =
+    isDay8SharedMoveWatch || showDailyActionSpectatorMirror || showDailySlotSpectatorMirror;
+
+  const clearDailyCutinLocalState = useCallback(() => {
+    setStreamTypeCutin(null);
+    setWorkCutin(null);
+    setWorkPonHud(null);
+    setStreamPonFireOverlay(false);
+    setStreamFailOverlay(false);
+    setShrinePhase(null);
+  }, []);
+
+  /** 1〜7日目のカットイン・タイマーを全解除（8日目以降へ進む前に必須） */
+  const resetDailyOutgoingFxState = useCallback(() => {
+    streamFxChainTimeoutsRef.current.forEach(clearTimeout);
+    streamFxChainTimeoutsRef.current = [];
+    workFxChainTimeoutsRef.current.forEach(clearTimeout);
+    workFxChainTimeoutsRef.current = [];
+    if (streamCutinTimerRef.current) {
+      clearTimeout(streamCutinTimerRef.current);
+      streamCutinTimerRef.current = null;
+    }
+    if (workCutinTimerRef.current) {
+      clearTimeout(workCutinTimerRef.current);
+      workCutinTimerRef.current = null;
+    }
+    if (streamPonFireOverlayTimerRef.current) {
+      clearTimeout(streamPonFireOverlayTimerRef.current);
+      streamPonFireOverlayTimerRef.current = null;
+    }
+    if (streamFailOverlayTimerRef.current) {
+      clearTimeout(streamFailOverlayTimerRef.current);
+      streamFailOverlayTimerRef.current = null;
+    }
+    if (workPonFireOverlayTimerRef.current) {
+      clearTimeout(workPonFireOverlayTimerRef.current);
+      workPonFireOverlayTimerRef.current = null;
+    }
+    if (dailyTurnWriteTimerRef.current) {
+      clearTimeout(dailyTurnWriteTimerRef.current);
+      dailyTurnWriteTimerRef.current = null;
+    }
+    pendingDailyTurnWriteRef.current = null;
+    dailyCutinSessionIdRef.current = null;
+    pendingDailyCutinBroadcastRef.current = null;
+    clearDailyCutinLocalState();
+  }, [clearDailyCutinLocalState]);
+
+  useDailyCutinSpectatorSync({
+    enabled: spectatorCutinSyncEnabled,
+    cutinBroadcast: dailyCutinBroadcast,
+    soundRef,
+    setWorkCutin,
+    setWorkPonHud,
+    setStreamTypeCutin,
+    setStreamPonFireOverlay,
+    setStreamFailOverlay,
+    setShrinePhase,
+    setShakeScreen,
+    onClearLocalCutins: clearDailyCutinLocalState,
+  });
+
+  /** 手番外でも movementFx / ホップ / タクシー中はカメラを共有（view-only） */
+  const day8SharedCameraActive =
+    isDay8Moving &&
+    (movementFxSync.isRunning ||
+      isMovementFxForPlayer(roomGs?.movementFx, cpGs) ||
+      pieceHopping ||
+      taxiPhase != null);
+
   const day8ActionLocked =
     isDiceRolling ||
+    movementFxSync.isRunning ||
     taxiPhase != null ||
     pieceHopping ||
     !!ponCutin ||
     !!sugorokuTileFxToast ||
     turnChangeBannerTurns != null ||
-    pendingTurnBannerTurns != null;
+    pendingTurnBannerTurns != null ||
+    day8VisualActionLocked;
+
+  const sugorokuBoardViewPos = useMemo(() => {
+    const canUseLocalViewOverride = isMyTurn || goalLandingSelf || day8SharedCameraActive;
+    if (taxiPhase != null) {
+      if (typeof boardViewPosOverride === "number" && canUseLocalViewOverride) {
+        return boardViewPosOverride;
+      }
+      return null;
+    }
+    if (
+      typeof movementFxSync.viewPosOverride === "number" &&
+      movementFxSync.viewPosOverridePlayerId === cpGs?.id
+    ) {
+      return movementFxSync.viewPosOverride;
+    }
+    if (typeof boardViewPosOverride === "number" && canUseLocalViewOverride) {
+      return boardViewPosOverride;
+    }
+    return null;
+  }, [
+    taxiPhase,
+    movementFxSync.viewPosOverride,
+    movementFxSync.viewPosOverridePlayerId,
+    movementFxSync.isRunning,
+    roomGs?.movementFx,
+    cpGs,
+    boardViewPosOverride,
+    isMyTurn,
+    goalLandingSelf,
+    day8SharedCameraActive,
+  ]);
 
   /** ターン操作系ボタンの連打／描画反映前の二重発火を無視（true=受理） */
   const TURN_ACTION_DEBOUNCE_MS = 500;
@@ -554,7 +839,6 @@ export default function App() {
 
   useEffect(() => {
     if (!gs || gs.gamePhase !== "playing" || gs.subPhase !== "day8" || !Array.isArray(gs.players)) {
-      prevDay8TurnKeyRef.current = null;
       prevDay8RemainingTurnsRef.current = null;
       setPendingTurnBannerTurns(null);
       return;
@@ -566,33 +850,16 @@ export default function App() {
       const remaining = Math.floor(rem);
       const prevRem = prevDay8RemainingTurnsRef.current;
       prevDay8RemainingTurnsRef.current = remaining;
-      if (prevRem != null && remaining < prevRem) {
-        setPendingTurnBannerTurns(Math.max(0, remaining));
+      if (prevRem != null && remaining < prevRem && !gs?.movementFx?.id) {
+        queueDay8TurnChangeBanner(Math.max(0, remaining));
       }
       return;
     }
-
-    // ルームに remainingTurns が無い古いデータ用フォールバック（主にソロ想定）
-    const idx = gs.currentPlayerIdx;
-    if (!Number.isInteger(idx) || idx < 0 || idx >= gs.players.length) return;
-    const p = gs.players[idx];
-    const turnKey = `${idx}:${p?.id ?? ""}:${p?.moveTurns ?? -1}`;
-    const prevKey = prevDay8TurnKeyRef.current;
-    prevDay8TurnKeyRef.current = turnKey;
-    if (prevKey == null || prevKey === turnKey) return;
-    const [, , prevMoveTurnsRaw] = String(prevKey).split(":");
-    const prevMoveTurns = Number(prevMoveTurnsRaw);
-    const nowMoveTurns = Number(p?.moveTurns ?? 0);
-
-    const isSoloTurnSwitch = Number.isFinite(prevMoveTurns) && nowMoveTurns > prevMoveTurns;
-    if (!isSoloTurnSwitch) return;
-
-    const turnsLeft = Math.max(0, BAL.dice.maxTurns - Number(p?.moveTurns ?? 0));
-    setPendingTurnBannerTurns(turnsLeft);
-  }, [gs?.gamePhase, gs?.subPhase, gs?.currentPlayerIdx, gs?.players, roomData?.remainingTurns]);
+  }, [gs?.gamePhase, gs?.subPhase, gs?.movementFx?.id, roomData?.remainingTurns, queueDay8TurnChangeBanner]);
 
   useEffect(() => {
     if (pendingTurnBannerTurns == null) return;
+    if (day8VisualActionLockRef.current) return;
     /** ラウンド開始後に表示（ゴール確認・幽霊標的選びも含む。移動ホップ中は pieceHopping で抑止） */
     const mp = cpGs?.movePhase;
     const bannerReadyMovePhase =
@@ -605,6 +872,8 @@ export default function App() {
       gs?.gamePhase === "playing" && gs?.subPhase === "day8" && bannerReadyMovePhase;
     if (!turnStarted) return;
     const idleNow =
+      !movementFxSync.isRunning &&
+      !roomGs?.movementFx?.id &&
       !isDiceRolling &&
       taxiPhase == null &&
       !pieceHopping &&
@@ -615,7 +884,8 @@ export default function App() {
       !streamPonFireOverlay &&
       !streamTypeCutin &&
       !workCutin &&
-      !workPonHud;
+      !workPonHud &&
+      (gs?.slotPhase ?? "idle") === "idle";
     if (!idleNow) return;
 
     const showTurnBanner = () => {
@@ -650,6 +920,7 @@ export default function App() {
     pendingTurnBannerTurns,
     gs?.gamePhase,
     gs?.subPhase,
+    gs?.slotPhase,
     cpGs?.movePhase,
     isDiceRolling,
     taxiPhase,
@@ -664,6 +935,9 @@ export default function App() {
     workPonHud,
     cpGs?.position,
     gs?.sugorokuTileEffects,
+    movementFxSync.isRunning,
+    roomGs?.movementFx?.id,
+    turnBannerFlushEpoch,
   ]);
 
   useEffect(() => () => {
@@ -738,9 +1012,18 @@ export default function App() {
   }, [roomData?.status]); // eslint-disable-line
 
   useEffect(() => {
-    if (roomId && roomData) hadRoomDataRef.current = true;
-    if (roomId && !roomData && hadRoomDataRef.current) {
+    if (roomId && roomData) {
+      hadRoomDataRef.current = true;
+      roomIdWithDataRef.current = roomId;
+    }
+    if (
+      roomId &&
+      !roomData &&
+      hadRoomDataRef.current &&
+      roomIdWithDataRef.current === roomId
+    ) {
       hadRoomDataRef.current = false;
+      roomIdWithDataRef.current = null;
       setRoomId(null);
       setScreen("lobby");
       setUiError("");
@@ -840,13 +1123,13 @@ export default function App() {
     return () => clearTimeout(tid);
   }, [isHost, roomId, roomGs?.gamePhase, roomGs?.finalBattleStartedAt, roomGs?.finalBattleEntry]);
 
-  /** 7日目楽観状態は Firestore の最新ログ先頭と一致したら破棄 */
+  /** 7日目楽観状態は Firestore の最新ログ先頭と一致し、日常演出が終わってから破棄 */
   useEffect(() => {
     if (!day7DailyOptimisticGs || !roomGs?.log?.length) return;
-    if (roomGs.log[0] === day7DailyOptimisticGs.log[0]) {
-      setDay7DailyOptimisticGs(null);
-    }
-  }, [roomGs, day7DailyOptimisticGs]);
+    if (roomGs.log[0] !== day7DailyOptimisticGs.log[0]) return;
+    if (dailyOutgoingFxActive) return;
+    setDay7DailyOptimisticGs(null);
+  }, [roomGs, day7DailyOptimisticGs, dailyOutgoingFxActive]);
 
   useEffect(
     () => () => {
@@ -996,41 +1279,64 @@ export default function App() {
         const followUp = taxiGSFollowUpRef.current;
         try {
           const tg = taxiGSRef.current;
-          taxiWriteOk = await performGameStateUpdateRef.current(tg, "actorTurn");
+          taxiWriteOk = await performGameStateUpdateRef.current(tg, "actorTurn", {
+            markDay8TurnComplete: "auto",
+          });
         } catch (e) {
           setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
         }
         taxiGSRef.current = null;
         taxiGSFollowUpRef.current = null;
 
-        if (taxiWriteOk) {
-          const applySugorokuToast = (toastPending) => {
-            if (!toastPending?.lines?.length) return;
-            if (sugorokuTileFxToastTimerRef.current) clearTimeout(sugorokuTileFxToastTimerRef.current);
-            setSugorokuTileFxToast(toastPending);
-            sugorokuTileFxToastTimerRef.current = setTimeout(() => {
-              setSugorokuTileFxToast(null);
-              sugorokuTileFxToastTimerRef.current = null;
-            }, 2800);
+        if (!taxiWriteOk) {
+          setTaxiPhase(null);
+          setPieceHopping(false);
+          if (pieceHoppingClearTimerRef.current) {
+            clearTimeout(pieceHoppingClearTimerRef.current);
+            pieceHoppingClearTimerRef.current = null;
+          }
+        } else if (taxiWriteOk) {
+          const applySugorokuTileFollowUp = async (followUp, tileMeta) => {
+            if (
+              tileMeta &&
+              ((tileMeta.titles?.length ?? 0) > 0 || (tileMeta.moneyDelta ?? 0) !== 0)
+            ) {
+              await runTileEffectPresentation(tileMeta, {
+                onExplain: showTileEffectExplain,
+                onMoneyFloat: (delta) => {
+                  setBoardMoneyFloatDelta(delta);
+                },
+                onMoneyApplied: () => {
+                  const fin = movementFxFinalMoneyRef.current;
+                  if (fin?.playerId) {
+                    setFxMoneyReveal({ playerId: fin.playerId, moneyAfter: fin.moneyAfter });
+                  }
+                  setBoardMoneyFloatDelta(null);
+                },
+              });
+            }
+            const hopMs = computeSugorokuHopDurationMs(followUp.fromPos, followUp.toPos);
+            setBoardViewPosOverride(followUp.toPos);
+            await new Promise((r) => setTimeout(r, hopMs));
+            await performGameStateUpdateRef.current(followUp.finalGS, "actorTurn", {
+              markDay8TurnComplete: "auto",
+            });
+            setBoardViewPosOverride(null);
+            setFxMoneyReveal(null);
+            setBoardMoneyFloatDelta(null);
+            movementFxFinalMoneyRef.current = null;
           };
 
           if (followUp) {
-            const ms = computeSugorokuHopDurationMs(followUp.fromPos, followUp.toPos);
-            setTimeout(async () => {
-              try {
-                const fg = followUp.finalGS;
-                await performGameStateUpdateRef.current(fg, "actorTurn");
-                const toastPending = pendingSugorokuTileFxToastRef.current;
-                pendingSugorokuTileFxToastRef.current = null;
-                applySugorokuToast(toastPending);
-              } catch (e) {
-                setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
-              }
-            }, ms);
-          } else {
-            const toastPending = pendingSugorokuTileFxToastRef.current;
+            const tileMeta = pendingTileEffectMetaRef.current;
+            pendingTileEffectMetaRef.current = null;
             pendingSugorokuTileFxToastRef.current = null;
-            applySugorokuToast(toastPending);
+            void applySugorokuTileFollowUp(followUp, tileMeta).catch((e) => {
+              setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
+            });
+          } else {
+            pendingTileEffectMetaRef.current = null;
+            pendingSugorokuTileFxToastRef.current = null;
           }
         }
 
@@ -1075,6 +1381,13 @@ export default function App() {
         setTaxiDriveCongested(false);
         setTaxiDriveEndPos(null);
         setTaxiJamMidPos(null);
+        if (pieceHoppingClearTimerRef.current) {
+          clearTimeout(pieceHoppingClearTimerRef.current);
+          pieceHoppingClearTimerRef.current = null;
+        }
+        setPieceHopping(false);
+        taxiVisualActiveRef.current = false;
+        releaseDay8VisualActionLock();
       }
       setTaxiPhase(next);
     }, duration);
@@ -1093,7 +1406,9 @@ export default function App() {
       i === idx ? { ...pl, skipTurns: pl.skipTurns - 1 } : pl,
     );
     const logs = [`💤 ${p.name} 1回休み（炎上の巻き添え）`];
-    void performGameStateUpdateRef.current?.(computeAdvanceDay8Turn(liveGs, newPlayers, logs), "actorTurn");
+    void performGameStateUpdateRef.current?.(computeAdvanceDay8Turn(liveGs, newPlayers, logs), "actorTurn", {
+      markDay8TurnComplete: true,
+    });
   }, [isMyTurn, gs?.currentPlayerIdx]);
 
   /** PON用オーバーライド解除：Firestore の自分の position が表示マスに追いついた後だけ null にする（解除が早いと古いマスへ戻り二次ホップする） */
@@ -1105,10 +1420,27 @@ export default function App() {
     }
   }, [roomGs, boardViewPosOverride, myId]);
 
+  /** リロード後に movementFx だけ残った gameState を修復（クラッシュ・復帰不能の防止） */
+  useEffect(() => {
+    if (!roomId || !roomGs?.movementFx || movementFxPendingCommitRef.current) return;
+    if (taxiPhase != null) return;
+    if (isTaxiDeferredMovementFx(roomGs.movementFx)) return;
+    const key = `${roomId}:${roomGs.movementFx.id ?? ""}:${roomGs.movementFx.playerId ?? ""}`;
+    if (movementFxRecoveryKeyRef.current === key) return;
+    const patch = buildOrphanedMovementFxPatch(roomGs);
+    if (!patch) return;
+    movementFxRecoveryKeyRef.current = key;
+    void updateRoom(patch).catch((e) => {
+      console.warn("[movementFx] recovery failed", e);
+      movementFxRecoveryKeyRef.current = null;
+    });
+  }, [roomId, roomGs, updateRoom, taxiPhase]);
+
   // ─── Firestore gameState 書き込み（手番ガード／ホスト決戦進行） ─────────────────
   const performGameStateUpdate = useCallback(
     async (newGS, writeMode = "actorTurn", authCtx = {}) => {
-      const { gameState: authGOverride, roomData: authRdOverride, setStatus } = authCtx;
+      const { gameState: authGOverride, roomData: authRdOverride, setStatus, markDay8TurnComplete = false } =
+        authCtx;
       const authG = authGOverride ?? gsRef.current;
       const authRd = authRdOverride ?? roomDataRef.current;
       if (writeMode === "actorTurn") {
@@ -1153,7 +1485,15 @@ export default function App() {
             } else if (!isActorTurnOnGameState(liveGs, myId)) {
               throw new Error("TURN_CHANGED");
             }
-            const tracked = applyDay8RoundTracking(liveRoom, newGS, myId);
+            let markTurnCompleteFor = null;
+            if (markDay8TurnComplete === true) {
+              markTurnCompleteFor = liveGs?.players?.[liveGs?.currentPlayerIdx]?.id ?? null;
+            } else if (markDay8TurnComplete === "auto") {
+              markTurnCompleteFor = shouldMarkDay8TurnComplete(liveGs, newGS)
+                ? liveGs?.players?.[liveGs?.currentPlayerIdx]?.id ?? null
+                : null;
+            }
+            const tracked = applyDay8RoundTracking(liveRoom, newGS, { markTurnCompleteFor });
             const updates = {
               gameState: tracked.gameState,
               remainingTurns: tracked.remainingTurns,
@@ -1166,7 +1506,15 @@ export default function App() {
           });
           return true;
         }
-        const updates = { gameState: newGS };
+        const pendingCutin = pickDailyCutinBroadcastFields(pendingDailyCutinBroadcastRef.current);
+        const clearsCutinFields =
+          (newGS.dailyCutinPhase ?? DAILY_CUTIN_PHASE.idle) === DAILY_CUTIN_PHASE.idle &&
+          (newGS.dailyCutinSessionId ?? null) === null;
+        const mergedGS =
+          pendingCutin && !clearsCutinFields
+            ? mergeDailyCutinFieldsIntoGameState(newGS, pendingCutin)
+            : newGS;
+        const updates = { gameState: mergedGS };
         if (typeof setStatus === "string") updates.status = setStatus;
         else if (newGS.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
         else if (newGS.gamePhase === "results") updates.status = "completed";
@@ -1181,11 +1529,40 @@ export default function App() {
   );
   performGameStateUpdateRef.current = performGameStateUpdate;
 
-  const writeGS = async (newGS) => performGameStateUpdate(newGS, "actorTurn");
+  const writeGS = async (newGS, opts = {}) =>
+    performGameStateUpdate(newGS, "actorTurn", { markDay8TurnComplete: opts.markDay8TurnComplete ?? false });
 
-  const writeGhostAutomationGS = async (newGS) => performGameStateUpdate(newGS, "ghostAutomation");
+  /** 日常行動ラベル（dailyActionFx）を一定時間後にクリア。フェーズ外に残っていれば即消す */
+  useEffect(() => {
+    const fx = roomGs?.dailyActionFx;
+    if (!fx?.id || !roomId) return undefined;
+    const staleDailyFx =
+      roomGs?.gamePhase === "finalBattle" ||
+      roomGs?.subPhase === "day8" ||
+      (roomGs?.gamePhase === "playing" && roomGs?.subPhase !== "daily");
+    if (staleDailyFx) {
+      const live = gsRef.current;
+      if (live?.dailyActionFx?.id === fx.id && (myId === fx.playerId || isHost)) {
+        void writeGS(clearDailyActionFx(live)).catch(() => {});
+      }
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      const live = gsRef.current;
+      if (!live?.dailyActionFx || live.dailyActionFx.id !== fx.id) return;
+      if (myId !== fx.playerId && !isHost) return;
+      void writeGS(clearDailyActionFx(live)).catch(() => {});
+    }, DAILY_ACTION_FX_CLEAR_MS);
+    return () => clearTimeout(timer);
+  }, [roomGs?.dailyActionFx?.id, roomGs?.subPhase, roomGs?.gamePhase, roomId, myId, isHost, writeGS]);
 
-  const writeGoalLandingConfirm = async (newGS) => performGameStateUpdate(newGS, "goalLandingConfirm");
+  const writeGhostAutomationGS = async (newGS, opts = {}) =>
+    performGameStateUpdate(newGS, "ghostAutomation", { markDay8TurnComplete: opts.markDay8TurnComplete ?? false });
+
+  const writeGoalLandingConfirm = async (newGS, opts = {}) =>
+    performGameStateUpdate(newGS, "goalLandingConfirm", {
+      markDay8TurnComplete: opts.markDay8TurnComplete ?? false,
+    });
 
   ponCutinFinalizeRef.current = async () => {
     const pending = ponCutinCommitRef.current;
@@ -1193,16 +1570,35 @@ export default function App() {
     ponHopGateRef.current = false;
     setPonHopCompleteEnabled(false);
     setPonCutin(null);
-    const tileToast = pending?.tileFxToast ?? null;
-    // boardViewPosOverride は書き込み反映まで維持（先に null にすると viewPos が旧マスに戻り、同期後に再度ホップする）
     if (pending?.nextGS) {
       try {
+        const tileMeta = pending.tileEffectMeta;
+        if (
+          tileMeta &&
+          ((tileMeta.titles?.length ?? 0) > 0 || (tileMeta.moneyDelta ?? 0) !== 0)
+        ) {
+          await runTileEffectPresentation(tileMeta, {
+            onExplain: showTileEffectExplain,
+            onMoneyFloat: (delta) => {
+              setBoardMoneyFloatDelta(delta);
+            },
+            onMoneyApplied: () => {
+              const fin = movementFxFinalMoneyRef.current;
+              if (fin?.playerId) {
+                setFxMoneyReveal({ playerId: fin.playerId, moneyAfter: fin.moneyAfter });
+              }
+              setBoardMoneyFloatDelta(null);
+            },
+          });
+        }
+
         if (pending.intermediateGS && pending.tileSlideToPos != null) {
           const midGS = pending.intermediateGS;
           const okMid = await performGameStateUpdate(midGS, "actorTurn");
           if (!okMid) {
             setBoardViewPosOverride(null);
             setIsDiceRolling(false);
+            releaseDay8VisualActionLock();
             return;
           }
 
@@ -1212,21 +1608,19 @@ export default function App() {
           );
         }
 
-        const newGS = pending.nextGS;
-        const okFin = await performGameStateUpdate(newGS, "actorTurn");
+        const okFin = await performGameStateUpdate(pending.nextGS, "actorTurn", {
+          markDay8TurnComplete: true,
+        });
         if (!okFin) {
           setBoardViewPosOverride(null);
           setIsDiceRolling(false);
+          releaseDay8VisualActionLock();
           return;
         }
-        if (tileToast?.lines?.length) {
-          if (sugorokuTileFxToastTimerRef.current) clearTimeout(sugorokuTileFxToastTimerRef.current);
-          setSugorokuTileFxToast(tileToast);
-          sugorokuTileFxToastTimerRef.current = setTimeout(() => {
-            setSugorokuTileFxToast(null);
-            sugorokuTileFxToastTimerRef.current = null;
-          }, 2800);
-        }
+        setBoardViewPosOverride(null);
+        setFxMoneyReveal(null);
+        setBoardMoneyFloatDelta(null);
+        movementFxFinalMoneyRef.current = null;
       } catch (e) {
         setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
         setBoardViewPosOverride(null);
@@ -1235,10 +1629,12 @@ export default function App() {
           clearTimeout(ponTileSlideTimerRef.current);
           ponTileSlideTimerRef.current = null;
         }
+        releaseDay8VisualActionLock();
         return;
       }
     }
     setIsDiceRolling(false);
+    releaseDay8VisualActionLock();
   };
 
   const handleSugorokuHopComplete = useCallback(() => {
@@ -1250,9 +1646,40 @@ export default function App() {
     setPonCutin({ characterType: pending.characterType ?? "salaryman" });
   }, []);
 
+  handleMovementFxSequenceCompleteRef.current = async (fx) => {
+    const pending = movementFxPendingCommitRef.current;
+    if (!pending || pending.fxId !== fx.id) return;
+
+    if (pending.actorId !== myId) {
+      pending.syncAfterMovementFx?.();
+      return;
+    }
+
+    movementFxPendingCommitRef.current = null;
+    setFxMoneyReveal(null);
+    try {
+      await pending.run();
+    } catch (e) {
+      setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
+      setIsDiceRolling(false);
+      setTaxiPhase(null);
+      setPieceHopping(false);
+      taxiGSRef.current = null;
+      taxiGSFollowUpRef.current = null;
+      releaseDay8VisualActionLock();
+    } finally {
+      if (!ponCutinCommitRef.current && !taxiVisualActiveRef.current) {
+        movementFxFinalMoneyRef.current = null;
+        releaseDay8VisualActionLock();
+      }
+    }
+  };
+
   const commitPendingGameState = useCallback(
-    async (pending) => {
-      await performGameStateUpdate(pending, "actorTurn");
+    async (pending, opts = {}) => {
+      await performGameStateUpdate(pending, "actorTurn", {
+        markDay8TurnComplete: opts.markDay8TurnComplete ?? false,
+      });
     },
     [performGameStateUpdate],
   );
@@ -1270,7 +1697,7 @@ export default function App() {
           if (!isActorTurnOnGameState(prevGs, myId)) return null;
           const next = mutator(prevGs);
           if (!next) return null;
-          const tracked = applyDay8RoundTracking(snap.data(), next, myId);
+          const tracked = applyDay8RoundTracking(snap.data(), next, {});
           const updates = {
             gameState: tracked.gameState,
             remainingTurns: tracked.remainingTurns,
@@ -1289,38 +1716,98 @@ export default function App() {
     [roomId, myId],
   );
 
+  /** マルチ8日目スロット：gameState + totalPot を同一トランザクションで更新 */
+  const commitDay8SlotSpin = useCallback(
+    async (ctx, writeMode = "actorTurn") => {
+      if (!roomId || !ctx) return null;
+      const ref = doc(db, "rooms", roomId);
+      try {
+        return await runTransaction(db, async (transaction) => {
+          const snap = await transaction.get(ref);
+          if (!snap.exists()) return null;
+          const liveRoom = snap.data();
+          const liveGs = liveRoom?.gameState;
+          if (writeMode === "ghostAutomation") {
+            const liveCp = liveGs?.players?.[liveGs?.currentPlayerIdx];
+            if (!liveCp?.isGhost && !liveCp?.isGameOver) return null;
+            if (liveCp?.id === myId) return null;
+          } else if (!isActorTurnOnGameState(liveGs, myId)) {
+            return null;
+          }
+
+          const isJackpot = ctx.res?.tier === "jackpot";
+          const potDelta = computeProgressivePotDelta(liveRoom?.totalPot ?? 0, ctx.bet, isJackpot);
+          const nextGs = applyDay8SlotSpinToFreshGameState(liveGs, {
+            ...ctx,
+            potPayout: potDelta.potPayout,
+            potContribution: potDelta.contribution,
+          });
+          if (!nextGs) return null;
+
+          const tracked = applyDay8RoundTracking(liveRoom, nextGs, {});
+          const updates = {
+            gameState: tracked.gameState,
+            remainingTurns: tracked.remainingTurns,
+            completedPlayers: tracked.completedPlayers,
+            totalPot: potDelta.totalPot,
+          };
+          if (tracked.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
+          if (tracked.gameState.gamePhase === "results") updates.status = "completed";
+          transaction.update(ref, updates);
+          return tracked.gameState;
+        });
+      } catch (e) {
+        setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
+        return null;
+      }
+    },
+    [roomId, myId],
+  );
+
   // ─── ロビー操作 ──────────────────────────────────────────────────────
   const handleCreateRoom = async () => {
+    resumeSoundFromUserGesture();
     if (lobbyActionBusyRef.current) return;
+    if (!myId) {
+      setUiError("接続中です。少し待ってから再度お試しください。");
+      return;
+    }
     const useName = myName.trim() || genQuickName();
     if (!myName.trim()) setMyName(useName);
     const useFullId = `${useName}#${myTag}`;
     lobbyActionBusyRef.current = true;
-    setLoading(true); setUiError("");
+    setLoading(true);
+    setUiError("");
+    const roomPayload = {
+      hostId: myId,
+      status: "lobby",
+      playerSlots: [{ id: myId, name: useName, fullId: useFullId }],
+      playerIds: [myId],
+      completedPlayers: [],
+      remainingTurns: BAL.dice.maxTurns,
+      totalPot: INITIAL_PROGRESSGRESSIVE_POT,
+      gameState: null,
+      isPrivate: isPrivateRoom,
+      allowedPlayers: isPrivateRoom ? [useFullId] : [],
+      invitedAuthUids: isPrivateRoom ? [myId] : [],
+      createdAt: new Date().toISOString(),
+    };
     try {
-      const rid = genRoomId();
-      await createRoom(rid, {
-        hostId: myId,
-        status: "lobby",
-        playerSlots: [{ id: myId, name: useName, fullId: useFullId }],
-        playerIds: [myId],
-        completedPlayers: [],
-        remainingTurns: BAL.dice.maxTurns,
-        gameState: null,
-        isPrivate: isPrivateRoom,
-        allowedPlayers: isPrivateRoom ? [useFullId] : [],
-        createdAt: new Date().toISOString(),
-      });
+      const rid = await createRoomWithRetry(createRoom, roomPayload);
       setRoomId(rid);
       persistRoomSession(rid, useName);
       setWaitingSessionKey((n) => n + 1);
       setScreen("waiting");
-    } catch (e) { setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。")); }
-    lobbyActionBusyRef.current = false;
-    setLoading(false);
+    } catch (e) {
+      setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
+    } finally {
+      lobbyActionBusyRef.current = false;
+      setLoading(false);
+    }
   };
 
   const handleJoinRoom = async () => {
+    resumeSoundFromUserGesture();
     if (lobbyActionBusyRef.current) return;
     if (!joinInput.trim()) { setUiError("ルームIDを入力してください"); return; }
     const useName = myName.trim() || genQuickName();
@@ -1403,6 +1890,7 @@ export default function App() {
           gameState: initGS,
           completedPlayers: [],
           remainingTurns: BAL.dice.maxTurns,
+          totalPot: INITIAL_PROGRESSGRESSIVE_POT,
         });
       });
     } catch (e) {
@@ -1484,6 +1972,14 @@ export default function App() {
 
   const handleReturnToLobby = () => {
     clearRoomSession();
+    lobbyActionBusyRef.current = false;
+    hadRoomDataRef.current = false;
+    roomIdWithDataRef.current = null;
+    setLoading(false);
+    setInvitesLoading(false);
+    setMultiOpen(false);
+    setMultiAction(null);
+    setInvitesPanelOpen(false);
     setScreen("lobby");
     setRoomId(null);
     setUiError("");
@@ -1491,6 +1987,7 @@ export default function App() {
 
   const exitRoomToMainMenu = useCallback((message = "") => {
     hadRoomDataRef.current = false;
+    roomIdWithDataRef.current = null;
     wasLobbyPlayerRef.current = false;
     clearRoomSession();
     setRoomId(null);
@@ -1517,27 +2014,42 @@ export default function App() {
   }, []);
 
   const handleGracefulLeaveGame = useCallback(async () => {
-    if (!roomId || !myId || !roomGs || leaveGameLoading) return false;
+    if (!roomId || !myId || leaveGameLoading) return false;
+    if (!roomGs) {
+      setUiError("ゲーム状態の読み込み中です。少し待ってから再度お試しください。");
+      return false;
+    }
     const patch = buildGracefulLeavePatch(roomGs, myId);
-    if (!patch) return false;
+    if (!patch) {
+      setUiError("退室できません。プレイヤー情報が見つかりません。");
+      return false;
+    }
+    if (patch.localOnly) {
+      setLeaveGameConfirmOpen(false);
+      exitRoomToMainMenu("ルームから退室しました。他のプレイヤーは自動操作でゲームが続行されます。");
+      return true;
+    }
     setLeaveGameLoading(true);
     setUiError("");
+    leaveInFlightRef.current = true;
     try {
-      await updateCurrentAction("leave");
       await updateRoom(patch);
+      try {
+        await updateCurrentAction("leave");
+      } catch {
+        /* presence doc is optional for leaving */
+      }
       setLeaveGameConfirmOpen(false);
-      clearRoomSession();
-      setRoomId(null);
-      setScreen("lobby");
-      setUiError("ルームから退室しました。他のプレイヤーは自動操作でゲームが続行されます。");
+      exitRoomToMainMenu("ルームから退室しました。他のプレイヤーは自動操作でゲームが続行されます。");
       return true;
     } catch (e) {
       setUiError(formatFriendlyError(e, "退室処理に失敗しました。しばらくしてから再度お試しください。"));
       return false;
     } finally {
+      leaveInFlightRef.current = false;
       setLeaveGameLoading(false);
     }
-  }, [roomId, myId, roomGs, leaveGameLoading, updateCurrentAction, updateRoom, setRoomId]);
+  }, [roomId, myId, roomGs, leaveGameLoading, updateCurrentAction, updateRoom, exitRoomToMainMenu]);
 
   const handleHostDisbandRoom = useCallback(async () => {
     if (!roomId || !isHost || !myId) return;
@@ -1591,13 +2103,67 @@ export default function App() {
   // ─── 招待（ホワイトリスト）追加 ──────────────────────────────────────
   const handleInvitePlayer = async () => {
     const inv = inviteInput.trim();
-    if (!inv || !inv.match(/^.+#\d{4}$/)) { setInviteError("「Name#ID」の形式（例: 闇月リリム#1234）で入力してください。# を含めた全文を入力してください"); return; }
-    if (roomData?.allowedPlayers?.includes(inv)) { setInviteError("すでに招待済みです"); return; }
+    if (!inv || !inv.match(/^.+#\d{4}$/)) {
+      setInviteError("「Name#ID」の形式（例: 闇月リリム#1234）で入力してください。# を含めた全文を入力してください");
+      return;
+    }
+    if (roomData?.allowedPlayers?.includes(inv)) {
+      setInviteError("すでに招待済みです");
+      return;
+    }
+    if (lobbyActionBusyRef.current) return;
+    lobbyActionBusyRef.current = true;
     try {
-      await updateRoom({ allowedPlayers: arrayUnion(inv) });
-      setInviteInput(""); setInviteError("");
-    } catch (e) { setInviteError(formatFriendlyError(e, "招待の追加に失敗しました。しばらくしてから再度お試しください。")); }
+      const inviteeUid = await resolveInviteeUid(inv);
+      await updateRoom(buildInviteRoomPatch(inv, inviteeUid));
+      if (inviteeUid && roomId) {
+        await pushInviteInbox(inviteeUid, roomId);
+      }
+      setInviteInput("");
+      if (!inviteeUid) {
+        setInviteError(
+          "ホワイトリストに追加しました。相手が一度STARTしてから「招待を確認」できるようになります（未起動の場合はルームID共有でも参加可）。",
+        );
+      } else {
+        setInviteError("");
+      }
+    } catch (e) {
+      setInviteError(formatFriendlyError(e, "招待の追加に失敗しました。しばらくしてから再度お試しください。"));
+    } finally {
+      lobbyActionBusyRef.current = false;
+    }
   };
+
+  const handleCancelInvite = useCallback(
+    async (cancelFullId) => {
+      if (!cancelFullId || !roomId || !isHost || !roomData || roomData.status !== "lobby") return false;
+      if (lobbyActionBusyRef.current || kickLoading || cancelInviteLoading) return false;
+      const hostSlot = roomData.playerSlots?.find((s) => s.id === roomData.hostId);
+      if (cancelFullId === hostSlot?.fullId) return false;
+      const pendingSlot = roomData.playerSlots?.find((s) => s.fullId === cancelFullId);
+      if (pendingSlot) return false;
+
+      lobbyActionBusyRef.current = true;
+      setCancelInviteLoading(cancelFullId);
+      setInviteError("");
+      try {
+        const built = await buildCancelInvitePatch(roomData, cancelFullId);
+        if (!built?.patch) return false;
+        await updateRoom(built.patch);
+        if (built.inviteeUid) {
+          await removeInviteFromInbox(built.inviteeUid, roomId);
+        }
+        return true;
+      } catch (e) {
+        setInviteError(formatFriendlyError(e, "招待の取り消しに失敗しました。しばらくしてから再度お試しください。"));
+        return false;
+      } finally {
+        lobbyActionBusyRef.current = false;
+        setCancelInviteLoading(null);
+      }
+    },
+    [roomId, isHost, roomData, kickLoading, cancelInviteLoading, updateRoom],
+  );
 
   const handleHostKickPlayer = useCallback(async (targetUid) => {
     if (lobbyActionBusyRef.current || kickLoading) return false;
@@ -1623,81 +2189,103 @@ export default function App() {
     }
   }, [roomId, isHost, roomData, myId, kickLoading, updateRoom]);
 
-  // ─── 自分のIDをクリップボードにコピー ──────────────────────────────
+  // ─── クリップボードにコピー ────────────────────────────────────────
+  const flashCopied = () => {
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   const handleCopyMyId = () => {
     if (!myFullId) return;
-    navigator.clipboard.writeText(myFullId).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    navigator.clipboard.writeText(myFullId).then(flashCopied).catch(() => {});
+  };
+
+  const handleCopyRoomId = () => {
+    if (!roomId) return;
+    navigator.clipboard.writeText(roomId).then(flashCopied).catch(() => {});
   };
 
   // ─── エントリー確定（名前確定→モード選択へ） ─────────────────────
   const handleConfirmEntry = () => {
+    resumeSoundFromUserGesture();
     const useName = myName.trim() || genQuickName();
     if (!myName.trim()) setMyName(useName);
-    persistRoomSession(readStoredRoomSession().roomId, useName);
+    persistRoomSession(null, useName);
     setMultiOpen(false);
     setMultiAction(null);
     setUiError("");
     setScreen("lobby");
+    const useFullId = `${useName}#${myTag}`;
+    if (myId && useFullId) {
+      void registerFullIdIndex(useFullId, myId).catch((e) => console.warn("[fullIdIndex] register failed", e));
+    }
   };
 
   // ─── ひとりで遊ぶ（ソロプレイ） ──────────────────────────────────
   const handleSoloPlay = async () => {
+    resumeSoundFromUserGesture();
     if (lobbyActionBusyRef.current) return;
+    if (!myId) {
+      setUiError("接続中です。少し待ってから再度お試しください。");
+      return;
+    }
     const useName = myName.trim() || genQuickName();
     if (!myName.trim()) setMyName(useName);
     const useFullId = `${useName}#${myTag}`;
     lobbyActionBusyRef.current = true;
-    setLoading(true); setUiError("");
+    setLoading(true);
+    setUiError("");
+    const roomPayload = {
+      hostId: myId,
+      status: "lobby",
+      playerSlots: [{ id: myId, name: useName, fullId: useFullId }],
+      playerIds: [myId],
+      completedPlayers: [],
+      remainingTurns: BAL.dice.maxTurns,
+      totalPot: INITIAL_PROGRESSGRESSIVE_POT,
+      gameState: null,
+      isPrivate: true,
+      isSolo: true,
+      allowedPlayers: [useFullId],
+      invitedAuthUids: [myId],
+      createdAt: new Date().toISOString(),
+    };
     try {
-      const rid = genRoomId();
-      await createRoom(rid, {
-        hostId: myId,
-        status: "lobby",
-        playerSlots: [{ id: myId, name: useName, fullId: useFullId }],
-        playerIds: [myId],
-        completedPlayers: [],
-        remainingTurns: BAL.dice.maxTurns,
-        gameState: null,
-        isPrivate: true,
-        isSolo: true,
-        allowedPlayers: [useFullId],
-        createdAt: new Date().toISOString(),
-      });
+      const rid = await createRoomWithRetry(createRoom, roomPayload);
       setRoomId(rid);
       persistRoomSession(rid, useName);
       setWaitingSessionKey((n) => n + 1);
       setScreen("waiting");
-    } catch (e) { setUiError(formatFriendlyError(e, "一人プレイ用のルームを作成できませんでした。ネットワークを確認のうえ、再度お試しください。")); }
-    lobbyActionBusyRef.current = false;
-    setLoading(false);
+    } catch (e) {
+      setUiError(formatFriendlyError(e, "一人プレイ用のルームを作成できませんでした。ネットワークを確認のうえ、再度お試しください。"));
+    } finally {
+      lobbyActionBusyRef.current = false;
+      setLoading(false);
+    }
   };
 
   const queryPendingInvites = useCallback(async () => {
     if (!myFullId || !myId) return [];
-    const q = query(
-      collection(db, "rooms"),
-      where("status", "==", "lobby"),
-      where("allowedPlayers", "array-contains", myFullId),
-      limit(20),
-    );
-    const snap = await getDocs(q);
-    return snap.docs
-      .map((d) => {
-        const data = d.data();
+    const roomIds = [...new Set(await fetchInviteInboxRoomIds(myId))].slice(0, 20);
+    const invites = await Promise.all(
+      roomIds.map(async (rid) => {
+        const snap = await fetchRoom(rid);
+        if (!snap.exists()) return null;
+        const data = snap.data();
+        if (data.status !== "lobby") return null;
+        if (data.isPrivate && !data.allowedPlayers?.includes(myFullId)) return null;
         const slots = data.playerSlots ?? [];
         if (slots.length >= 4) return null;
         if (slots.some((s) => s.id === myId)) return null;
         const hostSlot = slots.find((s) => s.id === data.hostId);
         return {
-          roomId: d.id,
+          roomId: rid,
           hostName: hostSlot?.name?.trim() || "ホスト",
         };
-      })
-      .filter(Boolean);
-  }, [myFullId, myId]);
+      }),
+    );
+    return invites.filter(Boolean);
+  }, [myFullId, myId, fetchRoom]);
 
   useEffect(() => {
     if (!authReady || !myId || roomId || reconnectAttemptedRef.current) return;
@@ -1721,6 +2309,15 @@ export default function App() {
           return;
         }
         const inGamePlayers = data.gameState?.players ?? [];
+        const meInGame = inGamePlayers.find((p) => p.id === myId);
+        if (
+          (data.status === "playing" || data.status === "FINAL_BATTLE") &&
+          inGamePlayers.length > 0 &&
+          meInGame?.isGameOver
+        ) {
+          clearRoomSession();
+          return;
+        }
         if (
           (data.status === "playing" || data.status === "FINAL_BATTLE") &&
           inGamePlayers.length > 0 &&
@@ -1747,6 +2344,40 @@ export default function App() {
   }, [roomId, myName]);
 
   useEffect(() => {
+    if (!myFullId || !myId) return;
+    void registerFullIdIndex(myFullId, myId).catch((e) => console.warn("[fullIdIndex] register failed", e));
+  }, [myFullId, myId]);
+
+  useEffect(() => {
+    if (!roomId || !roomData || roomData.status !== "lobby" || roomData.hostId !== myId) return undefined;
+    let cancelled = false;
+    const run = async () => {
+      if (cancelled) return;
+      try {
+        const data = roomDataRef.current ?? roomData;
+        const { patch, uidsToAdd } = await backfillInvitedAuthUids(data, roomId);
+        if (patch && !cancelled) await updateRoom(patch);
+        const inboxTargets = new Set(uidsToAdd);
+        for (const fullId of data?.allowedPlayers ?? []) {
+          const uid = await resolveInviteeUid(fullId);
+          if (uid) inboxTargets.add(uid);
+        }
+        if (!cancelled) {
+          await Promise.all([...inboxTargets].map((uid) => pushInviteInbox(uid, roomId)));
+        }
+      } catch (e) {
+        console.warn("[invites] backfill failed", e);
+      }
+    };
+    void run();
+    const id = setInterval(run, 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [roomId, roomData?.status, roomData?.hostId, roomData?.allowedPlayers, myId, updateRoom, roomData]);
+
+  useEffect(() => {
     if (!roomId || !myId) return undefined;
     const tick = () => {
       void updateCurrentAction("heartbeat").catch(() => {});
@@ -1757,7 +2388,12 @@ export default function App() {
   }, [roomId, myId, updateCurrentAction]);
 
   useEffect(() => {
-    if (!roomId || !myId || !roomGs || roomData?.isSolo) return;
+    if (!roomId || !myId || !roomGs || roomData?.isSolo || leaveInFlightRef.current) return;
+    const me = roomGs.players?.find((p) => p.id === myId);
+    if (!me?.isGhost || me?.isGameOver) return;
+    const now = Date.now();
+    if (now - lastSelfGhostClearAttemptRef.current < 10_000) return;
+    lastSelfGhostClearAttemptRef.current = now;
     const patch = buildClearSelfPresencePatch(roomGs, myId);
     if (!patch) return;
     void updateRoom(patch).catch(() => {});
@@ -1791,17 +2427,29 @@ export default function App() {
       if (!cp?.isGhost && !cp?.isGameOver) return;
       if (cp.id === myId) return;
 
-      const nextGs = runGhostAutomationStep(gs, {
+      const step = runGhostAutomationStep(gs, {
         day8RemainingTurns:
           Number.isFinite(Number(roomData?.remainingTurns)) && Number(roomData?.remainingTurns) >= 0
             ? Math.floor(Number(roomData.remainingTurns))
             : BAL.dice.maxTurns,
       });
-      if (!nextGs) return;
+      if (!step) return;
 
       ghostAutomationBusyRef.current = true;
       try {
-        await writeGhostAutomationGS(nextGs);
+        if (step.type === "slotSpin") {
+          const resultGS = await commitDay8SlotSpin(step.ctx, "ghostAutomation");
+          if (resultGS) {
+            const afterBurst = finishGhostSlotBurst(resultGS);
+            if (afterBurst && afterBurst !== resultGS) {
+              await writeGhostAutomationGS(afterBurst, { markDay8TurnComplete: "auto" });
+            }
+          }
+        } else if (step.type === "reassign") {
+          await writeGhostAutomationGS(step.gameState);
+        } else {
+          await writeGhostAutomationGS(step, { markDay8TurnComplete: "auto" });
+        }
       } finally {
         ghostAutomationBusyRef.current = false;
       }
@@ -1810,7 +2458,7 @@ export default function App() {
     void tick();
     const id = setInterval(() => void tick(), GHOST_AUTOMATION_POLL_MS);
     return () => clearInterval(id);
-  }, [roomId, roomData, myId, roomPlayers, isHost, writeGhostAutomationGS]);
+  }, [roomId, roomData, myId, roomPlayers, isHost, writeGhostAutomationGS, commitDay8SlotSpin]);
 
   useEffect(() => {
     if (!roomId) {
@@ -1845,7 +2493,7 @@ export default function App() {
         if (cancelled) return;
         setPendingInvites(list);
         setInvitesProbeReady(true);
-        if (list.length > 0) setInvitesPanelOpen(true);
+        // 背景取得で招待パネルを勝手に開かない（レイアウト変動でクリックが落ちるのを防ぐ）
       } catch (e) {
         if (cancelled) return;
         setPendingInvites([]);
@@ -1854,10 +2502,20 @@ export default function App() {
       }
     };
 
-    setInvitesLoading(true);
-    void refreshInvites().finally(() => {
-      if (!cancelled) setInvitesLoading(false);
-    });
+    const isFirstLobbyProbe = !lobbyInviteAutoProbeDoneRef.current;
+    let probeDelay = null;
+    if (isFirstLobbyProbe) {
+      lobbyInviteAutoProbeDoneRef.current = true;
+      setInvitesLoading(true);
+      probeDelay = setTimeout(() => {
+        if (cancelled) return;
+        void refreshInvites().finally(() => {
+          if (!cancelled) setInvitesLoading(false);
+        });
+      }, 800);
+    } else {
+      void refreshInvites();
+    }
 
     const interval = setInterval(() => {
       void refreshInvites();
@@ -1865,6 +2523,7 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      if (probeDelay) clearTimeout(probeDelay);
       clearInterval(interval);
     };
   }, [screen, myFullId, myId, queryPendingInvites]);
@@ -1880,10 +2539,11 @@ export default function App() {
       const list = await queryPendingInvites();
       setPendingInvites(list);
       setInvitesProbeReady(true);
-      if (list.length === 0) {
-        setUiError("招待されているルームが見つかりませんでした。ホストにあなたの ID（Name#1234）を共有してもらってください。");
-      } else {
+      if (list.length > 0) {
+        setInvitesPanelOpen(true);
         setUiError("");
+      } else {
+        setUiError("招待されているルームが見つかりませんでした。ホストにあなたの ID（Name#1234）を共有してもらってください。");
       }
     } catch (e) {
       setPendingInvites([]);
@@ -1949,6 +2609,7 @@ export default function App() {
         }
         setInvitesPanelOpen(false);
         setPendingInvites([]);
+        await removeInviteFromInbox(myId, rid);
       } catch (e) {
         setUiError(formatFriendlyError(e, "ルームへの参加に失敗しました。しばらくしてから再度お試しください。"));
       }
@@ -1962,9 +2623,10 @@ export default function App() {
   const handleGoalLandingConfirm = async () => {
     if (!gs || !myId) return;
     if (!acceptTurnAction()) return;
-    const nextGs = applyGoalLandingConfirm(gs, myId);
-    if (!nextGs) return;
-    await writeGoalLandingConfirm(nextGs);
+    const confirmed = applyGoalLandingConfirm(gs, myId);
+    if (!confirmed) return;
+    const advanced = computeAdvanceDay8Turn(confirmed, confirmed.players, []);
+    await writeGoalLandingConfirm(advanced, { markDay8TurnComplete: true });
   };
 
   /** 権利適用済みステータスでスロット筐体へ移行（この時点のアイテム・効果後の運・技量が反映される） */
@@ -2006,8 +2668,143 @@ export default function App() {
   }, [cpGs]);
 
   const [dailySlotOpen, setDailySlotOpen] = useState(false);
+  const [dailySlotSyncSessionId, setDailySlotSyncSessionId] = useState(null);
 
-  const handleOpenDailySlot = () => {
+  const patchDailyCutinBroadcast = useCallback(
+    async (patch) => {
+      if (!roomId || roomData?.isSolo) return false;
+      if (gsRef.current?.subPhase !== "daily") return false;
+      try {
+        await updateRoom({
+          dailyCutinPhase: patch.dailyCutinPhase,
+          dailyCutinSessionId: patch.dailyCutinSessionId ?? null,
+          dailyCutinPayload: patch.dailyCutinPayload ?? null,
+        });
+        return true;
+      } catch (_) {
+        const g = gsRef.current;
+        if (!g || !isActorTurnOnGameState(g, myId)) return false;
+        try {
+          return await writeGS(mergeDailyCutinFieldsIntoGameState(g, patch));
+        } catch (_) {
+          return false;
+        }
+      }
+    },
+    [roomId, roomData?.isSolo, updateRoom, writeGS, myId],
+  );
+
+  const clearDailyCutinBroadcast = useCallback(async () => {
+    if (!roomId || roomData?.isSolo) return true;
+    const roomPhase = roomDataRef.current?.dailyCutinPhase ?? "idle";
+    const gsPhase = gsRef.current?.dailyCutinPhase ?? "idle";
+    if (roomPhase === "idle" && gsPhase === "idle") return true;
+    try {
+      await updateRoom(DAILY_CUTIN_SYNC_DEFAULTS);
+      return true;
+    } catch (_) {
+      const g = gsRef.current;
+      if (!g) return false;
+      try {
+        return await writeGS({ ...g, ...DAILY_CUTIN_SYNC_DEFAULTS });
+      } catch (_) {
+        return false;
+      }
+    }
+  }, [roomId, roomData?.isSolo, updateRoom, writeGS]);
+
+  const beginDailyCutinSession = useCallback(() => {
+    const sid = buildDailyCutinSessionId();
+    dailyCutinSessionIdRef.current = sid;
+    return sid;
+  }, []);
+
+  const emitDailyCutin = useCallback(
+    (phase, payload = null) => {
+      if (!isMultiplayerRoom) return;
+      if (!dailyCutinSessionIdRef.current) beginDailyCutinSession();
+      const broadcast = {
+        dailyCutinPhase: phase,
+        dailyCutinSessionId: dailyCutinSessionIdRef.current,
+        dailyCutinPayload: payload,
+      };
+      pendingDailyCutinBroadcastRef.current = broadcast;
+      void patchDailyCutinBroadcast(broadcast);
+    },
+    [isMultiplayerRoom, patchDailyCutinBroadcast, beginDailyCutinSession],
+  );
+
+  const finishDailyCutinSession = useCallback(() => {
+    dailyCutinSessionIdRef.current = null;
+    pendingDailyCutinBroadcastRef.current = null;
+    if (!isMultiplayerRoom) return;
+    void clearDailyCutinBroadcast();
+  }, [isMultiplayerRoom, clearDailyCutinBroadcast]);
+
+  const flushPendingDailyTurnWrite = useCallback(async () => {
+    const pending = pendingDailyTurnWriteRef.current;
+    pendingDailyTurnWriteRef.current = null;
+    if (!pending) return;
+    finishDailyCutinSession();
+    const ok = await writeGS({
+      ...pending.nextGsWithFx,
+      ...pending.cutinClearPatch,
+      ...DAILY_CUTIN_SYNC_DEFAULTS,
+    });
+    if (!ok) {
+      setDay7DailyOptimisticGs(null);
+      resetDailyOutgoingFxState();
+      finishDailyCutinSession();
+    }
+  }, [writeGS, finishDailyCutinSession, resetDailyOutgoingFxState]);
+
+  /** 8日目以降：日常カットイン state が残ると盤面が出ず移動不能になるため強制解除 */
+  useEffect(() => {
+    if (!roomGs) return;
+    const leftDaily =
+      roomGs.subPhase === "day8" ||
+      roomGs.subPhase === "finalBattle" ||
+      roomGs.gamePhase === "finalBattle";
+    if (!leftDaily) return;
+    resetDailyOutgoingFxState();
+    setDay7DailyOptimisticGs(null);
+    if ((roomData?.dailyCutinPhase ?? "idle") !== "idle") {
+      void clearDailyCutinBroadcast();
+    }
+  }, [
+    roomGs?.subPhase,
+    roomGs?.gamePhase,
+    roomData?.dailyCutinPhase,
+    resetDailyOutgoingFxState,
+    clearDailyCutinBroadcast,
+  ]);
+
+  const patchDailySlotBroadcast = useCallback(
+    async (patch) => {
+      if (!roomId || roomData?.isSolo) return false;
+      const g = gsRef.current;
+      if (!g || g.subPhase !== "daily") return false;
+      return writeGS({ ...g, ...patch });
+    },
+    [roomId, roomData?.isSolo, writeGS],
+  );
+
+  const clearDailySlotBroadcast = useCallback(async () => {
+    if (!roomId || roomData?.isSolo) return true;
+    const g = gsRef.current;
+    if (!g) return false;
+    return writeGS({ ...g, ...DAILY_SLOT_SYNC_DEFAULTS });
+  }, [roomId, roomData?.isSolo, writeGS]);
+
+  const dailySlotSyncBroadcast = useMemo(
+    () =>
+      isMultiplayerRoom
+        ? { patch: patchDailySlotBroadcast, clear: clearDailySlotBroadcast }
+        : null,
+    [isMultiplayerRoom, patchDailySlotBroadcast, clearDailySlotBroadcast],
+  );
+
+  const handleOpenDailySlot = useCallback(() => {
     if (!isMyTurn || !roomGs || roomGs.subPhase !== "daily") return;
     if (
       workCutin != null ||
@@ -2020,8 +2817,36 @@ export default function App() {
       return;
     const p = roomGs.players[roomGs.currentPlayerIdx];
     if (!p || p.stats.money < BAL.dailySlot.spinBet * BAL.dailySlot.spins) return;
+    const sid = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+    setDailySlotSyncSessionId(sid);
     setDailySlotOpen(true);
-  };
+    if (isMultiplayerRoom) {
+      void clearDailyCutinBroadcast();
+      void patchDailySlotBroadcast({
+        ...DAILY_SLOT_SYNC_DEFAULTS,
+        dailySlotPhase: "open",
+        dailySlotSessionId: sid,
+        dailySlotRoundTotal: BAL.dailySlot.spins,
+      });
+    }
+  }, [
+    isMyTurn,
+    roomGs,
+    workCutin,
+    streamTypeCutin,
+    shrinePhase,
+    streamPonFireOverlay,
+    workPonHud,
+    streamFailOverlay,
+    isMultiplayerRoom,
+    patchDailySlotBroadcast,
+    clearDailyCutinBroadcast,
+  ]);
+
+  const handleDailySlotClose = useCallback(() => {
+    setDailySlotOpen(false);
+    setDailySlotSyncSessionId(null);
+  }, []);
 
   const finalizeDailySlotTraining = useCallback(
     async (spinResults) => {
@@ -2033,8 +2858,13 @@ export default function App() {
       const idx = g.currentPlayerIdx;
       const p = g.players[idx];
       let s = { ...p.stats };
-      const logs = [];
+      const pre = [];
+      const actionLines = [];
+      const statusLines = [];
+      const logExtras = [];
       const virtueBefore = s.virtue;
+      const moneyBeforeSlot = s.money;
+      const skillBeforeSlot = s.skill;
       const char = CHARACTERS[p.characterType] ?? CHARACTERS.salaryman;
       const ponMultiplier = char.ponMultiplier;
       let streamMult = p.streamMultiplier ?? char.streamMultiplier;
@@ -2042,8 +2872,9 @@ export default function App() {
 
       if (newAmulets > 0) {
         const luckBonus = newAmulets * 2;
+        const luckBeforeAmulet = s.luck;
         s.luck = clamp(s.luck + luckBonus);
-        logs.push(`🧿 お守り効果（${newAmulets}個）: 運+${luckBonus}→${s.luck}`);
+        pre.push(amuletPreActionLine(newAmulets, luckBeforeAmulet, s.luck));
       }
 
       const ds = BAL.dailySlot;
@@ -2052,16 +2883,13 @@ export default function App() {
         return;
       }
 
-      logs.push(
-        `${p.name} ${g.currentDay}日目【デイリースロット・技能練習】${spinResults.length}回（各${ds.spinBet}Gベット／8日目スロットと同じ役配当テーブル）`,
-      );
-
       const slotPityCounter =
         typeof spinResults[spinResults.length - 1]?.pityCounterAfter === "number"
           ? spinResults[spinResults.length - 1].pityCounterAfter
           : (p.slotPityCounter ?? 0);
 
       let totalNet = 0;
+      const spinDetails = [];
       spinResults.forEach((res, i) => {
         const betAmt = Number(res?.bet ?? ds.spinBet);
         const pay = Number(res?.payout ?? 0);
@@ -2071,57 +2899,57 @@ export default function App() {
         const skBase = ds.skillGainEverySpin;
         const skRole = res?.tier && res.tier !== "miss" ? ds.skillGainOnRole : 0;
         s.skill = clamp(s.skill + skBase + skRole);
-        logs.push(
-          `  ${i + 1}回目 [${betAmt}G]: ${res?.message ?? "？"} / 収支${net >= 0 ? "+" : ""}${net}G → 資金${s.money}G・技量${s.skill}（本回練習+${skBase}${skRole ? `・役ボ+${skRole}` : ""}）`,
-        );
+        spinDetails.push({
+          index: i + 1,
+          message: res?.message ?? "？",
+          net,
+          moneyAfterSpin: s.money,
+          skillAfterSpin: s.skill,
+          skillGainDetail: `+${skBase}${skRole ? ` · 役ボ+${skRole}` : ""}`,
+        });
       });
-      logs.push(`  デイリースロット収支計 ${totalNet >= 0 ? "+" : ""}${totalNet}G`);
+
+      const slotBuilt = slotActionLines({
+        spinCount: spinResults.length,
+        betPerSpin: ds.spinBet,
+        spinDetails,
+        totalNet,
+        moneyBefore: moneyBeforeSlot,
+        moneyAfter: s.money,
+        skillBefore: skillBeforeSlot,
+        skillAfter: s.skill,
+      });
+      actionLines.push(...slotBuilt.lines);
 
       const actionType = "dailySlot";
 
       if (g.subPhase === "daily") {
         const lc = livingCostForPlayer(p);
+        const moneyBeforeLiving = s.money;
         s.money = clampMoney(s.money - lc);
-        logs.push(`  生活費 -${lc}G → 資金 ${s.money}G${s.money < 0 ? " 【借金中】" : ""}`);
+        statusLines.push(...livingExpenseLines(moneyBeforeLiving, s.money, lc, s.money < 0));
       }
 
       const ponGain = Math.ceil(BAL.pon.dailyGain * ponMultiplier);
-      const ponBefore = s.pon;
+      const ponBeforeGain = s.pon;
       s.pon = clamp(s.pon + ponGain);
-      logs.push(`  PON: ${ponBefore} +${ponGain}${ponMultiplier !== 1 ? `(×${ponMultiplier})` : ""} → ${s.pon}`);
+      statusLines.push(ponGainLine(ponBeforeGain, s.pon));
 
       let ponEvent = null;
       let newStreamMult = streamMult;
       const penMoneyMul = char.ponFireMoneyPenaltyMultiplier ?? 1;
       if (s.pon >= BAL.pon.fireThreshold && Math.random() < s.pon / 100) {
         const ponBefore2 = s.pon;
-        if (actionType === "stream") {
-          const gain = rand(BAL.pon.stream.moneyMin, BAL.pon.stream.moneyMax);
-          s.money = clampMoney(s.money + gain);
-          s.skill = clamp(s.skill - BAL.pon.stream.skillLoss, 0);
-          ponEvent = `🔥 失言がバズった！資金+${gain}G / 技量-${BAL.pon.stream.skillLoss}`;
-          if (p.characterType === "vtuber") {
-            newStreamMult = +(streamMult + 0.5).toFixed(1);
-            ponEvent += ` / 🎭リリム効果：配信倍率 ×${streamMult.toFixed(1)}→×${newStreamMult.toFixed(1)}（永続UP！）`;
-          }
-        } else if (actionType === "shrine") {
-          const pen = Math.max(1, Math.round(rand(50, 150) * penMoneyMul));
-          s.money = clampMoney(s.money - pen);
-          ponEvent = `⚠️ ご神域で粗相をしてしまった！資金-${pen}G`;
-        } else {
-          const pen = Math.max(
-            1,
-            Math.round(rand(BAL.pon.work.penaltyMin, BAL.pon.work.penaltyMax) * penMoneyMul),
-          );
-          s.money = clampMoney(s.money - pen);
-          ponEvent = `⚠️ 弁償！資金-${pen}G`;
-        }
-        s.pon = Math.floor(ponBefore2 / 2);
-        logs.push(`  [PON発火 ${ponBefore2}%] ${ponEvent} / PON→半減→${s.pon}`);
-      } else {
-        logs.push(
-          `  PON発火なし（${s.pon >= BAL.pon.fireThreshold ? `${s.pon}%判定ハズレ` : `閾値${BAL.pon.fireThreshold}まであと${BAL.pon.fireThreshold - s.pon}`}）`,
+        const pen = Math.max(
+          1,
+          Math.round(rand(BAL.pon.work.penaltyMin, BAL.pon.work.penaltyMax) * penMoneyMul),
         );
+        s.money = clampMoney(s.money - pen);
+        ponEvent = `⚠️ 弁償！資金-${pen}G`;
+        s.pon = Math.floor(ponBefore2 / 2);
+        statusLines.push(...ponFireLines(ponEvent));
+      } else {
+        statusLines.push(ponNoFireLine(s.pon, BAL.pon.fireThreshold));
       }
 
       let newPlayers = g.players.map((pl, i) =>
@@ -2130,32 +2958,57 @@ export default function App() {
           : pl,
       );
 
-      newPlayers = applyVirtueWave(p, virtueBefore, s.virtue, newPlayers, logs);
-
-      if (ponEvent && actionType === "stream" && g.subPhase === "day8") {
-        newPlayers = applySplashDamage(idx, newPlayers, logs);
-      }
+      const virtueLogs = [];
+      newPlayers = applyVirtueWave(p, virtueBefore, s.virtue, newPlayers, virtueLogs);
+      virtueLogs.forEach((line) => logExtras.push(legacyExtrasLine(line)));
 
       if (g.subPhase === "daily") {
-        newPlayers = newPlayers.map((pl, i) => (i !== idx ? pl : applyRimiruDailyEnd(pl, logs)));
+        const rimiruLogs = [];
+        newPlayers = newPlayers.map((pl, i) => (i !== idx ? pl : applyRimiruDailyEnd(pl, rimiruLogs)));
+        rimiruLogs.forEach((line) => logExtras.push(legacyExtrasLine(line)));
       }
 
-      if (ponEvent && actionType === "stream") {
-        setShakeScreen(true);
-        setTimeout(() => setShakeScreen(false), 500);
-      }
+      const logs = [
+        buildDailyActionLogEntry({
+          day: g.currentDay,
+          playerId: p.id,
+          playerName: p.name,
+          actionType,
+          actionLabel: slotBuilt.label,
+          pre,
+          actionLines,
+          statusLines,
+          extras: logExtras,
+        }),
+      ];
 
       const baseGs = { ...g, recentPonEvent: ponEvent ? { player: p.name, msg: ponEvent } : null };
       const nextGs = computeAdvanceDaily(baseGs, newPlayers, logs);
+      const skillGainTotal = spinResults.reduce((sum, res) => {
+        const skBase = ds.skillGainEverySpin;
+        const skRole = res?.tier && res.tier !== "miss" ? ds.skillGainOnRole : 0;
+        return sum + skBase + skRole;
+      }, 0);
+      const dailyActionFx = buildDailyActionFx({
+        playerId: p.id,
+        actionType: "dailySlot",
+        detail: { skill: skillGainTotal },
+      });
+      let nextGsWithFx = dailyActionFx ? { ...nextGs, dailyActionFx } : nextGs;
       const advancesToSugoroku =
         g.currentDay === LAST_DAILY_DAY && idx === g.players.length - 1;
+      if (advancesToSugoroku) {
+        nextGsWithFx = clearDailyActionFx(nextGsWithFx);
+        setShrinePhase(null);
+      }
       if (g.currentDay === LAST_DAILY_DAY && g.subPhase === "daily") {
-        setDay7DailyOptimisticGs(buildDay7DailyOptimisticGs(nextGs, g, advancesToSugoroku));
+        setDay7DailyOptimisticGs(buildDay7DailyOptimisticGs(nextGsWithFx, g, advancesToSugoroku));
       }
       if (advancesToSugoroku) {
-        await new Promise((r) => setTimeout(r, FINAL_BATTLE_SPLASH_MS));
+        const fxHoldMs = computeDay7TransitionFxHoldMs("dailySlot");
+        await new Promise((r) => setTimeout(r, Math.max(FINAL_BATTLE_SPLASH_MS, fxHoldMs)));
       }
-      const ok = await writeGS(nextGs);
+      const ok = await writeGS({ ...nextGsWithFx, ...DAILY_SLOT_SYNC_DEFAULTS, ...DAILY_CUTIN_SYNC_DEFAULTS });
       if (!ok) setDay7DailyOptimisticGs(null);
     },
     [writeGS, updateCurrentAction],
@@ -2204,7 +3057,12 @@ export default function App() {
     const p    = gs.players[gs.currentPlayerIdx];
     const moneyBeforeAction = p.stats.money;
     let s      = { ...p.stats };
-    const logs = [];
+    const pre = [];
+    const actionLines = [];
+    const statusLines = [];
+    const logExtras = [];
+    let actionLabel = null;
+    let outcome = null;
 
     /** 日常「配信」オーバーレイ順序（handleDailyAction 末尾でキュー実行） */
     let streamRollFailed = false;
@@ -2213,6 +3071,8 @@ export default function App() {
     let workIncomeForHud = 0;
     let livingCostForHud = 0;
     let workPenaltyForHud = 0;
+    /** 盤面フロートラベル用（日常行動同期） */
+    let dailyFxDetail = null;
 
     const virtueBefore = s.virtue; // 善行波及用（行動前）
 
@@ -2225,27 +3085,48 @@ export default function App() {
     let newAmulets = p.amulets ?? 0;
     if (newAmulets > 0) {
       const luckBonus = newAmulets * 2;
+      const luckBeforeAmulet = s.luck;
       s.luck = clamp(s.luck + luckBonus);
-      logs.push(`🧿 お守り効果（${newAmulets}個）: 運+${luckBonus}→${s.luck}`);
+      pre.push(amuletPreActionLine(newAmulets, luckBeforeAmulet, s.luck));
     }
 
     if (actionType === "shrine") {
       const sh = BAL.shrine;
       const virtueBeforeShrine = s.virtue;
+      const moneyBeforeShrine = s.money;
+      const luckBeforeShrine = s.luck;
+      const ponBeforeShrine = s.pon;
       s.money  = clampMoney(s.money - sh.cost);
       s.luck    = clamp(s.luck   + sh.luckGain);
       s.virtue  = clamp(s.virtue + sh.virtueGain);
       s.pon     = Math.max(0, s.pon - sh.ponReduce);
-      logs.push(`${p.name} ${gs.currentDay}日目【神社】二礼二拍手一礼。運気が上がった気がする！ -${sh.cost}G / 運+${sh.luckGain}→${s.luck} / 善行+${sh.virtueGain}→${s.virtue} / PON-${sh.ponReduce}→${s.pon}`);
+      actionLabel = "神社 · 二礼二拍手一礼";
       const amuletP = shrineAmuletDropChance(virtueBeforeShrine, sh.amuletBaseRate ?? 0.2);
+      let gotAmulet = false;
       if (Math.random() < amuletP) {
         newAmulets++;
-        logs.push(`  🧿 お守りを入手した！（計${newAmulets}個／善行${virtueBeforeShrine}・抽選${(amuletP * 100).toFixed(0)}%）`);
+        gotAmulet = true;
       }
+      actionLines.push(
+        ...shrineActionLines({
+          moneyBefore: moneyBeforeShrine,
+          moneyAfter: s.money,
+          luckBefore: luckBeforeShrine,
+          luckAfter: s.luck,
+          virtueBefore: virtueBeforeShrine,
+          virtueAfter: s.virtue,
+          ponBefore: ponBeforeShrine,
+          ponAfter: s.pon,
+          gotAmulet,
+        }),
+      );
       // 神社カットイン演出（自分のターンのみ）
+      beginDailyCutinSession();
+      emitDailyCutin(DAILY_CUTIN_PHASE.shrine, { subPhase: "in" });
       setShrinePhase("in");
       setTimeout(() => setShrinePhase("out"), 1700);
-      setTimeout(() => setShrinePhase(null),  2700);
+      setTimeout(() => setShrinePhase(null), 2700);
+      dailyFxDetail = {};
     } else if (actionType === "work") {
       workFxChainTimeoutsRef.current.forEach(clearTimeout);
       workFxChainTimeoutsRef.current = [];
@@ -2272,14 +3153,27 @@ export default function App() {
         stat: workVirtueGain ? { label: "善行", delta: workVirtueGain } : null,
         characterType: p.characterType,
       });
+      beginDailyCutinSession();
+      emitDailyCutin(DAILY_CUTIN_PHASE.work, {
+        gold: workTotal,
+        stat: workVirtueGain ? { label: "善行", delta: workVirtueGain } : null,
+        characterType: p.characterType,
+      });
       workCutinTimerRef.current = window.setTimeout(() => {
         setWorkCutin(null);
         workCutinTimerRef.current = null;
-      }, 2000);
-      logs.push(
-        `${p.name} ${gs.currentDay}日目【仕事】資金+${workTotal}G${workBonus ? `（査定+${workBonus}G込み・×${wm}）` : wm !== 1 ? `（×${wm}）` : ""}・善行収入×${vim.toFixed(2)}（ベース${workBase}G） / 善行+${workVirtueGain}→${s.virtue}`,
+      }, DAILY_WORK_CUTIN_MS);
+      actionLabel = "仕事";
+      actionLines.push(
+        ...workActionLines({
+          virtueBefore,
+          virtueAfter: s.virtue,
+          moneyBefore: moneyBeforeAction,
+          moneyAfter: s.money,
+        }),
       );
       workIncomeForHud = workTotal;
+      dailyFxDetail = { money: workTotal };
     } else if (actionType === "stream") {
       streamFxChainTimeoutsRef.current.forEach(clearTimeout);
       streamFxChainTimeoutsRef.current = [];
@@ -2305,6 +3199,9 @@ export default function App() {
       streamRollFailed = failed;
       let streamCutinGold = 0;
       let streamCutinStat = null;
+      const moneyBeforeStream = s.money;
+      const virtueBeforeStream = s.virtue;
+      const skillBeforeStream = s.skill;
       if (failed) {
         const baseReward = BAL.stream.successMin;
         const streamBaseMoney = Math.round(baseReward * streamMult);
@@ -2312,9 +3209,15 @@ export default function App() {
         const delta = applyVirtueIncomeBoost(streamBaseMoney, s.virtue);
         streamCutinGold = delta;
         s.money = clampMoney(s.money + delta);
-        logs.push(
-          `${p.name} ${gs.currentDay}日目【${streamLabel}】💥失敗（最低収入） 資金+${delta}G（成功時下限${BAL.stream.successMin}G×配信×${streamMult.toFixed(1)}・善行収入×${vimS.toFixed(2)}・基準${streamBaseMoney}G）/ 善行・技量ボーナスなし (失敗率${(failRate * 100).toFixed(0)}%)`,
-        );
+        const { lines, label } = streamActionLines({
+          streamLabel,
+          failed: true,
+          moneyBefore: moneyBeforeStream,
+          moneyAfter: s.money,
+        });
+        actionLines.push(...lines);
+        actionLabel = label;
+        outcome = "failure";
       } else {
         const baseReward = rand(BAL.stream.successMin, BAL.stream.successMax);
         const streamBaseMoney = Math.round(baseReward * streamMult);
@@ -2326,15 +3229,42 @@ export default function App() {
           const vg = rand(BAL.stream.chat.virtueGainMin, BAL.stream.chat.virtueGainMax);
           s.virtue = clamp(s.virtue + vg);
           streamCutinStat = vg ? { label: "善行", delta: vg } : null;
-          logs.push(`${p.name} ${gs.currentDay}日目【${streamLabel}】✨成功 資金+${delta}G（配信×${streamMult.toFixed(1)}・善行収入×${vimS.toFixed(2)}・基準${streamBaseMoney}G） / 善行+${vg}→${s.virtue} (失敗率${(failRate * 100).toFixed(0)}%)`);
+          const { lines, label } = streamActionLines({
+            streamLabel,
+            failed: false,
+            moneyBefore: moneyBeforeStream,
+            moneyAfter: s.money,
+            statLabel: "善行",
+            statBefore: virtueBeforeStream,
+            statAfter: s.virtue,
+          });
+          actionLines.push(...lines);
+          actionLabel = label;
         } else {
           const sg = rand(BAL.stream.game.skillGainMin, BAL.stream.game.skillGainMax);
           s.skill  = clamp(s.skill + sg);
           streamCutinStat = sg ? { label: "技量", delta: sg } : null;
-          logs.push(`${p.name} ${gs.currentDay}日目【${streamLabel}】✨成功 資金+${delta}G（配信×${streamMult.toFixed(1)}・善行収入×${vimS.toFixed(2)}・基準${streamBaseMoney}G） / 技量+${sg}→${s.skill} (失敗率${(failRate * 100).toFixed(0)}%)`);
+          const { lines, label } = streamActionLines({
+            streamLabel,
+            failed: false,
+            moneyBefore: moneyBeforeStream,
+            moneyAfter: s.money,
+            statLabel: "技量",
+            statBefore: skillBeforeStream,
+            statAfter: s.skill,
+          });
+          actionLines.push(...lines);
+          actionLabel = label;
         }
+        outcome = "success";
       }
       setStreamTypeCutin({
+        mode: streamType,
+        gold: streamCutinGold,
+        stat: streamCutinStat,
+      });
+      beginDailyCutinSession();
+      emitDailyCutin(DAILY_CUTIN_PHASE.stream, {
         mode: streamType,
         gold: streamCutinGold,
         stat: streamCutinStat,
@@ -2342,7 +3272,7 @@ export default function App() {
       streamCutinTimerRef.current = setTimeout(() => {
         setStreamTypeCutin(null);
         streamCutinTimerRef.current = null;
-      }, 2000);
+      }, DAILY_STREAM_CUTIN_MS);
     } else {
       return;
     }
@@ -2350,16 +3280,16 @@ export default function App() {
     // ─ 生活費（1〜7日目毎日）：マイナスになっても借金として続行
     if (gs.subPhase === "daily") {
       const lc = livingCostForPlayer(p);
+      const moneyBeforeLiving = s.money;
       s.money = clampMoney(s.money - lc);
-      logs.push(`  生活費 -${lc}G → 資金 ${s.money}G${s.money < 0 ? " 【借金中】" : ""}`);
+      statusLines.push(...livingExpenseLines(moneyBeforeLiving, s.money, lc, s.money < 0));
       if (actionType === "work") livingCostForHud = lc;
     }
 
-    // ─ PON蓄積（キャラ倍率あり）
     const ponGain = Math.ceil(BAL.pon.dailyGain * ponMultiplier);
-    const ponBefore = s.pon;
+    const ponBeforeGain = s.pon;
     s.pon = clamp(s.pon + ponGain);
-    logs.push(`  PON: ${ponBefore} +${ponGain}${ponMultiplier !== 1 ? `(×${ponMultiplier})` : ""} → ${s.pon}`);
+    statusLines.push(ponGainLine(ponBeforeGain, s.pon));
 
     let ponEvent    = null;
     let newStreamMult = streamMult; // vtuber大炎上で更新される
@@ -2394,21 +3324,20 @@ export default function App() {
         }
       }
       s.pon = Math.floor(ponBefore2 / 2);
-      logs.push(`  [PON発火 ${ponBefore2}%] ${ponEvent} / PON→半減→${s.pon}`);
+      statusLines.push(...ponFireLines(ponEvent));
     } else {
-      logs.push(`  PON発火なし（${s.pon >= BAL.pon.fireThreshold ? `${s.pon}%判定ハズレ` : `閾値${BAL.pon.fireThreshold}まであと${BAL.pon.fireThreshold - s.pon}`}）`);
+      statusLines.push(ponNoFireLine(s.pon, BAL.pon.fireThreshold));
     }
 
     // 配信：カットイン終了後 → PON発火（時）→ 失敗（時）の順でオーバーレイを並べる
     if (actionType === "stream") {
-      const STREAM_CUTIN_TOTAL_MS = 2000;
-      const STREAM_PON_OVERLAY_MS = 3300;
-      const STREAM_FAIL_HOLD_MS = 3200;
       streamFxChainTimeoutsRef.current.forEach(clearTimeout);
       streamFxChainTimeoutsRef.current = [];
-      let overlayCursorMs = STREAM_CUTIN_TOTAL_MS;
+      let overlayCursorMs = DAILY_STREAM_CUTIN_MS;
+      let streamChainTotalMs = DAILY_STREAM_CUTIN_MS;
       if (deferStreamPonOverlay) {
         const idPon = window.setTimeout(() => {
+          emitDailyCutin(DAILY_CUTIN_PHASE.streamPon, null);
           setStreamPonFireOverlay(true);
           setShakeScreen(true);
           window.setTimeout(() => setShakeScreen(false), 500);
@@ -2419,13 +3348,15 @@ export default function App() {
           streamPonFireOverlayTimerRef.current = window.setTimeout(() => {
             setStreamPonFireOverlay(false);
             streamPonFireOverlayTimerRef.current = null;
-          }, STREAM_PON_OVERLAY_MS);
+          }, DAILY_STREAM_PON_OVERLAY_MS);
         }, overlayCursorMs);
         streamFxChainTimeoutsRef.current.push(idPon);
-        overlayCursorMs += STREAM_PON_OVERLAY_MS;
+        overlayCursorMs += DAILY_STREAM_PON_OVERLAY_MS;
+        streamChainTotalMs += DAILY_STREAM_PON_OVERLAY_MS;
       }
       if (streamRollFailed) {
         const idFail = window.setTimeout(() => {
+          emitDailyCutin(DAILY_CUTIN_PHASE.streamFail, null);
           setStreamFailOverlay(true);
           try {
             soundRef.current?.playStreamFailGaan?.();
@@ -2434,15 +3365,14 @@ export default function App() {
           streamFailOverlayTimerRef.current = window.setTimeout(() => {
             setStreamFailOverlay(false);
             streamFailOverlayTimerRef.current = null;
-          }, STREAM_FAIL_HOLD_MS);
+          }, DAILY_STREAM_FAIL_HOLD_MS);
         }, overlayCursorMs);
         streamFxChainTimeoutsRef.current.push(idFail);
+        streamChainTotalMs += DAILY_STREAM_FAIL_HOLD_MS;
       }
     }
 
     if (actionType === "work") {
-      const WORK_CUTIN_TOTAL_MS = 2000;
-      const WORK_PON_OVERLAY_MS = 3100;
       workFxChainTimeoutsRef.current.forEach(clearTimeout);
       workFxChainTimeoutsRef.current = [];
       if (deferWorkPonOverlay) {
@@ -2456,6 +3386,7 @@ export default function App() {
           moneyBefore: moneyBeforeAction,
         };
         const idWorkPon = window.setTimeout(() => {
+          emitDailyCutin(DAILY_CUTIN_PHASE.workPon, hudPayload);
           setWorkPonHud(hudPayload);
           try {
             soundRef.current?.playWorkPonPlateBreak?.();
@@ -2464,8 +3395,8 @@ export default function App() {
           workPonFireOverlayTimerRef.current = window.setTimeout(() => {
             setWorkPonHud(null);
             workPonFireOverlayTimerRef.current = null;
-          }, WORK_PON_OVERLAY_MS);
-        }, WORK_CUTIN_TOTAL_MS);
+          }, DAILY_WORK_PON_OVERLAY_MS);
+        }, DAILY_WORK_CUTIN_MS);
         workFxChainTimeoutsRef.current.push(idWorkPon);
       }
     }
@@ -2474,31 +3405,101 @@ export default function App() {
       i === gs.currentPlayerIdx ? { ...pl, stats: s, streamMultiplier: newStreamMult, amulets: newAmulets } : pl
     );
 
-    // 善行波及チェック（仕事・雑談配信で善行閾値を超えた場合）
-    newPlayers = applyVirtueWave(p, virtueBefore, s.virtue, newPlayers, logs);
+    const virtueLogs = [];
+    newPlayers = applyVirtueWave(p, virtueBefore, s.virtue, newPlayers, virtueLogs);
+    virtueLogs.forEach((line) => logExtras.push(legacyExtrasLine(line)));
 
-    // 大炎上巻き添えチェック（Day8中のみ、位置情報が有効な場合）
     if (ponEvent && actionType === "stream" && gs.subPhase === "day8") {
-      newPlayers = applySplashDamage(gs.currentPlayerIdx, newPlayers, logs);
+      newPlayers = applySplashDamage(gs.currentPlayerIdx, newPlayers, virtueLogs);
     }
 
     if (gs.subPhase === "daily") {
       const idx = gs.currentPlayerIdx;
-      newPlayers = newPlayers.map((pl, i) => (i !== idx ? pl : applyRimiruDailyEnd(pl, logs)));
+      const rimiruLogs = [];
+      newPlayers = newPlayers.map((pl, i) =>
+        i !== idx ? pl : applyRimiruDailyEnd(pl, rimiruLogs),
+      );
+      rimiruLogs.forEach((line) => logExtras.push(legacyExtrasLine(line)));
     }
+
+    const logs = [
+      buildDailyActionLogEntry({
+        day: gs.currentDay,
+        playerId: p.id,
+        playerName: p.name,
+        actionType,
+        actionLabel,
+        outcome,
+        pre,
+        actionLines,
+        statusLines,
+        extras: logExtras,
+      }),
+    ];
 
     const baseGs = { ...gs, recentPonEvent: ponEvent ? { player: p.name, msg: ponEvent } : null };
     const nextGs = computeAdvanceDaily(baseGs, newPlayers, logs);
     const advancesToSugoroku =
       gs.currentDay === LAST_DAILY_DAY && gs.currentPlayerIdx === gs.players.length - 1;
+    let nextGsWithFx = attachDailyActionFxForDailyPhase(nextGs, {
+      playerId: p.id,
+      actionType,
+      detail: dailyFxDetail ?? {},
+    });
+    if (advancesToSugoroku) {
+      setShrinePhase(null);
+    }
     if (gs.currentDay === LAST_DAILY_DAY && gs.subPhase === "daily") {
-      setDay7DailyOptimisticGs(buildDay7DailyOptimisticGs(nextGs, gs, advancesToSugoroku));
+      setDay7DailyOptimisticGs(buildDay7DailyOptimisticGs(nextGsWithFx, gs, advancesToSugoroku));
     }
     if (advancesToSugoroku) {
-      await new Promise((r) => setTimeout(r, FINAL_BATTLE_SPLASH_MS));
+      const fxHoldMs = computeDay7TransitionFxHoldMs(actionType, {
+        deferStreamPonOverlay,
+        streamRollFailed,
+        deferWorkPonOverlay,
+      });
+      await new Promise((r) => setTimeout(r, Math.max(FINAL_BATTLE_SPLASH_MS, fxHoldMs)));
+      resetDailyOutgoingFxState();
+      finishDailyCutinSession();
     }
-    const ok = await writeGS(nextGs);
-    if (!ok) setDay7DailyOptimisticGs(null);
+    const cutinClearPatch =
+      nextGsWithFx.subPhase !== "daily" ? DAILY_CUTIN_SYNC_DEFAULTS : {};
+    const cutinPreserve =
+      nextGsWithFx.subPhase === "daily"
+        ? pickDailyCutinBroadcastFields(pendingDailyCutinBroadcastRef.current)
+        : null;
+    if (isMultiplayerRoom && cutinPreserve) {
+      void patchDailyCutinBroadcast(cutinPreserve);
+    }
+
+    /** マルチ日常：カットイン中に手番を進めると観戦側が stale cutin で止まるため、演出後に writeGS */
+    if (isMultiplayerRoom && gs.subPhase === "daily" && !advancesToSugoroku) {
+      const holdMs = computeDay7TransitionFxHoldMs(actionType, {
+        deferStreamPonOverlay,
+        streamRollFailed,
+        deferWorkPonOverlay,
+      });
+      if (dailyTurnWriteTimerRef.current) {
+        clearTimeout(dailyTurnWriteTimerRef.current);
+      }
+      pendingDailyTurnWriteRef.current = { nextGsWithFx, cutinClearPatch };
+      dailyTurnWriteTimerRef.current = window.setTimeout(() => {
+        dailyTurnWriteTimerRef.current = null;
+        void flushPendingDailyTurnWrite();
+      }, holdMs);
+      return;
+    }
+
+    const ok = await writeGS({
+      ...nextGsWithFx,
+      ...cutinClearPatch,
+      ...(cutinPreserve ?? {}),
+    });
+    if (!ok) {
+      setDay7DailyOptimisticGs(null);
+      resetDailyOutgoingFxState();
+      finishDailyCutinSession();
+    }
   };
 
   // ─── 8日目：移動行動 ─────────────────────────────────────────────────
@@ -2509,6 +3510,7 @@ export default function App() {
     const p = gs.players[idx];
     if (p.movePhase !== "moving") return;
     if (!acceptTurnAction()) return;
+    beginDay8VisualAction();
 
     const pendingTraffic = p.pendingTaxiSteps ?? 0;
 
@@ -2642,6 +3644,7 @@ export default function App() {
       setTaxiDriveCongested(true);
       taxiActorPlayerIdRef.current = p.id;
       /** 渋滞2ターン目：すでにタクシー乗車中なので enter/boarding/ride は出さず drive のみ */
+      taxiVisualActiveRef.current = true;
       setTaxiPhase("drive");
       return;
     }
@@ -2665,7 +3668,9 @@ export default function App() {
         );
         if (isMulti && gs.subPhase === "day8") {
           const logs = [`💀 ${p.name} / PON${p.stats.pon}で人助け失敗！（脱落 — 代理スロットで他プレイヤーに干渉可能）`];
-          await writeGS(computeAdvanceDay8Turn({ ...gs, players: newPlayers }, newPlayers, logs));
+          await writeGS(computeAdvanceDay8Turn({ ...gs, players: newPlayers }, newPlayers, logs), {
+            markDay8TurnComplete: true,
+          });
           return;
         }
         await writeGS({
@@ -2750,151 +3755,153 @@ export default function App() {
     s.pon = clamp(s.pon + step);
     if (ponFired) s.pon = Math.floor(s.pon / 2);
 
-    // ── サイコロアニメーション（個別表示・段階的確定）────────────────────────
-    const diceCount  = diceRolls.length;
-    const revealStart = 400;  // シャッフル継続時間(ms)
-    const revealGap   = 520;  // 各ダイスが確定するまでの間隔(ms)
-    const gameDelay   = revealStart + (diceCount - 1) * revealGap + 2000; // ゲームロジック実行タイミング（確定後2秒停止）
-
-    setIsDiceRolling(true);
-    setLocalDice(Array(diceCount).fill(null));
-    setDiceConfirmed(Array(diceCount).fill(false));
-    setDiceShuffleValues(Array.from({ length: diceCount }, () => rand(1, 6)));
-    setIsLuckyRoll(advantageRoll);
-    setShowDiceTotal(false);
-    if (actionType === "taxi") setTaxiPhase("taxiHail");
-
-    // 運80アドバンテージ：幸運のダイスフラッシュ演出
     if (advantageRoll) {
+      setIsLuckyRoll(true);
       setShowLuckyDice(true);
       setTimeout(() => setShowLuckyDice(false), 1900);
     }
 
-    // シャッフルタイマー（各ダイスの数字がバラバラに高速変化）
-    const shuffleTimer = setInterval(() => {
-      setDiceShuffleValues(Array.from({ length: diceCount }, () => rand(1, 6)));
-    }, 80);
+    const stumbleCells = ponFired ? Math.ceil(origStep / 2) : step;
+    const landedDice = Math.min(BOARD_GOAL, p.position + stumbleCells);
+    const roundsUsedNow = Math.max(0, BAL.dice.maxTurns - day8RemainingTurns);
+    const newTurns = roundsUsedNow + 1 + extraTurns;
 
-    // シャッフル停止 → ダイスを1個ずつ順番に確定
-    setTimeout(() => {
-      clearInterval(shuffleTimer);
-      diceRolls.forEach((val, idx) => {
-        setTimeout(() => {
-          setLocalDice(prev => { const n = [...prev]; n[idx] = val; return n; });
-          setDiceConfirmed(prev => { const n = [...prev]; n[idx] = true; return n; });
-          // 最後のダイスが確定したら合計を表示
-          if (idx === diceCount - 1) setTimeout(() => setShowDiceTotal(true), 200);
-        }, idx * revealGap);
+    const rr = resolveDay8LandingWithTiles(gs, idx, landedDice, s, logs, {
+      ponSplashDamage: ponFired,
+      skipTileEffects: actionType === "taxi",
+    });
+    if (rr.gameOverByDebt?.triggered) {
+      await writeGS({
+        ...gs,
+        gamePhase: "gameOver",
+        gameOverMsg: rr.gameOverByDebt.message,
+        log: prependLogs([`💀 GAME OVER: ${rr.gameOverByDebt.message}`], gs.log),
       });
-    }, revealStart);
+      return;
+    }
+    const moverOut = rr.players[idx];
+    const newPosFinal = moverOut.position;
+    const statsFinal = moverOut.stats;
 
-    // ゲームロジック：全ダイス確定後に実行
-    setTimeout(async () => {
-      const stumbleCells = ponFired ? Math.ceil(origStep / 2) : step;
-      const landedDice = Math.min(BOARD_GOAL, p.position + stumbleCells);
-      const roundsUsedNow = Math.max(0, BAL.dice.maxTurns - day8RemainingTurns);
-      const newTurns = roundsUsedNow + 1 + extraTurns;
+    const arrived = newPosFinal >= BOARD_GOAL;
+    const timedOut = !arrived && newTurns >= BAL.dice.maxTurns;
+    const slotReserved = arrived ? Math.max(0, BAL.dice.maxTurns - newTurns) : 0;
 
-      const rr = resolveDay8LandingWithTiles(gs, idx, landedDice, s, logs, {
-        ponSplashDamage: ponFired,
-        skipTileEffects: actionType === "taxi",
-      });
-      if (rr.gameOverByDebt?.triggered) {
-        await writeGS({
-          ...gs,
-          gamePhase: "gameOver",
-          gameOverMsg: rr.gameOverByDebt.message,
-          log: prependLogs([`💀 GAME OVER: ${rr.gameOverByDebt.message}`], gs.log),
-        });
-        setIsDiceRolling(false);
-        return;
-      }
-      const moverOut = rr.players[idx];
-      const newPosFinal = moverOut.position;
-      const statsFinal = moverOut.stats;
+    const ponLog = ponFired
+      ? ` ⚡転倒(${ponBefore}%) ${origStep}→${step}マス / PON→半減→${statsFinal.pon}`
+      : ` / PON${ponBefore}+${step}→${statsFinal.pon}`;
+    let fullMsg = `${eventMsg} → ${newPosFinal}/${BOARD_GOAL}マス${ponLog}`;
+    if (newPosFinal !== landedDice) {
+      fullMsg += `（マス効果:${landedDice}→${newPosFinal}）`;
+    }
 
-      const arrived = newPosFinal >= BOARD_GOAL;
-      const timedOut = !arrived && newTurns >= BAL.dice.maxTurns;
-      const slotReserved = arrived ? Math.max(0, BAL.dice.maxTurns - newTurns) : 0;
+    if (diceRolls.length > 1) {
+      logs.push(`  ダイスの出目: ${diceRolls.join(", ")} (合計${origStep}${ponFired ? `→転倒で${step}` : ""}マス)`);
+    }
+    if (ponFired) logs.push(`  ⚡転倒！${origStep}マス→${step}マス / PON半減`);
+    if (arrived) {
+      const pullsArrive = slotReserved * BAL.dice.slotsPerSugorokuTurn;
+      logs.push(
+        `🎯 ${p.name} がゴールへ到着！獲得スロット ${slotReserved}ターンブン（開始時までに計${pullsArrive}回）（確認後ターン終了 → 次の自分のターンでスロット開始）`,
+      );
+    }
+    if (timedOut) logs.push(`⏰ ${p.name} タイムアップ（${BAL.dice.maxTurns}ターン消費）`);
 
-      const ponLog = ponFired
-        ? ` ⚡転倒(${ponBefore}%) ${origStep}→${step}マス / PON→半減→${statsFinal.pon}`
-        : ` / PON${ponBefore}+${step}→${statsFinal.pon}`;
-      let fullMsg = `${eventMsg} → ${newPosFinal}/${BOARD_GOAL}マス${ponLog}`;
-      if (newPosFinal !== landedDice) {
-        fullMsg += `（マス効果:${landedDice}→${newPosFinal}）`;
-      }
+    logs.push(`${p.name} T${newTurns}: ${fullMsg}`);
 
-      if (diceRolls.length > 1) {
-        logs.push(`  ダイスの出目: ${diceRolls.join(", ")} (合計${origStep}${ponFired ? `→転倒で${step}` : ""}マス)`);
-      }
-      if (ponFired) logs.push(`  ⚡転倒！${origStep}マス→${step}マス / PON半減`);
-      if (arrived) {
-        const pullsArrive = slotReserved * BAL.dice.slotsPerSugorokuTurn;
-        logs.push(
-          `🎯 ${p.name} がゴールへ到着！獲得スロット ${slotReserved}ターンブン（開始時までに計${pullsArrive}回）（確認後ターン終了 → 次の自分のターンでスロット開始）`,
-        );
-      }
-      if (timedOut) logs.push(`⏰ ${p.name} タイムアップ（${BAL.dice.maxTurns}ターン消費）`);
+    const pendingStepsNext =
+      !timedOut && !arrived && taxiCongestionSplit ? remainingAfterCongest : 0;
 
-      logs.push(`${p.name} T${newTurns}: ${fullMsg}`);
-
-      const pendingStepsNext =
-        !timedOut && !arrived && taxiCongestionSplit ? remainingAfterCongest : 0;
-
-      let newPlayers = applyVirtueWave(
-        p,
-        virtueBefore,
-        rr.players[idx].stats.virtue,
-        rr.players,
-        logs,
-      ).map((pl, i) => {
-        if (i !== gs.currentPlayerIdx) return pl;
-        const base = {
-          ...pl,
-          moveTurns: newTurns,
-          lastMoveEvent: fullMsg,
-          pendingTaxiSteps: pendingStepsNext,
-        };
-        if (arrived) {
-          return {
-            ...base,
-            movePhase: "goalLanding",
-            slotTurnsLeft: 0,
-            reservedSlotTurns: slotReserved,
-            slotPullsGranted: 0,
-            slotPullsThisSeat: 0,
-          };
-        }
-        if (timedOut) {
-          return { ...base, movePhase: "missed", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
-        }
-        return { ...base, movePhase: "moving", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
-      });
-
-      const gsWithDice = { ...rr.gsWithTiles, lastDiceRolls: diceRolls };
-      const nextGS = arrived
-        ? { ...gsWithDice, players: newPlayers, log: prependLogs(logs, rr.gsWithTiles.log) }
-        : computeAdvanceDay8Turn(gsWithDice, newPlayers, logs);
-
-      const needsSugorokuTileSlide = newPosFinal !== landedDice;
-
-      const showSugorokuTileFxToast = () => {
-        if (!rr.tileToast?.lines?.length) return;
-        if (sugorokuTileFxToastTimerRef.current) clearTimeout(sugorokuTileFxToastTimerRef.current);
-        setSugorokuTileFxToast(rr.tileToast);
-        sugorokuTileFxToastTimerRef.current = setTimeout(() => {
-          setSugorokuTileFxToast(null);
-          sugorokuTileFxToastTimerRef.current = null;
-        }, 2800);
+    let newPlayers = applyVirtueWave(
+      p,
+      virtueBefore,
+      rr.players[idx].stats.virtue,
+      rr.players,
+      logs,
+    ).map((pl, i) => {
+      if (i !== gs.currentPlayerIdx) return pl;
+      const base = {
+        ...pl,
+        moveTurns: newTurns,
+        lastMoveEvent: fullMsg,
+        pendingTaxiSteps: pendingStepsNext,
       };
+      if (arrived) {
+        return {
+          ...base,
+          movePhase: "goalLanding",
+          slotTurnsLeft: 0,
+          reservedSlotTurns: slotReserved,
+          slotPullsGranted: 0,
+          slotPullsThisSeat: 0,
+        };
+      }
+      if (timedOut) {
+        return { ...base, movePhase: "missed", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
+      }
+      return { ...base, movePhase: "moving", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
+    });
 
-      if (actionType === "taxi") {
-        pendingTaxiCongestionRef.current = taxiCongestionSplit;
-        pendingSugorokuTileFxToastRef.current = rr.tileToast;
+    const gsWithDice = { ...rr.gsWithTiles, lastDiceRolls: diceRolls };
+    const nextGS = arrived
+      ? { ...gsWithDice, players: newPlayers, log: prependLogs(logs, rr.gsWithTiles.log) }
+      : computeAdvanceDay8Turn(gsWithDice, newPlayers, logs);
 
+    const needsSugorokuTileSlide = newPosFinal !== landedDice;
+    const clearMovementFx = (state) => ({ ...state, movementFx: null });
+
+    movementFxFinalMoneyRef.current = { playerId: p.id, moneyAfter: statsFinal.money };
+    setFxMoneyReveal(null);
+
+    const landingPlayers = rr.playersAtLanding ?? newPlayers;
+    const playersForAnim = landingPlayers.map((pl, i) => {
+      if (i !== idx) return pl;
+      const final = newPlayers[i];
+      return {
+        ...pl,
+        moveTurns: final.moveTurns,
+        movePhase: final.movePhase,
+        lastMoveEvent: final.lastMoveEvent,
+        pendingTaxiSteps: final.pendingTaxiSteps,
+        slotTurnsLeft: final.slotTurnsLeft,
+        reservedSlotTurns: final.reservedSlotTurns,
+        slotPullsGranted: final.slotPullsGranted,
+        slotPullsThisSeat: final.slotPullsThisSeat,
+      };
+    });
+
+    const fxLandedPos = actionType === "taxi" ? p.position : landedDice;
+    const fxFinalPos =
+      actionType === "taxi"
+        ? p.position
+        : ponFired && needsSugorokuTileSlide
+          ? landedDice
+          : newPosFinal;
+    const movementFx = buildMovementFx({
+      playerId: p.id,
+      fromPos: p.position,
+      landedPos: fxLandedPos,
+      finalPos: fxFinalPos,
+      stepDelta: actionType === "taxi" ? step : fxLandedPos - p.position,
+      diceRolls,
+      tileEffect: actionType === "taxi" || ponFired ? null : rr.tileEffectMeta,
+    });
+
+    const animStartGs = {
+      ...gsWithDice,
+      movementFx,
+      players: holdMoverForMovementFx(playersForAnim, idx, p),
+      log: prependLogs(logs, rr.gsWithTiles.log),
+    };
+
+    if (actionType === "taxi") {
+      pendingTaxiCongestionRef.current = taxiCongestionSplit;
+      pendingSugorokuTileFxToastRef.current = rr.tileToast;
+      pendingTileEffectMetaRef.current = rr.tileEffectMeta;
+
+      const beginTaxiVisualSequence = () => {
         if (taxiCongestionSplit) {
-          taxiGSRef.current = nextGS;
+          taxiGSRef.current = clearMovementFx(nextGS);
           taxiGSFollowUpRef.current = null;
           const driveMs = computeTaxiDriveDurationMs(Math.abs(newPosFinal - p.position));
           taxiDriveDurationMsRef.current = driveMs;
@@ -2910,9 +3917,11 @@ export default function App() {
           taxiSecondLegMsRef.current = secondLegMs;
           setTaxiDriveActiveMs(firstLegMs);
         } else if (needsSugorokuTileSlide) {
-          const intermediatePlayers = buildDay8TileSlideMidpointPlayers(newPlayers, idx, landedDice);
-          taxiGSRef.current = { ...gsWithDice, players: intermediatePlayers };
-          taxiGSFollowUpRef.current = { finalGS: nextGS, fromPos: landedDice, toPos: newPosFinal };
+          const intermediatePlayers = landingPlayers.map((pl, i) =>
+            i === idx ? { ...newPlayers[i], stats: pl.stats, position: landedDice } : pl,
+          );
+          taxiGSRef.current = clearMovementFx({ ...gsWithDice, players: intermediatePlayers });
+          taxiGSFollowUpRef.current = { finalGS: clearMovementFx(nextGS), fromPos: landedDice, toPos: newPosFinal };
           const driveMs = computeTaxiDriveDurationMs(Math.abs(landedDice - p.position));
           taxiDriveDurationMsRef.current = driveMs;
           setTaxiDriveDurationMs(driveMs);
@@ -2921,7 +3930,7 @@ export default function App() {
           taxiSecondLegMsRef.current = 0;
           setTaxiDriveActiveMs(driveMs);
         } else {
-          taxiGSRef.current = nextGS;
+          taxiGSRef.current = clearMovementFx(nextGS);
           taxiGSFollowUpRef.current = null;
           const driveMs = computeTaxiDriveDurationMs(Math.abs(newPosFinal - p.position));
           taxiDriveDurationMsRef.current = driveMs;
@@ -2951,90 +3960,90 @@ export default function App() {
         }
         schedulePieceHopBlockingMs(Math.max(700, taxiPieceBlockMs));
         taxiActorPlayerIdRef.current = p.id;
-        setTaxiPhase("enter");
         setTaxiDriveCongested(false);
-        setIsDiceRolling(false);
-      } else if (ponFired) {
-        const intermediatePlayers = needsSugorokuTileSlide
-          ? buildDay8TileSlideMidpointPlayers(newPlayers, idx, landedDice)
-          : null;
-        const intermediateGS = intermediatePlayers
-          ? { ...gsWithDice, players: intermediatePlayers }
-          : null;
-        ponCutinCommitRef.current = {
-          nextGS,
-          characterType: p.characterType ?? "salaryman",
-          tileFxToast: rr.tileToast,
-          intermediateGS,
-          tileSlideFromPos: landedDice,
-          tileSlideToPos: needsSugorokuTileSlide ? newPosFinal : null,
-        };
-        ponHopGateRef.current = true;
-        if (ponTileSlideTimerRef.current) {
-          clearTimeout(ponTileSlideTimerRef.current);
-          ponTileSlideTimerRef.current = null;
-        }
-        setBoardViewPosOverride(landedDice);
-        setPonHopCompleteEnabled(true);
-        setIsDiceRolling(false);
-        const ponHopBlockMs = needsSugorokuTileSlide
-          ? computeSugorokuHopDurationMs(p.position, landedDice) + computeSugorokuHopDurationMs(landedDice, newPosFinal)
-          : computeSugorokuHopDurationMs(p.position, newPosFinal);
-        schedulePieceHopBlockingMs(Math.max(700, ponHopBlockMs));
-      } else {
-        const hopBlockMs = needsSugorokuTileSlide
-          ? computeSugorokuHopDurationMs(p.position, landedDice) + computeSugorokuHopDurationMs(landedDice, newPosFinal)
-          : computeSugorokuHopDurationMs(p.position, newPosFinal);
-        schedulePieceHopBlockingMs(hopBlockMs);
-        if (!needsSugorokuTileSlide) {
-          if (!arrived) {
-            // 1 回の write で「駒の最終マス」と「次の currentPlayerIdx」を同時に送ると、
-            // BoardViewport の viewPos が次手プレイヤーの座標に即座に切り替わり、
-            // 移動補間が出ない／別人のマス間を滑ることがある。
-            // マス効果で landed≠final のときだけ中間 write があり手番が残るのでアニメが出やすかった。
-            const holdTurnGs = {
-              ...gsWithDice,
-              players: newPlayers,
-              log: prependLogs(logs, rr.gsWithTiles.log),
-            };
-            const okHold = await writeGS(holdTurnGs);
-            if (!okHold) {
-              setIsDiceRolling(false);
-              return;
-            }
-            await new Promise((r) => setTimeout(r, hopBlockMs));
-            const advancedGs = computeAdvanceDay8Turn(holdTurnGs, holdTurnGs.players, []);
-            const okAdvance = await writeGS(advancedGs);
-            if (!okAdvance) {
-              setIsDiceRolling(false);
-              return;
-            }
-          } else {
-            const ok = await writeGS(nextGS);
-            if (!ok) {
-              setIsDiceRolling(false);
-              return;
-            }
+        taxiVisualActiveRef.current = true;
+        setTaxiPhase("enter");
+      };
+
+      movementFxPendingCommitRef.current = {
+        fxId: movementFx.id,
+        actorId: p.id,
+        syncAfterMovementFx: beginTaxiVisualSequence,
+        run: async () => {
+          beginTaxiVisualSequence();
+          const live = gsRef.current;
+          if (live?.movementFx?.id === movementFx.id) {
+            await writeGS(clearMovementFx(live));
           }
-        } else {
-          const intermediatePlayers = buildDay8TileSlideMidpointPlayers(newPlayers, idx, landedDice);
-          const intermediateGS = { ...gsWithDice, players: intermediatePlayers };
-          const ok1 = await writeGS(intermediateGS);
-          if (!ok1) {
-            setIsDiceRolling(false);
-            return;
-          }
-          await new Promise((r) => setTimeout(r, computeSugorokuHopDurationMs(p.position, landedDice)));
-          const ok2 = await writeGS(nextGS);
-          if (!ok2) {
-            setIsDiceRolling(false);
-            return;
-          }
-        }
-        setIsDiceRolling(false);
-        showSugorokuTileFxToast();
+        },
+      };
+      const okTaxi = await writeGS(animStartGs);
+      if (!okTaxi) {
+        movementFxPendingCommitRef.current = null;
+        releaseDay8VisualActionLock();
       }
-    }, gameDelay);
+      return;
+    }
+
+    if (ponFired) {
+      const ponStopPos = needsSugorokuTileSlide ? landedDice : newPosFinal;
+      const intermediatePlayers = needsSugorokuTileSlide
+        ? buildDay8TileSlideMidpointPlayers(newPlayers, idx, landedDice)
+        : null;
+      movementFxPendingCommitRef.current = {
+        fxId: movementFx.id,
+        actorId: p.id,
+        run: async () => {
+          ponCutinCommitRef.current = {
+            nextGS: clearMovementFx(nextGS),
+            characterType: p.characterType ?? "salaryman",
+            tileFxToast: rr.tileToast,
+            tileEffectMeta: rr.tileEffectMeta,
+            intermediateGS: intermediatePlayers
+              ? clearMovementFx({ ...gsWithDice, players: intermediatePlayers })
+              : null,
+            tileSlideFromPos: landedDice,
+            tileSlideToPos: needsSugorokuTileSlide ? newPosFinal : null,
+          };
+          if (ponTileSlideTimerRef.current) {
+            clearTimeout(ponTileSlideTimerRef.current);
+            ponTileSlideTimerRef.current = null;
+          }
+          setBoardViewPosOverride(ponStopPos);
+          setPonCutin({ characterType: p.characterType ?? "salaryman" });
+        },
+      };
+      const okPon = await writeGS(animStartGs);
+      if (!okPon) {
+        movementFxPendingCommitRef.current = null;
+        releaseDay8VisualActionLock();
+      }
+      return;
+    }
+
+    movementFxPendingCommitRef.current = {
+      fxId: movementFx.id,
+      actorId: p.id,
+      run: async () => {
+        if (arrived) {
+          const ok = await writeGS(clearMovementFx(nextGS));
+          if (!ok) return;
+        } else {
+          const advancedGs = clearMovementFx(
+            nextGS?.gamePhase === "results"
+              ? nextGS
+              : computeAdvanceDay8Turn({ ...animStartGs, players: newPlayers }, newPlayers, []),
+          );
+          const ok = await writeGS(advancedGs, { markDay8TurnComplete: true });
+          if (!ok) return;
+        }
+      },
+    };
+    const okMove = await writeGS(animStartGs);
+    if (!okMove) {
+      movementFxPendingCommitRef.current = null;
+      releaseDay8VisualActionLock();
+    }
   };
 
   // ════════════════════════════════════════════════════════════════════════
@@ -3089,6 +4098,13 @@ export default function App() {
 
   if (screen === "entry") return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 pb-12 text-slate-100">
+      <SoundSettingsControl
+        seVolume={seVolume}
+        bgmVolume={bgmVolume}
+        onSeVolumeChange={handleSeVolumeChange}
+        onBgmVolumeChange={handleBgmVolumeChange}
+        className="fixed top-3 right-3 z-[200]"
+      />
       <div className="w-full max-w-6xl flex flex-col items-center text-center space-y-10">
         <div className="flex flex-col items-center gap-5 w-full">
           <img
@@ -3149,15 +4165,19 @@ export default function App() {
       onSoloPlay={handleSoloPlay}
       multiOpen={multiOpen}
       onToggleMultiOpen={() => {
-        setMultiOpen((p) => !p);
-        setMultiAction(null);
-        setInvitesPanelOpen(false);
-        setPendingInvites([]);
-        setInvitesProbeReady(false);
+        resumeSoundFromUserGesture();
+        setMultiOpen((wasOpen) => {
+          const next = !wasOpen;
+          setMultiAction(next ? "create" : null);
+          return next;
+        });
         setUiError("");
       }}
       multiAction={multiAction}
-      onSetMultiAction={setMultiAction}
+      onSetMultiAction={(updater) => {
+        resumeSoundFromUserGesture();
+        setMultiAction(updater);
+      }}
       isPrivateRoom={isPrivateRoom}
       onSetPrivateRoom={setIsPrivateRoom}
       onCreateRoom={handleCreateRoom}
@@ -3187,7 +4207,7 @@ export default function App() {
       waitingSessionKey={waitingSessionKey}
       myFullId={myFullId}
       copied={copied}
-      onCopyMyId={handleCopyMyId}
+      onCopyRoomId={handleCopyRoomId}
       roomData={roomData}
       roomId={roomId}
       playerSlots={playerSlots}
@@ -3204,6 +4224,8 @@ export default function App() {
       onInviteInputChange={setInviteInput}
       inviteError={inviteError}
       onInvitePlayer={handleInvitePlayer}
+      onCancelInvite={handleCancelInvite}
+      cancelInviteLoading={cancelInviteLoading}
       onKickPlayer={handleHostKickPlayer}
       kickLoading={kickLoading}
       seVolume={seVolume}
@@ -3222,8 +4244,6 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 p-4 text-slate-100 flex items-center justify-center">
       <TopRightHud
         myFullId={myFullId}
-        copied={copied}
-        onCopy={handleCopyMyId}
         seVolume={seVolume}
         bgmVolume={bgmVolume}
         onSeVolumeChange={handleSeVolumeChange}
@@ -3268,8 +4288,6 @@ export default function App() {
         <style>{GAME_STYLES}</style>
         <TopRightHud
           myFullId={myFullId}
-          copied={copied}
-          onCopy={handleCopyMyId}
           seVolume={seVolume}
           bgmVolume={bgmVolume}
           onSeVolumeChange={handleSeVolumeChange}
@@ -3277,7 +4295,7 @@ export default function App() {
         />
         {/* SSランク パーティクル雨 */}
         {hasSSWinner && <SSRainParticles />}
-        <div className="mx-auto max-w-lg space-y-5 relative z-10">
+        <div className="mx-auto max-w-4xl space-y-5 relative z-10">
           <div className="text-center space-y-2">
             {hasSSWinner
               ? <div className="text-5xl leading-none select-none anim-fadein">👑</div>
@@ -3289,6 +4307,7 @@ export default function App() {
               <p className="text-amber-300/80 text-sm tracking-wider">スーパースター達成！おめでとう！</p>
             )}
           </div>
+          <AssetHistoryChart gameState={gs} />
           <div className="space-y-3">
             {sorted.map((p, rank) => {
               const rl = rankLabel(p.stats.money);
@@ -3379,12 +4398,15 @@ export default function App() {
 
       <TopRightHud
         myFullId={myFullId}
-        copied={copied}
-        onCopy={handleCopyMyId}
         seVolume={seVolume}
         bgmVolume={bgmVolume}
         onSeVolumeChange={handleSeVolumeChange}
         onBgmVolumeChange={handleBgmVolumeChange}
+      />
+
+      <ProgressivePotDisplay
+        totalPot={roomData?.totalPot ?? 0}
+        visible={showProgressivePotHud}
       />
 
       {/* ── PON炎上シェイク警告テロップ ── */}
@@ -3413,23 +4435,6 @@ export default function App() {
 
       {taxiPhase === "trafficJam" && <TaxiTrafficJamCutin />}
 
-      {sugorokuTileFxToast?.lines?.length > 0 && (
-        <div
-          className="fixed bottom-[min(132px,22vh)] left-1/2 z-[228] flex w-[min(92vw,360px)] -translate-x-1/2 flex-col gap-1.5 rounded-2xl border border-cyan-500/55 bg-slate-950/95 px-5 py-3.5 shadow-[0_14px_50px_rgba(0,0,0,0.75)] pointer-events-none text-center anim-fadein"
-          role="status"
-          aria-live="polite"
-        >
-          <p className="text-[11px] font-bold uppercase tracking-widest text-cyan-300/85">
-            {sugorokuTileFxToast.title ?? "マス効果"}
-          </p>
-          <ul className="space-y-1 text-sm font-bold text-amber-100 leading-snug">
-            {sugorokuTileFxToast.lines.map((line, li) => (
-              <li key={li}>{line}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
       {streamTypeCutin && (
         <StreamTypeCutin
           mode={streamTypeCutin.mode}
@@ -3443,6 +4448,18 @@ export default function App() {
           stat={workCutin.stat}
           characterType={workCutin.characterType}
         />
+      )}
+
+      {showDailyCutinSpectator && dailyCutinSpectatorBannerLabel && (
+        <div
+          className="fixed inset-x-0 top-[min(10vh,4.5rem)] z-[220] pointer-events-none flex justify-center px-4"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="rounded-2xl border border-violet-400/55 bg-slate-950/92 px-5 py-2.5 text-center shadow-[0_8px_32px_rgba(0,0,0,0.55)]">
+            <p className="text-sm font-bold text-violet-100 sm:text-base">{dailyCutinSpectatorBannerLabel}</p>
+          </div>
+        </div>
       )}
 
       {turnChangeBannerTurns != null && (
@@ -3568,6 +4585,20 @@ export default function App() {
         </div>
       )}
 
+      {showDailySlotSpectatorMirror && cpGs && roomGs && dailySlotSpinStats && (
+        <DailySlotTrainingModal
+          open
+          spectatorMode
+          broadcastGs={roomGs}
+          statsForSpin={dailySlotSpinStats}
+          characterType={cpGs.characterType}
+          playerName={cpGs.name}
+          soundRef={soundRef}
+          onClose={() => {}}
+          onFinished={() => {}}
+        />
+      )}
+
       {/* ── 幸運のダイスフラッシュ ── */}
       {showLuckyDice && (
         <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
@@ -3584,7 +4615,19 @@ export default function App() {
 
       {!isFinalBattleUIMode ? (
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 lg:flex-row lg:items-start">
-        <div className="min-w-0 flex-1 space-y-5">
+        <PlayingPlayerSidebar
+          className="order-2 w-full shrink-0 lg:order-1 lg:sticky lg:top-6 lg:w-[min(100%,320px)] lg:self-start"
+          players={gsPlayersForUi}
+          log={gs.log}
+          seatOrderIds={playerSlots.map((s) => s.id)}
+          currentPlayerIdx={gs.currentPlayerIdx}
+          myId={myId}
+          subPhase={gs.subPhase}
+          proxySlotTargetIdx={gs.proxySlotTargetIdx}
+          showStatLegend={gs.players.length > 1}
+        />
+
+        <div className="order-1 min-w-0 flex-1 space-y-5 lg:order-2">
         {/* ── ヘッダー ──────────────────────────────────────────────── */}
         <header className="rounded-2xl border border-slate-800 bg-slate-900/80 px-5 py-4">
           <div className="flex items-center justify-between flex-wrap gap-2">
@@ -3635,7 +4678,12 @@ export default function App() {
                   </span>
                 </div>
               )}
-              <span className="text-xs text-slate-600 font-mono border border-slate-700 rounded px-2 py-0.5">{roomId}</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-slate-400 font-mono border border-slate-700 rounded px-2 py-0.5 select-all">
+                  {roomId}
+                </span>
+                <CopyClipboardButton copied={copied} onCopy={handleCopyRoomId} size="sm" />
+              </div>
               {gs.players.length > 1 && !roomData?.isSolo && (
                 <button
                   type="button"
@@ -3647,18 +4695,54 @@ export default function App() {
                 </button>
               )}
               <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                <Users size={12} className="text-cyan-400" />
+                <Users size={12} className="text-cyan-400 shrink-0" />
                 <span>
-                  {gs.players.map((p) => {
-                    const ghostMark = p.isGhost || p.isGameOver ? " 👻" : "";
-                    return `${p.name}${ghostMark}`;
-                  }).join(" · ")}
+                  {(roomGs ?? gs).players.map((p, i) => (
+                    <span key={p.id}>
+                      {i > 0 ? " · " : ""}
+                      {p.name}
+                      <span className="inline-block w-[1.1em] text-center" aria-hidden={!(p.isGhost || p.isGameOver)}>
+                        {p.isGhost || p.isGameOver ? "👻" : ""}
+                      </span>
+                    </span>
+                  ))}
                 </span>
               </div>
               {!isMyTurn && (
-                <span className="flex items-center gap-1 rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">
-                  <Loader2 size={10} className="animate-spin" />
-                  {isMyDay8RoundCompleted ? "Waiting for others..." : `${cpGs?.name}のターン待ち`}
+                <span
+                  className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+                    isDay8SharedMoveWatch
+                      ? "border border-cyan-500/35 bg-cyan-950/40 text-cyan-200"
+                      : isDailyPhase
+                        ? "border border-violet-500/30 bg-violet-950/35 text-violet-200"
+                        : "bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  {isDay8SharedMoveWatch ? (
+                    <>
+                      <span className="text-[10px] leading-none" aria-hidden>
+                        🎲
+                      </span>
+                      {cpGs?.name}が移動中…
+                    </>
+                  ) : isDailyPhase ? (
+                    showDailySlotSpectatorMirror ? (
+                      <>{cpGs?.name}がスロット操作中</>
+                    ) : showDailyCutinSpectator ? (
+                      <>{dailyCutinSpectatorBannerLabel ?? `${cpGs?.name}が操作中`}</>
+                    ) : showDailyActionSpectatorMirror ? (
+                      <>{cpGs?.name}が操作中</>
+                    ) : (
+                      <>Waiting for others to act…</>
+                    )
+                  ) : (
+                    <>
+                      <Loader2 size={10} className="animate-spin" />
+                      {isMyDay8RoundCompleted
+                        ? "Waiting for others..."
+                        : `${cpGs?.name}のターン待ち`}
+                    </>
+                  )}
                 </span>
               )}
             </div>
@@ -3748,12 +4832,14 @@ export default function App() {
         {/* ── アクションエリア ──────────────────────────────────────── */}
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 space-y-4">
 
-          {/* 相手のターン待ちインジケーター */}
-          {!isMyTurn && !goalLandingSelf && (
+          {/* 相手のターン待ち（8日目移動中は盤面表示のため非表示） */}
+          {!isMyTurn && !goalLandingSelf && !hideBlockingObserverWait && (
             <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-5 text-center space-y-2">
               <Loader2 size={24} className="animate-spin text-slate-500 mx-auto" />
               <p className="text-slate-400 text-sm">
-                {isMyDay8RoundCompleted
+                {isDailyPhase
+                  ? `${cpGs?.name} の行動選択を待っています…`
+                  : isMyDay8RoundCompleted
                   ? "Waiting for others..."
                   : anyGoalLandingPlayer && anyGoalLandingPlayer.id !== myId
                   ? `${anyGoalLandingPlayer.name} がゴール到着！終了確認を待っています…`
@@ -3782,30 +4868,37 @@ export default function App() {
             />
           )}
 
-          {dailySlotOpen && dailySlotSpinStats && cpGs && (
+          {/* ── 1〜7日目（他プレイヤー観戦ミラー） ── */}
+          {showDailyActionSpectatorMirror && (
+            <DailyActionSpectatorMirror gs={gs} cpGs={cpGs} />
+          )}
+
+          {isMyTurn && dailySlotOpen && dailySlotSpinStats && cpGs && (
             <DailySlotTrainingModal
               open={dailySlotOpen}
               statsForSpin={dailySlotSpinStats}
               characterType={cpGs.characterType}
               playerName={cpGs.name}
               initialSlotPityCounter={cpGs.slotPityCounter ?? 0}
+              externalSyncSessionId={dailySlotSyncSessionId}
               soundRef={soundRef}
-              onClose={() => setDailySlotOpen(false)}
+              onClose={handleDailySlotClose}
               onFinished={finalizeDailySlotTraining}
+              syncBroadcast={dailySlotSyncBroadcast}
             />
           )}
 
+          {showSugorokuBoard && (
           <BoardGamePhase
             gs={gs}
             cpGs={cpGs}
-            boardViewPos={
-              typeof boardViewPosOverride === "number" && (isMyTurn || goalLandingSelf)
-                ? boardViewPosOverride
-                : null
-            }
+            boardViewPos={sugorokuBoardViewPos}
             reportSugorokuHopComplete={isMyTurn && ponHopCompleteEnabled}
             onSugorokuHopComplete={handleSugorokuHopComplete}
             isMyTurn={isMyTurn}
+            dailyActionFx={
+              gs.subPhase === "daily" ? roomGs?.dailyActionFx ?? null : null
+            }
             cpIsWaitingSlot={cpIsWaitingSlot}
             isDay8Moving={isDay8Moving}
             isDiceRolling={isDiceRolling}
@@ -3822,11 +4915,26 @@ export default function App() {
             taxiDriveSegmentMs={taxiDriveActiveMs}
             taxiJamMidPos={taxiJamMidPos}
             pieceHopping={pieceHopping}
+            movementFxDiceActive={movementFxSync.diceActive}
+            movementFxRunning={movementFxSync.isRunning}
+            movementFxDiceRolls={movementFxSync.diceRolls}
+            movementFxFloatDelta={
+              boardMoneyFloatDelta ?? movementFxSync.floatDelta
+            }
+            movementFxLabelActive={
+              boardMoneyFloatDelta != null ? true : movementFxSync.labelActive
+            }
+            movementFxFloatLabelMode={
+              boardMoneyFloatDelta != null ? "money" : movementFxSync.floatLabelMode
+            }
             interactionLocked={day8ActionLocked}
             onMoveAction={handleMoveAction}
             onGoalLandingConfirm={handleGoalLandingConfirm}
             goalLandingSelf={goalLandingSelf}
+            tileEffectLines={sugorokuTileFxToast?.lines ?? null}
+            tileEffectKind={sugorokuTileFxToast?.kind ?? null}
           />
+          )}
 
           {isMyTurn && cpIsGhostPick && cpGs && (
             <TurnManager
@@ -3838,7 +4946,7 @@ export default function App() {
             />
           )}
 
-          {isMyTurn && cpIsSlot && cpGs && (
+          {isMyTurn && cpIsSlot && cpGs && !cpIsNetworkAutomatedTurn && (
             <SlotContainer
               gs={gs}
               cpGs={cpGs}
@@ -3846,45 +4954,25 @@ export default function App() {
               writeGS={writeGS}
               commitPendingGameState={commitPendingGameState}
               commitGameStateTransaction={commitGameStateTransaction}
+              commitDay8SlotSpin={commitDay8SlotSpin}
               soundRef={soundRef}
               roomId={roomId}
               interactionLocked={day8ActionLocked}
+              myId={myId}
             />
           )}
 
-          {showSlotSpinBroadcastMirror && <SlotSpinBroadcastOverlay gs={gs} soundRef={soundRef} />}
+          {showSlotSpinBroadcastMirror && (
+            <SlotSpinBroadcastOverlay gs={gs} soundRef={soundRef} myId={myId} />
+          )}
 
         </section>
-
-        {/* ── ゲームログ（ソロのみ。マルチはサイドバー Logs タブ） ── */}
-        {gs.players.length <= 1 && (
-        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-          <h2 className="mb-2 text-xs font-semibold text-slate-400">ゲームログ（全員共有）</h2>
-          <div className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs text-slate-300">
-            {(gs.log ?? []).map((entry, i) => (
-              <p key={i} className="border-b border-slate-800/50 pb-1 last:border-0">{entry}</p>
-            ))}
-          </div>
-        </section>
-        )}
 
         <button onClick={handleReturnToLobby}
           className="text-xs text-slate-600 underline hover:text-slate-400">
           ロビーへ戻る（ゲームは続行中）
         </button>
         </div>
-
-        <PlayingPlayerSidebar
-          className="w-full shrink-0 lg:sticky lg:top-6 lg:w-[min(100%,320px)] lg:self-start"
-          players={gs.players}
-          log={gs.log}
-          seatOrderIds={playerSlots.map((s) => s.id)}
-          currentPlayerIdx={gs.currentPlayerIdx}
-          myId={myId}
-          subPhase={gs.subPhase}
-          proxySlotTargetIdx={gs.proxySlotTargetIdx}
-          showStatLegend={gs.players.length > 1}
-        />
       </div>
       ) : null}
 
@@ -3925,6 +5013,7 @@ export default function App() {
           </div>
         </div>
       )}
+
     </div>
   );
 }

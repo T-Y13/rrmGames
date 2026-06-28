@@ -25,6 +25,22 @@ import {
 import { publicAssetUrl } from "../lib/publicAssetUrl";
 
 import TopRightHud from "./TopRightHud";
+import CopyClipboardButton from "./CopyClipboardButton";
+
+/** pointerdown で即実行（背景 BGM 解除や再描画で click が落ちるのを防ぐ）。キーボードは onClick も残す */
+function bindPrimaryAction(handler, disabled) {
+  const run = () => {
+    if (disabled) return;
+    handler();
+  };
+  return {
+    onPointerDown: (e) => {
+      if (disabled || e.button !== 0) return;
+      run();
+    },
+    onClick: run,
+  };
+}
 
 
 
@@ -106,10 +122,6 @@ export default function Lobby({
 
         myFullId={myFullId}
 
-        copied={copied}
-
-        onCopy={onCopyMyId}
-
         seVolume={seVolume}
 
         bgmVolume={bgmVolume}
@@ -156,14 +168,15 @@ export default function Lobby({
 
 
 
-        <div className="text-center space-y-1 pt-1">
-
+        <div className="text-center space-y-2 pt-1">
           <p className="text-xs text-slate-500">ようこそ</p>
-
-          <p className="text-2xl font-bold">{myFullId || "プレイヤー"}</p>
-
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <p className="text-2xl font-bold font-mono text-cyan-100">{myFullId || "プレイヤー"}</p>
+            {myFullId ? (
+              <CopyClipboardButton copied={copied} onCopy={onCopyMyId} />
+            ) : null}
+          </div>
           <p className="text-sm text-slate-400">どのように遊びますか？</p>
-
         </div>
 
 
@@ -172,7 +185,7 @@ export default function Lobby({
 
           type="button"
 
-          onClick={onSoloPlay}
+          {...bindPrimaryAction(onSoloPlay, loading)}
 
           disabled={loading}
 
@@ -346,7 +359,7 @@ export default function Lobby({
 
                   type="button"
 
-                  onClick={onCreateRoom}
+                  {...bindPrimaryAction(onCreateRoom, loading)}
 
                   disabled={loading}
 

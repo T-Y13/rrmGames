@@ -2,22 +2,14 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SugorokuBoardPiece, TaxiStandeeImage } from "./CharacterPieces";
 import SugorokuBackground from "./SugorokuBackground";
 import SugorokuTileEffectIcon from "./BoardTile";
+import MovementFloatingLabel from "./MovementFloatingLabel";
+import DailyActionFloatingLabel from "./DailyActionFloatingLabel";
+import BoardCalloutBubble from "./BoardCalloutBubble";
+import PieceNearbyStack from "./PieceNearbyStack";
+import { sugorokuPlayerName } from "../lib/sugorokuPlayerName";
 import { TILE_EFFECT_KIND } from "../constants/gameBalance";
-import { squareDeco, easeInOutCubic, computeTaxiDriveDurationMs } from "../utils/gameLogic";
+import { squareDeco, easeInOutCubic, computeTaxiDriveDurationMs, computeSugorokuMsPerStep, SUGOROKU_MS_PER_STEP_NORMAL } from "../utils/gameLogic";
 import { publicAssetUrl } from "../lib/publicAssetUrl";
-
-function TaxiCongestionBadge({ player }) {
-  const n = player?.pendingTaxiSteps ?? 0;
-  if (n <= 0 || !player) return null;
-  return (
-    <span
-      className="pointer-events-none absolute bottom-full left-1/2 z-[38] mb-0.5 -translate-x-1/2 whitespace-nowrap rounded-md border border-orange-400/90 bg-orange-950/95 px-[5px] py-[2px] text-[9px] font-black leading-none text-orange-100 animate-pulse"
-      title={`タクシー渋滞：残り${n}マス`}
-    >
-      🚗渋滞中…
-    </span>
-  );
-}
 
 /**
  * マス上の駒を taxi.png に差し替えるフェーズ（idle＝taxiPhase が null）。
@@ -37,6 +29,22 @@ const BOARD_STANDEE_SCALE = 1.15;
 /** 大学生の立ち絵はアートが大きめのため、サラリーマンと同程度に見えるようだけ縮小 */
 function boardStandeePieceScale(characterType) {
   return characterType === "student" ? 0.88 : 1;
+}
+
+/** 他プレイヤー駒：タクシー渋滞待ち（pendingTaxiSteps）の小バッジ */
+function TaxiCongestionBadge({ player }) {
+  if ((player?.pendingTaxiSteps ?? 0) <= 0) return null;
+  return (
+    <div className="pointer-events-none mb-0.5">
+      <BoardCalloutBubble
+        tail="bottom"
+        fillColor="#b45309"
+        bodyClassName="whitespace-nowrap px-2 py-0.5 text-[9px] font-bold animate-pulse"
+      >
+        🚗 渋滞中…
+      </BoardCalloutBubble>
+    </div>
+  );
 }
 
 /** 到着時のみ：横に停車タクシー＋退車アニメ（車体表現は立ち絵と同じ public `/images/` + フォールバック列） */
@@ -132,6 +140,9 @@ function GoalFinishLine({ tileW }) {
 
 const HOP_SETTLE_PADDING_MS = 300;
 const PLAYER_SYMBOL_COLORS = ["#ef4444", "#3b82f6", "#facc15", "#22c55e"]; // red, blue, yellow, green
+/** キャラ上プレイヤー名タグ（名前幅に合わせ・改行なし） */
+const PLAYER_NAME_BUBBLE_CLASS =
+  "inline-flex w-max max-w-none whitespace-nowrap justify-center text-center text-[10px] px-2 py-0.5 drop-shadow-sm";
 
 /** 道幅に合わせたマス（正方形）の一辺（px） */
 const TILE_MIN_W = 52;
@@ -165,12 +176,28 @@ function laneOffsetY(smoothPos, dir, tileW, rowGap) {
   return -frac * stepY;
 }
 
+/** マス間補間：駒・名前・付随ラベルをまとめてずらす */
+function pieceLaneTransformStyle({ taxiOnTileShiftX, laneDY, cameraPanOnly, traveling }) {
+  return {
+    transform: `translate3d(${taxiOnTileShiftX}px, ${cameraPanOnly ? 0 : laneDY}px, 0)`,
+    transition: traveling ? "none" : "transform 0.4s linear",
+    willChange: traveling ? "transform" : "auto",
+  };
+}
+
 /** 縦ストリップすごろく：スタート〜現在〜先行マスをすべて表示、カメラ追従 */
 export default function BoardViewport({
   players,
   viewPos,
   boardGoal,
   isDiceRolling,
+  /** gameState.movementFx 同期用：マス上ダイス */
+  movementFxDiceActive = false,
+  movementFxDiceRolls = [],
+  /** gameState.movementFx 同期用：+N / -N ラベル */
+  movementFxFloatDelta = null,
+  movementFxLabelActive = false,
+  movementFxFloatLabelMode = "steps",
   taxiPhase,
   pieceHopping,
   currentPlayer,
@@ -178,6 +205,10 @@ export default function BoardViewport({
   tileEffects = null,
   reportHopAnimationComplete = false,
   onHopAnimationComplete,
+  /** true: 盤面は表示のみ（ホップ完了コールバック・操作を無効） */
+  isObserver = false,
+  /** 日常行動ラベル（gameState.dailyActionFx 同期） */
+  dailyActionFx = null,
   /** タクシーが渋滞カットイン後の「のろのろ走行」フェーズか */
   taxiDriveCongested = false,
   /** タクシー drive：ゴールマス（Firestore 反映前の視覚終点） */
@@ -187,8 +218,15 @@ export default function BoardViewport({
   /** 渋滞あり時のワールド中点（補間停止位置） */
   taxiJamMidPos = null,
   taxiDriveDurationMs = 2600,
+  /** 駒付近：マス効果説明・ターン残り・ダイス・進行メタ */
+  tileEffectLines = null,
+  tileEffectKind = null,
+  localDiceItems = null,
+  localDiceShowTotal = false,
+  localDiceTotal = 0,
 }) {
   const AHEAD = 6;
+  const hopCompleteEnabled = reportHopAnimationComplete && !isObserver;
   const nightShrine = visualTheme === "nightShrine";
 
   const [smoothPos, setSmoothPos] = useState(viewPos);
@@ -204,11 +242,14 @@ export default function BoardViewport({
 
   const prevPosRef = useRef(viewPos);
   const prevCurrentPlayerIdRef = useRef(currentPlayer?.id ?? null);
+  const prevTaxiPhaseRef = useRef(taxiPhase);
   const travelDirRef = useRef(1);
   const rafRef = useRef(null);
   const taxiDriveRafRef = useRef(null);
   const hopTimerRef = useRef(null);
   const [cameraPanOnly, setCameraPanOnly] = useState(false);
+  /** タクシー終了直後の CSS transform トランジションを抑止（ドライブ追従分が「流れる」ように見えるのを防ぐ） */
+  const [cameraEaseSuppressed, setCameraEaseSuppressed] = useState(false);
   const onHopCompleteRef = useRef(onHopAnimationComplete);
   onHopCompleteRef.current = onHopAnimationComplete;
 
@@ -226,6 +267,51 @@ export default function BoardViewport({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  /** タクシー演出終了時：カメラを viewPos に即同期（手番進行後のパン／CSS ease を防ぐ） */
+  useLayoutEffect(() => {
+    const wasTaxi = prevTaxiPhaseRef.current != null;
+    prevTaxiPhaseRef.current = taxiPhase;
+    if (!wasTaxi || taxiPhase != null) return;
+
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (hopTimerRef.current) {
+      clearTimeout(hopTimerRef.current);
+      hopTimerRef.current = null;
+    }
+    prevPosRef.current = viewPos;
+    setSmoothPos(viewPos);
+    setCameraPanOnly(false);
+    prevCurrentPlayerIdRef.current = currentPlayer?.id ?? null;
+    setCameraEaseSuppressed(true);
+  }, [taxiPhase, viewPos, currentPlayer?.id]);
+
+  useEffect(() => {
+    if (!cameraEaseSuppressed) return undefined;
+    const id = requestAnimationFrame(() => setCameraEaseSuppressed(false));
+    return () => cancelAnimationFrame(id);
+  }, [cameraEaseSuppressed]);
+
+  /** 手番交代と viewPos 更新を同フレームで同期（前プレイヤーの表示位置からの巻き戻しアニメを防ぐ） */
+  useLayoutEffect(() => {
+    const id = currentPlayer?.id ?? null;
+    if (prevCurrentPlayerIdRef.current === id) return;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (hopTimerRef.current) {
+      clearTimeout(hopTimerRef.current);
+      hopTimerRef.current = null;
+    }
+    prevCurrentPlayerIdRef.current = id;
+    prevPosRef.current = viewPos;
+    setSmoothPos(viewPos);
+    setCameraPanOnly(false);
+  }, [currentPlayer?.id, viewPos]);
 
   useEffect(() => {
     if (viewPos === prevPosRef.current) return;
@@ -287,12 +373,20 @@ export default function BoardViewport({
       return undefined;
     }
 
-    const isBig = Math.abs(diff) > 6;
-    const msPerStep = isBig ? 110 : 360;
+    /** 手番交代時は後方へドラム巻き戻しせず、新プレイヤー位置へ即同期 */
+    if (switchedPlayer) {
+      prevPosRef.current = viewPos;
+      setSmoothPos(viewPos);
+      setCameraPanOnly(false);
+      prevCurrentPlayerIdRef.current = currentPlayer?.id ?? null;
+      return undefined;
+    }
+
+    const msPerStep = computeSugorokuMsPerStep(Math.abs(diff));
     const duration = steps * msPerStep;
 
     setCameraPanOnly(switchedPlayer);
-    setBoardMotion({ forward: dir > 0, msPerStep, fast: isBig });
+    setBoardMotion({ forward: dir > 0, msPerStep, fast: msPerStep < SUGOROKU_MS_PER_STEP_NORMAL });
 
     const t0 = performance.now();
 
@@ -309,7 +403,7 @@ export default function BoardViewport({
         setSmoothPos(to);
         setCameraPanOnly(false);
         prevCurrentPlayerIdRef.current = currentPlayer?.id ?? null;
-        if (reportHopAnimationComplete && steps > 0) {
+        if (hopCompleteEnabled && steps > 0) {
           hopTimerRef.current = setTimeout(() => {
             onHopCompleteRef.current?.();
           }, HOP_SETTLE_PADDING_MS);
@@ -324,7 +418,11 @@ export default function BoardViewport({
       if (hopTimerRef.current) clearTimeout(hopTimerRef.current);
       setCameraPanOnly(false);
     };
-  }, [viewPos, reportHopAnimationComplete, taxiPhase, currentPlayer?.id]);
+  }, [viewPos, hopCompleteEnabled, taxiPhase, currentPlayer?.id]);
+
+  const dailyFxPlayerId = dailyActionFx?.playerId ?? null;
+  const dailyFxLabel = dailyActionFx?.label ?? null;
+  const dailyFxVisible = !!dailyFxLabel && !!dailyFxPlayerId;
 
   /** タクシー drive（1区画または分割）：マップを ease-in-out でスクロール */
   useEffect(() => {
@@ -480,6 +578,8 @@ export default function BoardViewport({
     : "linear-gradient(to bottom, #020617 0%, #0f172a 55%, #1e293b 100%)";
 
   const isPieceTraveling = traveling || pieceHopping;
+  const useCameraTransition =
+    !traveling && !pieceHopping && taxiPhase == null && !cameraEaseSuppressed;
   const hideCurrentPieceDuringTurnSwitchPan =
     cameraPanOnly &&
     traveling &&
@@ -491,7 +591,7 @@ export default function BoardViewport({
 
   return (
     <div
-      className={`relative flex min-h-0 w-full flex-col overflow-visible rounded-xl ${nightShrine ? "final-battle-night" : ""}`}
+      className={`relative flex min-h-0 w-full flex-col overflow-visible rounded-xl ${nightShrine ? "final-battle-night" : ""} ${isObserver ? "pointer-events-none select-none" : ""}`}
       style={{
         background: bgNight,
         height: "100%",
@@ -557,12 +657,6 @@ export default function BoardViewport({
         </>
       )}
 
-      {traveling && remainingSteps > 0 && !taxiPhase && (
-        <div className="absolute top-2 right-3 z-10 text-[11px] font-bold text-cyan-300/80 bg-slate-900/60 px-2 py-0.5 rounded-full pointer-events-none">
-          残り{remainingSteps}マス...
-        </div>
-      )}
-
       <div
         ref={laneViewportRef}
         className={`relative z-10 flex min-h-0 flex-1 flex-col overflow-visible w-full pt-2 pb-3 ${
@@ -575,8 +669,8 @@ export default function BoardViewport({
           className="relative mx-auto flex w-full max-w-[92vw] flex-col items-center overflow-visible px-3"
           style={{
             transform: `translateY(${cameraTranslateY}px)`,
-            transition: traveling ? "none" : "transform 0.4s linear",
-            willChange: traveling ? "transform" : "auto",
+            transition: useCameraTransition ? "transform 0.4s linear" : "none",
+            willChange: traveling || taxiPhase != null ? "transform" : "auto",
           }}
         >
           {tiles.map(({ pos }, idx) => {
@@ -660,17 +754,20 @@ export default function BoardViewport({
                         const nameColor = playerNameColor(players, p.id);
                         return (
                           <div key={p.id} className="relative flex flex-col items-center justify-end">
-                            <span
-                              className="pointer-events-none absolute bottom-full left-1/2 z-[39] mb-0.5 -translate-x-1/2 whitespace-nowrap rounded-md border px-[6px] py-[2px] text-[10px] font-black leading-none shadow-[0_2px_8px_rgba(0,0,0,0.45)]"
-                              style={{
-                                color: nameColor,
-                                borderColor: `${nameColor}cc`,
-                                backgroundColor: "rgba(2,6,23,0.85)",
-                              }}
-                            >
-                              {p.name}
-                            </span>
+                            <div className="pointer-events-none absolute bottom-full left-1/2 z-[39] mb-1 -translate-x-1/2">
+                              <BoardCalloutBubble
+                                tail="bottom"
+                                fillColor={nameColor}
+                                bodyClassName={PLAYER_NAME_BUBBLE_CLASS}
+                              >
+                                {sugorokuPlayerName(p.name)}
+                              </BoardCalloutBubble>
+                            </div>
                             <TaxiCongestionBadge player={p} />
+                            <DailyActionFloatingLabel
+                              label={dailyFxPlayerId === p.id ? dailyFxLabel : null}
+                              visible={dailyFxVisible && dailyFxPlayerId === p.id}
+                            />
                             <span className="anim-breathe leading-none inline-flex items-end justify-center">
                               <SugorokuBoardPiece
                                 characterType={p.characterType}
@@ -699,18 +796,34 @@ export default function BoardViewport({
                         currentPlayer &&
                         !hideCurrentPieceDuringTurnSwitchPan &&
                         (!taxiHideOnTilePiece || showPlayerPieceAsTaxi || showTaxiBoardingVisual) && (
-                        <div className="relative flex flex-col items-center justify-end">
-                          <span
-                            className="pointer-events-none absolute bottom-full left-1/2 z-[39] mb-0.5 -translate-x-1/2 whitespace-nowrap rounded-md border px-[6px] py-[2px] text-[10px] font-black leading-none shadow-[0_2px_8px_rgba(0,0,0,0.45)]"
-                            style={{
-                              color: playerNameColor(players, currentPlayer.id),
-                              borderColor: `${playerNameColor(players, currentPlayer.id)}cc`,
-                              backgroundColor: "rgba(2,6,23,0.85)",
-                            }}
-                          >
-                            {currentPlayer.name}
-                          </span>
-                          <TaxiCongestionBadge player={currentPlayer} />
+                        <div
+                          className="relative flex flex-col items-center justify-end"
+                          style={pieceLaneTransformStyle({
+                            taxiOnTileShiftX,
+                            laneDY,
+                            cameraPanOnly,
+                            traveling,
+                          })}
+                        >
+                          <PieceNearbyStack
+                            playerName={currentPlayer.name}
+                            nameFillColor={playerNameColor(players, currentPlayer.id)}
+                            tileEffectLines={tileEffectLines}
+                            tileEffectKind={tileEffectKind}
+                            remainingTravelSteps={
+                              traveling && remainingSteps > 0 && !taxiPhase ? remainingSteps : null
+                            }
+                            congestionActive={(currentPlayer.pendingTaxiSteps ?? 0) > 0}
+                            localDiceItems={localDiceItems}
+                            localDiceShowTotal={localDiceShowTotal}
+                            localDiceTotal={localDiceTotal}
+                            movementFxDiceActive={movementFxDiceActive}
+                            movementFxDiceRolls={movementFxDiceRolls}
+                          />
+                          <DailyActionFloatingLabel
+                            label={dailyFxPlayerId === currentPlayer.id ? dailyFxLabel : null}
+                            visible={dailyFxVisible && dailyFxPlayerId === currentPlayer.id}
+                          />
                           {showTaxiBoardingVisual ? (
                             <div className="flex max-w-[min(340px,calc(100vw-40px))] flex-row flex-nowrap items-end justify-center gap-1 pr-0.5 origin-bottom scale-[0.88] sm:scale-95 md:scale-100">
                               <div
@@ -760,6 +873,11 @@ export default function BoardViewport({
                               position: "relative",
                             }}
                           >
+                            <MovementFloatingLabel
+                              delta={movementFxFloatDelta}
+                              visible={movementFxLabelActive}
+                              variant={movementFxFloatLabelMode}
+                            />
                             <span
                               className={`inline-flex items-end justify-center leading-none ${
                                 taxiPhase === "arrive"
@@ -774,15 +892,7 @@ export default function BoardViewport({
                               }`}
                             >
                               <span
-                                className="inline-flex items-end justify-center leading-none"
-                                style={{
-                                  transform: `translate3d(${taxiOnTileShiftX}px, ${cameraPanOnly ? 0 : laneDY}px, 0)`,
-                                  transition: traveling ? "none" : "transform 0.4s linear",
-                                  willChange: traveling ? "transform" : "auto",
-                                }}
-                              >
-                                <span
-                                  className={`standee-piece relative inline-flex items-end justify-center leading-none ${
+                                className={`standee-piece relative inline-flex items-end justify-center leading-none ${
                                     traveling && !showPlayerPieceAsTaxi && !cameraPanOnly ? "anim-standee-walk" : ""
                                   } ${showPlayerPieceAsTaxi ? "z-[26] anim-pulse-taxi-ride" : ""} ${
                                     showPlayerPieceAsTaxi && taxiPhase === "trafficJam"
@@ -813,7 +923,6 @@ export default function BoardViewport({
                                     />
                                   )}
                                 </span>
-                              </span>
                             </span>
                             {!showPlayerPieceAsTaxi &&
                               currentPlayer.stats.luck >= 80 &&
@@ -896,19 +1005,27 @@ export default function BoardViewport({
                       </span>
                     )}
                     {pos === boardGoal && (
-                      <span
-                        className="pointer-events-none absolute bottom-1 left-1/2 z-[6] -translate-x-1/2 text-[10px] font-black leading-none tracking-wide text-amber-950 drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]"
-                      >
-                        GOAL!
-                      </span>
+                      <div className="pointer-events-none absolute bottom-1 left-1/2 z-[6] -translate-x-1/2">
+                        <BoardCalloutBubble
+                          tail="top"
+                          tone="moneyGain"
+                          bodyClassName="text-[9px] px-1.5 py-0.5 tracking-wide"
+                        >
+                          GOAL!
+                        </BoardCalloutBubble>
+                      </div>
                     )}
                   </div>
                 </div>
 
-                {isCurrent && deco.icon && (pos === 0 || pos >= boardGoal) && (
-                  <span className={`text-[9px] mt-0.5 font-medium ${deco.text}`}>
-                    {pos === 0 ? "スタート" : "GOAL!"}
-                  </span>
+                {isCurrent && deco.icon && pos === 0 && (
+                  <BoardCalloutBubble
+                    tail="top"
+                    tone="positive"
+                    bodyClassName="text-[9px] px-2 py-0.5 mt-1"
+                  >
+                    スタート
+                  </BoardCalloutBubble>
                 )}
               </div>
             );
@@ -920,12 +1037,6 @@ export default function BoardViewport({
         className="absolute bottom-0 left-0 right-0 z-[15] h-5 rounded-b-xl pointer-events-none"
         style={{ background: "linear-gradient(to top, rgba(15,23,42,0.88), transparent)" }}
       />
-      <div className="pointer-events-none absolute right-2 top-1/2 z-[16] -translate-y-1/2 rounded-lg border border-cyan-400/50 bg-slate-900/85 px-2 py-1 text-right shadow-[0_4px_18px_rgba(0,0,0,0.45)]">
-        <div className="text-[10px] font-semibold tracking-wide text-cyan-300/90">現在マス</div>
-        <div className="text-sm font-black tabular-nums text-cyan-100 leading-tight">
-          {Math.max(0, displayTileIndex)}<span className="text-slate-500 font-semibold"> / </span>{boardGoal}
-        </div>
-      </div>
     </div>
   );
 }

@@ -6,6 +6,10 @@ import {
   applyGoalLandingConfirm,
   computeFinalStatsFromInitialRolls,
   livingRollFromInitialRolls,
+  computeSugorokuMsPerStep,
+  computeSugorokuHopDurationMs,
+  SUGOROKU_MS_PER_STEP_NORMAL,
+  SUGOROKU_MS_PER_STEP_MIN,
 } from "./gameLogic.js";
 
 describe("virtueMinRoll", () => {
@@ -92,5 +96,19 @@ describe("rollDie", () => {
     expect(virtueMinRoll(100)).toBe(4);
     expect(low.rolls[0]).toBe(2);
     expect(high.rolls[0]).toBe(4);
+  });
+});
+
+describe("computeSugorokuMsPerStep", () => {
+  it("keeps normal pace for 6 steps or fewer", () => {
+    expect(computeSugorokuMsPerStep(1)).toBe(SUGOROKU_MS_PER_STEP_NORMAL);
+    expect(computeSugorokuMsPerStep(6)).toBe(SUGOROKU_MS_PER_STEP_NORMAL);
+  });
+
+  it("ramps speed for long moves but caps at 1.5x normal", () => {
+    expect(computeSugorokuMsPerStep(7)).toBeGreaterThan(SUGOROKU_MS_PER_STEP_MIN);
+    expect(computeSugorokuMsPerStep(7)).toBeLessThan(SUGOROKU_MS_PER_STEP_NORMAL);
+    expect(computeSugorokuMsPerStep(20)).toBe(SUGOROKU_MS_PER_STEP_MIN);
+    expect(computeSugorokuHopDurationMs(0, 10)).toBeGreaterThan(10 * 110);
   });
 });

@@ -51,10 +51,18 @@ export function buildMarkNetworkGhostPatch(gameState, roomPlayers, now = Date.no
   if (!gameState?.players?.length) return null;
   let changed = false;
   const players = gameState.players.map((p) => {
-    if (p.isGhost || p.isGameOver || p.alive === false) return p;
-    if (!isPlayerPresenceStale(roomPlayers, p.id, now)) return p;
-    changed = true;
-    return { ...p, isGhost: true };
+    if (p.isGameOver || p.alive === false) return p;
+    const stale = isPlayerPresenceStale(roomPlayers, p.id, now);
+    if (stale && !p.isGhost) {
+      changed = true;
+      return { ...p, isGhost: true };
+    }
+    // ハートビート復帰時はネットワークゴーストだけ解除（自主退室 isGameOver は上で除外済み）
+    if (!stale && p.isGhost) {
+      changed = true;
+      return { ...p, isGhost: false };
+    }
+    return p;
   });
   if (!changed) return null;
   return { gameState: { ...gameState, players } };
@@ -65,22 +73,26 @@ export function buildClearSelfPresencePatch(gameState, myId) {
   const idx = gameState.players.findIndex((p) => p.id === myId);
   if (idx < 0) return null;
   const p = gameState.players[idx];
-  if (!p.isGhost && !p.isGameOver) return null;
+  // 自主退室 (isGameOver) は再接続でも復帰させない。ネットワーク切断 (isGhost のみ) だけ解除。
+  if (!p.isGhost || p.isGameOver) return null;
   const players = gameState.players.map((pl, i) =>
-    i !== idx ? pl : { ...pl, isGhost: false, isGameOver: false },
+    i !== idx ? pl : { ...pl, isGhost: false },
   );
   return { gameState: { ...gameState, players } };
 }
 
+/** @returns {{ gameState: object } | { localOnly: true } | null} */
 export function buildGracefulLeavePatch(gameState, myId) {
   if (!gameState?.players?.length || !myId) return null;
   const idx = gameState.players.findIndex((p) => p.id === myId);
   if (idx < 0) return null;
   const p = gameState.players[idx];
-  if (p.isGameOver) return null;
-  const players = gameState.players.map((pl, i) =>
-    i !== idx ? pl : { ...pl, isGameOver: true, isGhost: true },
-  );
+  if (p.isGameOver) return { localOnly: true };
+  const players = gameState.players.map((pl, i) => {
+    if (i !== idx) return pl;
+    if (pl.isGhost) return { ...pl, isGameOver: true };
+    return { ...pl, isGameOver: true, isGhost: true };
+  });
   return { gameState: { ...gameState, players } };
 }
 

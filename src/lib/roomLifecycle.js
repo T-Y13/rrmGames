@@ -40,5 +40,8 @@ export function buildKickPlayerPatch(roomData, targetUid) {
   if (roomData?.isPrivate && kickedFullId && Array.isArray(roomData.allowedPlayers)) {
     patch.allowedPlayers = roomData.allowedPlayers.filter((fid) => fid !== kickedFullId);
   }
+  if (roomData?.isPrivate && Array.isArray(roomData.invitedAuthUids)) {
+    patch.invitedAuthUids = roomData.invitedAuthUids.filter((id) => id !== targetUid);
+  }
   return patch;
 }

@@ -3,14 +3,21 @@ import slotCabinetPng from "../assets/slot-machine.png";
 import { CharacterIcon } from "./CharacterPieces";
 import SlotReelCanvasView from "./SlotReelCanvasView";
 import { SLOT_MACHINES } from "../constants/gameBalance";
+import SlotProxyAccountability, { useProxyVictimSting } from "./SlotProxyAccountability";
+import JackpotCelebration from "./JackpotCelebration";
 import {
   randomStripTriple,
+  SLOT_JACKPOT_CELEBRATION_MS,
+  SLOT_JACKPOT_WIN_FX_CLEAR_MS,
+  SLOT_WIN_FX_CLEAR_MS,
   SLOT_SYNC_SPIN_MS,
   SLOT_SYNC_T0,
   SLOT_SYNC_T1,
   SLOT_SYNC_T2_NOREACH,
   SLOT_SYNC_T2_REACH,
+  SLOT_SYNC_T2_REACH_NOCUTIN,
   SLOT_SYNC_REACH_SHOW_DELAY,
+  slotSyncReel3StopMs,
   slotTargetIndicesToPaylineMiddles,
   stripTripleForMiddleColumn,
 } from "../utils/gameLogic";
@@ -28,7 +35,7 @@ const defaultCols = () => [
  * 事前確定の `targetResult`（symbols インデックス 3 つ）に合わせ、
  * 固定時間回転後にリールを止める。
  */
-export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
+export default function SlotSpinBroadcastOverlay({ gs, soundRef, myId }) {
   const [reelColumns, setReelColumns] = useState(defaultCols);
   const [isSpinning, setIsSpinning] = useState(false);
   const [bouncingReel, setBouncingReel] = useState(-1);
@@ -40,6 +47,8 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
   const [showPayout, setShowPayout] = useState(false);
   const [isReachUI, setIsReachUI] = useState(false);
   const [reelsCanvasSettled, setReelsCanvasSettled] = useState(true);
+  const [showJackpotCelebration, setShowJackpotCelebration] = useState(false);
+  const [jackpotCelebrationMeta, setJackpotCelebrationMeta] = useState({ actorName: "", payout: 0 });
 
   const shuffleIntervalRef = useRef(null);
   const stoppedReelsRef = useRef([false, false, false]);
@@ -73,6 +82,7 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
     if ((gs?.slotPhase ?? "idle") === "idle") {
       completedWinFxKeyRef.current = "";
       setIsReachUI(false);
+      setShowJackpotCelebration(false);
     }
   }, [gs?.slotPhase]);
 
@@ -113,7 +123,8 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
     pendingCompletedFxRef.current = {
       tier: last?.tier ?? null,
       settledNet,
-      payout: last?.payout ?? 0,
+      payout: last?.grossPayout ?? last?.payout ?? 0,
+      potPayout: last?.potPayout ?? 0,
     };
 
     return () => {
@@ -138,10 +149,18 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
       setShowWinEffect(tier);
       setCharReaction("win");
       soundRef?.current?.playWin?.(tier);
+      if (tier === "jackpot") {
+        const actor = gs?.players?.[gs?.currentPlayerIdx ?? 0];
+        setJackpotCelebrationMeta({
+          actorName: actor?.name?.trim() || "",
+          payout: payout ?? 0,
+        });
+        setShowJackpotCelebration(true);
+      }
       pushTimeout(
         setTimeout(() => {
           setShowWinEffect(null);
-        }, 3500),
+        }, tier === "jackpot" ? SLOT_JACKPOT_WIN_FX_CLEAR_MS : SLOT_WIN_FX_CLEAR_MS),
       );
     } else if (tier === "miss" || (typeof settledNet === "number" && settledNet < 0)) {
       setCharReaction("miss");
@@ -189,6 +208,8 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
     const realStrip2 = stripTripleForMiddleColumn(realMids[2], machine, 2);
 
     const isReach = Boolean(gs?.isReach);
+    const reachCutin = Boolean(gs?.slotReachCutin);
+    const reel3StopMs = slotSyncReel3StopMs(isReach, reachCutin);
 
     setCabinetRecoil(true);
     pushTimeout(setTimeout(() => setCabinetRecoil(false), 340));
@@ -199,6 +220,7 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
     setShowWinEffect(null);
     setShowPayout(false);
     setPayoutAmount(0);
+    setShowJackpotCelebration(false);
     setCharReaction("spinning");
     setReelColumns(defaultCols());
     setBouncingReel(-1);
@@ -266,14 +288,14 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
           setIsReachUI(false);
           setIsSpinning(false);
           setCharReaction("idle");
-        }, SLOT_SYNC_T2_REACH),
+        }, reel3StopMs),
       );
     }
 
     return () => {
       clearSpinVisualTimers();
     };
-  }, [gs?.slotPhase, gs?.slotSpinSessionId, gs?.isReach, soundRef]);
+  }, [gs?.slotPhase, gs?.slotSpinSessionId, gs?.isReach, gs?.slotReachCutin, soundRef]);
 
   const actorIdx = gs?.currentPlayerIdx ?? 0;
   const actor = gs?.players?.[actorIdx];
@@ -295,22 +317,39 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
 
   const paylineWinFx = Boolean(showWinEffect);
   const broadcastMachine = SLOT_MACHINES[gs?.slotMirrorMachineKey] ?? SLOT_MACHINES.standard;
+  const slotSpinActive = isSpinning;
   const displayReelsMatch =
     Array.isArray(gs?.displayReels) &&
     gs.displayReels.length === 3 &&
     gs.displayReels[0] === gs.displayReels[1] &&
     gs.displayReels[0] === gs.displayReels[2];
   const paylineWinPulse =
+    !slotSpinActive &&
     reelsCanvasSettled &&
     (paylineWinFx ||
       ((gs?.slotPhase ?? "idle") === "completed" && displayReelsMatch && (gs?.lastPayout ?? 0) > 0));
   const columnSpinning = [0, 1, 2].map((i) => isSpinning && !stoppedReelsRef.current[i]);
   const showWinFxNow = reelsCanvasSettled && showWinEffect && showWinEffect !== "miss";
   const showPayoutNow = reelsCanvasSettled && showPayout && payoutAmount > 0;
+  const slotSpinning = (gs?.slotPhase ?? "idle") === "spinning" || isSpinning;
+  const { showVictimSting } = useProxyVictimSting(gs, myId, isSpinning);
 
   return (
+    <>
+      <JackpotCelebration
+        show={showJackpotCelebration}
+        actorName={jackpotCelebrationMeta.actorName}
+        payout={jackpotCelebrationMeta.payout}
+        durationMs={SLOT_JACKPOT_CELEBRATION_MS}
+        onComplete={() => setShowJackpotCelebration(false)}
+      />
     <div
-      className="pointer-events-none fixed inset-0 z-[180] flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px]"
+      className={[
+        "pointer-events-none fixed inset-0 z-[180] flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px]",
+        showVictimSting ? "anim-slot-victim-frame" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       aria-live="polite"
       aria-label="他プレイヤーのスロット同期表示"
     >
@@ -322,6 +361,8 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
           .filter(Boolean)
           .join(" ")}
       >
+        <SlotProxyAccountability gs={gs} myId={myId} isSpinning={isSpinning} variant="broadcast" />
+
         <h2 className="mb-2 text-center text-sm font-bold text-amber-100 sm:text-base">
           {gs?.slotPhase === "completed" ? "スロット結果（共有）" : "スロット進行中（共有）"}
           {actor && (
@@ -413,16 +454,10 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
                     paylineWinFx={paylineWinPulse}
                     reachCol={isReachUI ? 2 : -1}
                     machine={broadcastMachine}
+                    spinSessionActive={slotSpinActive}
                     onReelsSettledChange={setReelsCanvasSettled}
                     className="h-full w-full"
                   />
-                  <div className="slot-win-line" aria-hidden />
-                  <span className="slot-payline-marker slot-payline-marker--l" aria-hidden>
-                    ▶
-                  </span>
-                  <span className="slot-payline-marker slot-payline-marker--r" aria-hidden>
-                    ◀
-                  </span>
                 </div>
 
                 <div className="slot-cabinet-img-wrap relative z-[10] mx-auto w-full max-w-full pointer-events-none">
@@ -469,9 +504,10 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef }) {
         </div>
 
         <p className="mt-2 text-center text-[10px] text-slate-500 sm:text-xs">
-          絵柄は手番側で事前に確定済み。リーチありは約{(SLOT_SYNC_T2_REACH / 1000).toFixed(0)}秒、なしは約{(SLOT_SYNC_T2_NOREACH / 1000).toFixed(1)}秒で全リール停止します。
+          絵柄は手番側で事前に確定済み。リーチ（カットインなし）は約{(SLOT_SYNC_T2_REACH_NOCUTIN / 1000).toFixed(1)}秒、リーチ（カットインあり）は約{(SLOT_SYNC_T2_REACH / 1000).toFixed(0)}秒、通常は約{(SLOT_SYNC_T2_NOREACH / 1000).toFixed(1)}秒で全リール停止します。
         </p>
       </div>
     </div>
+    </>
   );
 }

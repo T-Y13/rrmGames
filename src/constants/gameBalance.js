@@ -40,6 +40,10 @@ export const FINAL_BATTLE_HOST_DELAY_LEGACY_MS =
 
 export const DAY8_MAX_TURNS = 15;
 export const SLOT_COST = 100;
+/** 各スピンのベットに対するプログレッシブポット拠出率（マルチ8日目） */
+export const PROGRESSIVE_POT_RATE = 0.2;
+/** ルーム作成／ゲーム開始時のプログレッシブポット初期値 */
+export const INITIAL_PROGRESSGRESSIVE_POT = 1000;
 export const SLOT_BETS = [100, 300, 500, 1000];
 export const SLOT_SYMBOLS = ["7", "BAR", "🍒", "⭐", "🔔", "💎"];
 
@@ -233,8 +237,8 @@ export function isSecretRirimuUnlockedByTrimmedPlayerName(raw) {
 export const STAT_META = [
   { key: "luck", label: "運", color: "text-amber-400" },
   { key: "skill", label: "技量", color: "text-sky-400" },
-  { key: "pon", label: "PON", color: "text-fuchsia-400" },
   { key: "virtue", label: "善行", color: "text-emerald-400" },
+  { key: "pon", label: "PON", color: "text-fuchsia-400" },
   { key: "livingCost", label: "生活費", color: "text-orange-300" },
   { key: "money", label: "資金", color: "text-yellow-300" },
 ];

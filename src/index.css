@@ -159,9 +159,10 @@ body,
   right: 0;
   top: 50%;
   height: 2px;
-  transform: translateY(-50%);
+  transform: translateY(-50%) translateZ(0);
   z-index: 5;
   pointer-events: none;
+  backface-visibility: hidden;
   background: linear-gradient(
     90deg,
     transparent 0%,
@@ -177,13 +178,14 @@ body,
 .slot-payline-marker {
   position: absolute;
   top: 50%;
-  transform: translateY(-50%);
+  transform: translateY(-50%) translateZ(0);
   z-index: 6;
   font-size: clamp(0.45rem, 2vmin, 0.65rem);
   line-height: 1;
   color: rgba(248, 113, 113, 0.95);
   text-shadow: 0 0 8px rgba(239, 68, 68, 0.75);
   pointer-events: none;
+  backface-visibility: hidden;
 }
 .slot-payline-marker--l {
   left: 1px;

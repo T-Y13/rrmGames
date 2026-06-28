@@ -597,6 +597,37 @@ export const GAME_STYLES = `
     animation: slotPayoutPopup 2.85s cubic-bezier(0.22, 1, 0.36, 1) forwards;
     will-change: transform, opacity;
   }
+  @keyframes slotVictimFramePulse {
+    0%, 100% {
+      box-shadow:
+        inset 0 0 0 2px rgba(239, 68, 68, 0.35),
+        0 0 0 0 rgba(239, 68, 68, 0.08);
+    }
+    50% {
+      box-shadow:
+        inset 0 0 0 5px rgba(239, 68, 68, 0.82),
+        0 0 28px 4px rgba(239, 68, 68, 0.28);
+    }
+  }
+  .anim-slot-victim-frame {
+    animation: slotVictimFramePulse 1.05s ease-in-out infinite;
+    border: 1px solid rgba(239, 68, 68, 0.25);
+  }
+  @keyframes slotVictimAlertBlink {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.78; transform: scale(0.985); }
+  }
+  .anim-slot-victim-alert {
+    animation: slotVictimAlertBlink 0.9s ease-in-out infinite;
+  }
+  @keyframes progressivePotPulse {
+    0%, 100% { transform: translateX(-50%) scale(1); filter: brightness(1); }
+    35% { transform: translateX(-50%) scale(1.08); filter: brightness(1.25); }
+    70% { transform: translateX(-50%) scale(1.02); filter: brightness(1.1); }
+  }
+  .anim-progressive-pot-pulse {
+    animation: progressivePotPulse 0.85s ease-out;
+  }
   @keyframes slotGoldPayoutCenter {
     0% {
       opacity: 0;

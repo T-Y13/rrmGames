@@ -3,7 +3,15 @@ import { ArrowRight, Coins, HandCoins } from "lucide-react";
 import { BAL, BOARD_GOAL } from "../constants/gameBalance";
 import { TaxiStandeeImage } from "./CharacterPieces";
 import { virtueMinRoll } from "../utils/gameLogic";
+import { sugorokuPlayerName } from "../lib/sugorokuPlayerName";
 import BoardViewport from "./BoardViewport";
+
+const BOARD_FRAME_STYLE = {
+  height: "min(720px, 80vh)",
+  minHeight: "min(560px, 72vh)",
+  overflow: "hidden",
+  borderRadius: "12px",
+};
 
 /** 8日目：ゴール確認・スロット開始待ち・すごろく移動・ダイスUI */
 export default function BoardGamePhase({
@@ -16,6 +24,7 @@ export default function BoardGamePhase({
   /** true のときだけホップ完了を親へ通知（他プレイヤーのホップで誤爆しない） */
   reportSugorokuHopComplete = false,
   isMyTurn,
+  dailyActionFx = null,
   cpIsWaitingSlot,
   isDay8Moving,
   isDiceRolling,
@@ -34,7 +43,16 @@ export default function BoardGamePhase({
   taxiJamMidPos = null,
   taxiDriveDurationMs = 2600,
   pieceHopping,
+  movementFxDiceActive = false,
+  movementFxRunning = false,
+  movementFxDiceRolls = [],
+  movementFxFloatDelta = null,
+  movementFxLabelActive = false,
+  movementFxFloatLabelMode = "steps",
   interactionLocked = false,
+  /** 駒付近UI（App から） */
+  tileEffectLines = null,
+  tileEffectKind = null,
   onMoveAction,
   onGoalLandingConfirm,
   /** ローカル利用者が goalLanding のとき（currentPlayerIdx が別でも GOAL 確認を出す） */
@@ -45,7 +63,8 @@ export default function BoardGamePhase({
   const pendingTaxiSteps = cpGs.pendingTaxiSteps ?? 0;
   const isTaxiTrafficWaitTurn = pendingTaxiSteps > 0;
 
-  const sugorokuViewPos = typeof boardViewPos === "number" ? boardViewPos : cpGs.position;
+  const sugorokuViewPos =
+    typeof boardViewPos === "number" ? boardViewPos : cpGs.position;
 
   const goalSelf = goalLandingSelf;
   const goalSelfViewPos =
@@ -55,6 +74,26 @@ export default function BoardGamePhase({
 
   /** メニューにタクシーを出すか（常時フラグ or 各ターンの taxiAvailable） */
   const showTaxiInMenu = BAL.dice.taxiMenuAlwaysVisible || gs.taxiAvailable;
+  const isObserver = !isMyTurn;
+
+  const localDiceOverlay = (() => {
+    if (isTaxiTrafficWaitTurn || movementFxDiceActive || movementFxRunning) return null;
+    const isRolling = isDiceRolling;
+    const items = isRolling
+      ? localDice.map((v, i) => ({
+          value: (diceConfirmed[i] ? v : diceShuffleValues[i]) ?? "?",
+          confirmed: diceConfirmed[i] ?? false,
+          isGolden: isRolling && isLuckyRoll && i === 1,
+        }))
+      : displayDice.map((v) => ({ value: v, confirmed: true, isGolden: false }));
+    if (items.length === 0) return null;
+    const totalVal = items.reduce((a, { value }) => a + (Number(value) || 0), 0);
+    return {
+      items,
+      showTotal: isRolling ? showDiceTotal : items.length > 1,
+      total: totalVal,
+    };
+  })();
 
   return (
     <>
@@ -62,10 +101,10 @@ export default function BoardGamePhase({
         <div className="space-y-4">
           <div className="rounded-2xl border-2 border-amber-400/60 bg-gradient-to-br from-amber-500/20 to-yellow-900/30 p-5 text-center space-y-3">
             <p className="text-4xl animate-bounce">🏁</p>
-            <p className="text-lg font-bold text-amber-100">{goalSelf.name}</p>
+            <p className="text-lg font-bold text-amber-100">{sugorokuPlayerName(goalSelf.name)}</p>
             <h2 className="text-2xl font-black text-amber-200 tracking-wide">GOAL!</h2>
           </div>
-          <div style={{ height: "min(720px, 80vh)", minHeight: "min(560px, 72vh)", overflow: "hidden", borderRadius: "12px" }}>
+          <div style={BOARD_FRAME_STYLE}>
             <BoardViewport
               players={gs.players}
               viewPos={goalSelfViewPos}
@@ -75,6 +114,8 @@ export default function BoardGamePhase({
               pieceHopping={false}
               currentPlayer={goalSelf}
               tileEffects={gs?.sugorokuTileEffects}
+              isObserver={isObserver}
+              dailyActionFx={dailyActionFx}
             />
           </div>
           {goalSelf.lastMoveEvent && (
@@ -94,7 +135,7 @@ export default function BoardGamePhase({
         <>
           <div className="flex items-center justify-between gap-2">
             <h2 className="font-semibold text-sm text-slate-300 shrink-0">
-              {cpGs.name} — T{cpGs.moveTurns + 1}
+              {sugorokuPlayerName(cpGs.name)} — T{cpGs.moveTurns + 1}
             </h2>
             <div className="flex-1 flex flex-col items-center">
               <span className="text-[10px] text-yellow-400/60 font-medium tracking-widest uppercase">GOAL</span>
@@ -106,7 +147,7 @@ export default function BoardGamePhase({
             <span className="text-xs text-slate-500 shrink-0">残{Math.max(0, BAL.dice.maxTurns - cpGs.moveTurns)}T</span>
           </div>
 
-          <div style={{ height: "min(720px, 80vh)", minHeight: "min(560px, 72vh)", overflow: "hidden", borderRadius: "12px" }}>
+          <div style={BOARD_FRAME_STYLE}>
             <BoardViewport
               players={gs.players}
               viewPos={sugorokuViewPos}
@@ -119,74 +160,24 @@ export default function BoardGamePhase({
               taxiJamMidPos={taxiJamMidPos}
               taxiDriveDurationMs={taxiDriveDurationMs}
               pieceHopping={pieceHopping}
+              movementFxDiceActive={movementFxDiceActive}
+              movementFxDiceRolls={movementFxDiceRolls}
+              movementFxFloatDelta={movementFxFloatDelta}
+              movementFxLabelActive={movementFxLabelActive}
+              movementFxFloatLabelMode={movementFxFloatLabelMode}
               currentPlayer={cpGs}
               tileEffects={gs?.sugorokuTileEffects}
+              isObserver={isObserver}
+              dailyActionFx={dailyActionFx}
               reportHopAnimationComplete={reportSugorokuHopComplete}
               onHopAnimationComplete={onSugorokuHopComplete}
+              tileEffectLines={tileEffectLines}
+              tileEffectKind={tileEffectKind}
+              localDiceItems={localDiceOverlay?.items ?? null}
+              localDiceShowTotal={localDiceOverlay?.showTotal ?? false}
+              localDiceTotal={localDiceOverlay?.total ?? 0}
             />
           </div>
-
-          {(() => {
-            if (isTaxiTrafficWaitTurn) return null;
-            const isRolling = isDiceRolling;
-            const items = isRolling
-              ? localDice.map((v, i) => ({
-                  value: (diceConfirmed[i] ? v : diceShuffleValues[i]) ?? "?",
-                  confirmed: diceConfirmed[i] ?? false,
-                }))
-              : displayDice.map((v) => ({ value: v, confirmed: true }));
-
-            if (items.length === 0) return null;
-
-            const allDone = isRolling ? showDiceTotal : true;
-            const totalVal = items.reduce((a, { value }) => a + (Number(value) || 0), 0);
-
-            return (
-              <div className="flex flex-col items-center gap-2">
-                <div className="flex gap-3 justify-center flex-wrap">
-                  {items.map(({ value, confirmed }, i) => {
-                    const isGolden = isRolling && isLuckyRoll && i === 1;
-                    return (
-                      <div
-                        key={`day8-dice-${i}-${value}-${confirmed ? "c" : "u"}`}
-                        className={`relative flex items-center gap-1.5 rounded-xl border-2 px-4 py-2.5 min-w-[66px] justify-center font-black text-xl transition-all duration-300
-                              ${isGolden && confirmed
-                                ? "border-amber-400 bg-amber-400/20 text-amber-200 shadow-[0_0_16px_rgba(251,191,36,0.55)]"
-                                : isGolden
-                                  ? "border-amber-500/60 bg-amber-900/30 text-amber-300 animate-pulse"
-                                  : confirmed
-                                    ? "border-cyan-400/70 bg-cyan-500/10 text-cyan-100 anim-dice-pop"
-                                    : "border-slate-600/60 bg-slate-800/80 text-slate-400 animate-pulse"
-                              }`}
-                      >
-                        <span className="text-base leading-none select-none">🎲</span>
-                        <span>{value}</span>
-                        {isGolden && (
-                          <span className="absolute -top-2.5 -right-2 text-[11px] text-amber-300 font-black leading-none select-none">★</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {allDone && items.length > 1 && (
-                  <div className="flex items-baseline gap-1.5 anim-fadein">
-                    <span className="text-sm text-slate-400">合計</span>
-                    <span className="text-2xl font-black text-white">{totalVal}</span>
-                    <span className="text-sm text-slate-400">マス進む！</span>
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          {isTaxiTrafficWaitTurn && (
-            <div className="rounded-lg border border-amber-600/45 bg-amber-950/50 px-3 py-2 text-center">
-              <p className="text-xs font-semibold text-amber-100">
-                タクシー渋滞中 — 駒に「渋滞中…」表示。あと<strong className="tabular-nums text-white">{pendingTaxiSteps}</strong>マスが残っています。
-              </p>
-            </div>
-          )}
 
           <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-slate-500 justify-center">
             {!isTaxiTrafficWaitTurn && (

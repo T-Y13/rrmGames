@@ -183,6 +183,36 @@ service cloud.firestore {
       return !(gs0 is map) || !actorIsGhost(gs0) || ghostProxyFrozenOk(gs0, gs1);
     }
 
+    function dailyCutinFieldsShapeValid(data) {
+      return (!('dailyCutinPhase' in data) || data.dailyCutinPhase is string)
+        && (!('dailyCutinSessionId' in data)
+          || data.dailyCutinSessionId == null
+          || data.dailyCutinSessionId is string)
+        && (!('dailyCutinPayload' in data)
+          || data.dailyCutinPayload == null
+          || data.dailyCutinPayload is map);
+    }
+
+    // 1〜7日目：カットイン観戦同期（ルーム直下 dailyCutin* のみ・gameState は不変）
+    function dailyCutinRoomBroadcastValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      return before.status == 'playing'
+        && uid() in before.playerIds
+        && before.gameState is map
+        && before.gameState.subPhase == 'daily'
+        && dailyCutinFieldsShapeValid(after)
+        && affected.hasOnly(['dailyCutinPhase', 'dailyCutinSessionId', 'dailyCutinPayload'])
+        && after.gameState == before.gameState
+        && after.status == before.status
+        && after.hostId == before.hostId
+        && after.playerIds == before.playerIds
+        && after.playerSlots == before.playerSlots
+        && after.remainingTurns == before.remainingTurns
+        && after.completedPlayers == before.completedPlayers;
+    }
+
     function playGameStatePatchValid() {
       let before = resource.data;
       let after = request.resource.data;
@@ -192,6 +222,10 @@ service cloud.firestore {
           || affected.hasOnly(['gameState', 'status'])
           || affected.hasOnly(['gameState', 'remainingTurns', 'completedPlayers'])
           || affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers'])
+          || affected.hasOnly(['gameState', 'totalPot'])
+          || affected.hasOnly(['gameState', 'status', 'totalPot'])
+          || affected.hasOnly(['gameState', 'remainingTurns', 'completedPlayers', 'totalPot'])
+          || affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers', 'totalPot'])
         )
         && before.gameState != null
         && after.gameState is map
@@ -200,6 +234,7 @@ service cloud.firestore {
         && after.remainingTurns is int
         && after.remainingTurns >= 0
         && after.completedPlayers is list
+        && (!affected.hasAny(['totalPot']) || (after.totalPot is int && after.totalPot >= 0))
         && after.playerSlots == before.playerSlots
         && after.playerIds == before.playerIds
         && after.hostId == before.hostId
@@ -217,9 +252,10 @@ service cloud.firestore {
       return uid() == before.hostId
         && before.status == 'lobby'
         && after.status == 'playing'
-        && affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers'])
+        && affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers', 'totalPot'])
         && before.gameState == null
         && after.gameState != null
+        && after.totalPot == 1000
         && after.remainingTurns is int
         && after.remainingTurns >= 0
         && after.completedPlayers is list
@@ -232,10 +268,58 @@ service cloud.firestore {
       let before = resource.data;
       let after = request.resource.data;
       let affected = after.diff(before).affectedKeys();
-      return before.status == 'lobby'
+      let rosterOk = before.status == 'lobby'
         && lobbyImmutableCore(before, after)
-        && affected.hasOnly(['allowedPlayers'])
         && uid() in before.playerIds;
+      // 招待は allowedPlayers / invitedAuthUids への追加のみ（after が before の超集合）
+      let allowedGrowOnly = after.allowedPlayers is list
+        && (
+          !('allowedPlayers' in before)
+          || (before.allowedPlayers is list && after.allowedPlayers.hasAll(before.allowedPlayers))
+        );
+      let invitedGrowOnly = !('invitedAuthUids' in after)
+        || (
+          after.invitedAuthUids is list
+          && (
+            !('invitedAuthUids' in before)
+            || (before.invitedAuthUids is list && after.invitedAuthUids.hasAll(before.invitedAuthUids))
+          )
+        );
+      return rosterOk
+        && allowedGrowOnly
+        && invitedGrowOnly
+        && (
+          affected.hasOnly(['allowedPlayers'])
+          || affected.hasOnly(['invitedAuthUids'])
+          || affected.hasOnly(['allowedPlayers', 'invitedAuthUids'])
+        );
+    }
+
+    function lobbyCancelInviteValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      let hostOk = before.status == 'lobby'
+        && uid() == before.hostId
+        && lobbyImmutableCore(before, after);
+      let allowedShrink = after.allowedPlayers is list
+        && before.allowedPlayers is list
+        && before.allowedPlayers.hasAll(after.allowedPlayers)
+        && after.allowedPlayers.size() >= 1;
+      let invitedShrink = !('invitedAuthUids' in after) && !('invitedAuthUids' in before)
+        || (
+          after.invitedAuthUids is list
+          && before.invitedAuthUids is list
+          && before.invitedAuthUids.hasAll(after.invitedAuthUids)
+        );
+      return hostOk
+        && allowedShrink
+        && invitedShrink
+        && (
+          affected.hasOnly(['allowedPlayers'])
+          || affected.hasOnly(['invitedAuthUids'])
+          || affected.hasOnly(['allowedPlayers', 'invitedAuthUids'])
+        );
     }
 
     function lobbyJoinValid() {
@@ -336,7 +420,17 @@ service cloud.firestore {
 
     function presenceSelfPlayerPair(beforeP, afterP) {
       return beforeP.id != uid()
-        || afterP.diff(beforeP).affectedKeys().hasOnly(['isGhost', 'isGameOver']);
+        || afterP.diff(beforeP).affectedKeys().hasOnly(['isGhost', 'isGameOver'])
+        || (
+          afterP.diff(beforeP).affectedKeys().hasOnly(['isGameOver'])
+          && afterP.isGameOver == true
+        )
+        || (
+          afterP.diff(beforeP).affectedKeys().hasOnly(['isGhost'])
+          && beforeP.isGhost == true
+          && afterP.isGhost == false
+          && afterP.isGameOver == beforeP.isGameOver
+        );
     }
 
     function presenceSelfPlayersOk(gs0, gs1) {
@@ -397,12 +491,17 @@ service cloud.firestore {
           || affected.hasOnly(['gameState', 'status'])
           || affected.hasOnly(['gameState', 'remainingTurns', 'completedPlayers'])
           || affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers'])
+          || affected.hasOnly(['gameState', 'totalPot'])
+          || affected.hasOnly(['gameState', 'status', 'totalPot'])
+          || affected.hasOnly(['gameState', 'remainingTurns', 'completedPlayers', 'totalPot'])
+          || affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers', 'totalPot'])
         )
         && gs1.players is list
         && slotsInRange(gs1.players)
         && after.remainingTurns is int
         && after.remainingTurns >= 0
         && after.completedPlayers is list
+        && (!affected.hasAny(['totalPot']) || (after.totalPot is int && after.totalPot >= 0))
         && after.playerSlots == before.playerSlots
         && after.playerIds == before.playerIds
         && after.hostId == before.hostId
@@ -431,6 +530,18 @@ service cloud.firestore {
             && after.allowedPlayers is list
             && before.allowedPlayers.hasAll(after.allowedPlayers)
           )
+          || (
+            affected.hasOnly(['playerSlots', 'playerIds', 'allowedPlayers', 'invitedAuthUids'])
+            && after.allowedPlayers is list
+            && before.allowedPlayers.hasAll(after.allowedPlayers)
+            && after.invitedAuthUids is list
+            && before.invitedAuthUids.hasAll(after.invitedAuthUids)
+          )
+          || (
+            affected.hasOnly(['playerSlots', 'playerIds', 'invitedAuthUids'])
+            && after.invitedAuthUids is list
+            && before.invitedAuthUids.hasAll(after.invitedAuthUids)
+          )
         );
     }
 
@@ -447,16 +558,54 @@ service cloud.firestore {
         && (d.gameState == null);
     }
 
+    function inviteInboxPayloadValid() {
+      return request.resource.data.keys().hasOnly(['roomIds', 'updatedAt'])
+        && request.resource.data.roomIds is list
+        && request.resource.data.roomIds.size() <= 30;
+    }
+
+    // ゲストの招待受信箱（list クエリ不要・自分の UID ドキュメントのみ read）
+    match /inviteInbox/{inviteeUid} {
+      allow read: if signedIn() && inviteeUid == uid();
+      allow create: if signedIn() && inviteInboxPayloadValid();
+      allow update: if signedIn()
+        && inviteInboxPayloadValid()
+        && (
+          request.resource.data.roomIds.hasAll(resource.data.roomIds)
+          || (
+            inviteeUid == uid()
+            && resource.data.roomIds is list
+            && resource.data.roomIds.hasAll(request.resource.data.roomIds)
+          )
+          || (
+            inviteeUid != uid()
+            && resource.data.roomIds is list
+            && resource.data.roomIds.hasAll(request.resource.data.roomIds)
+          )
+        );
+      allow delete: if false;
+    }
+
+    // Name#1234 → Auth UID（招待通知のルックアップ用）
+    match /fullIdIndex/{fullId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && request.resource.data.uid == uid()
+        && request.resource.data.keys().hasOnly(['uid', 'updatedAt']);
+      allow delete: if false;
+    }
+
     match /rooms/{roomId} {
 
       // Single-room fetch by code (join / spectate) — no account required.
       allow get: if validRoomCode(roomId);
 
-      // Collection queries (quick match, invite discovery). Prevents unauthenticated enumeration.
-      // Note: private lobby docs may still appear in broad lobby queries; client filters isPrivate.
+      // 招待一覧: invitedAuthUids に自分の Auth UID が含まれる待機ルームのみ（secure query）
       allow list: if signedIn()
         && validRoomCode(roomId)
         && resource.data.status == 'lobby'
+        && resource.data.invitedAuthUids is list
+        && resource.data.invitedAuthUids.hasAny([uid()])
         && request.query.limit <= 20;
 
       allow create: if createRoomValid(roomId);
@@ -472,6 +621,7 @@ service cloud.firestore {
             uid() in resource.data.playerIds
             && (
               lobbyInviteValid()
+              || lobbyCancelInviteValid()
               || lobbySelfSlotsValid()
               || hostStartGameValid()
               || playGameStatePatchValid()
@@ -481,6 +631,7 @@ service cloud.firestore {
               || presenceGhostMarkValid()
               || presenceSelfPatchValid()
               || ghostAutomationTurnValid()
+              || dailyCutinRoomBroadcastValid()
             )
           )
         );

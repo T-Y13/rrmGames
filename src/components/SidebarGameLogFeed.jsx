@@ -1,5 +1,7 @@
 import React, { useMemo } from "react";
 import { parseLogIntoDailyTiles } from "../utils/sidebarLogDailyTiles";
+import { StructuredLogLineView } from "./StructuredLogLineView";
+import { parseLogEntry } from "../lib/gameLogFormat";
 
 /**
  * サイドバー「ログ」タブ：日別タイムライン（Daily Tiles）
@@ -32,15 +34,18 @@ export default function SidebarGameLogFeed({ log = [], players = [], className =
                     key={`${tile.day}-${si}`}
                     className={`border-l-4 py-0.5 pl-2.5 ${section.stripeClass}`}
                   >
-                    {tile.showPlayerSubHeaders && section.playerName && (
-                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                        {section.playerName}
-                      </p>
-                    )}
-                    <ul className="space-y-0.5 font-mono text-xs leading-relaxed text-slate-300">
-                      {section.lines.map((line, li) => (
-                        <li key={li}>{line}</li>
-                      ))}
+                    <ul className="space-y-2 font-mono text-xs">
+                      {section.entries.map((entry, li) => {
+                        const parsed = parseLogEntry(entry);
+                        return (
+                          <li key={li}>
+                            <StructuredLogLineView
+                              entry={entry}
+                              showPlayerName={tile.showPlayerSubHeaders && parsed?.t === "dailyBlock"}
+                            />
+                          </li>
+                        );
+                      })}
                     </ul>
                   </div>
                 ))}

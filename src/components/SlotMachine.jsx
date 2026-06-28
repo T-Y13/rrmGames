@@ -4,6 +4,9 @@ import slotCabinetPng from "../assets/slot-machine.png";
 import { CharacterIcon } from "./CharacterPieces";
 import SlotReelCanvasView from "./SlotReelCanvasView";
 import { BAL, SLOT_BETS, SLOT_COST, SLOT_MACHINES } from "../constants/gameBalance";
+import SlotProxyAccountability from "./SlotProxyAccountability";
+import JackpotCelebration from "./JackpotCelebration";
+import { isLocalPlayerProxyTarget } from "../lib/slotProxyTarget";
 import {
   advanceDay8AfterSlotSpinShow,
   applyDay8SlotSpinToFreshGameState,
@@ -20,11 +23,14 @@ import {
   stripTripleForMiddleColumn,
   rand,
   SLOT_RESULT_END_BURST_GRACE_MS,
+  SLOT_JACKPOT_CELEBRATION_MS,
+  SLOT_JACKPOT_WIN_FX_CLEAR_MS,
   SLOT_SYNC_DEFAULTS,
   SLOT_SYNC_T0,
   SLOT_SYNC_T1,
   SLOT_SYNC_T2_NOREACH,
-  SLOT_SYNC_T2_REACH,
+  SLOT_SYNC_T2_REACH_HOLD_MS,
+  SLOT_SYNC_T2_REACH_NOCUTIN,
 } from "../utils/gameLogic";
 
 /** リーチ演出×実結果に応じたセリフ（ログ用）。characterType で切替（ririm は vtuber 扱い） */
@@ -75,9 +81,11 @@ export default function SlotMachine({
   writeGS,
   commitPendingGameState,
   commitGameStateTransaction,
+  commitDay8SlotSpin,
   soundRef,
   roomId,
   interactionLocked = false,
+  myId,
 }) {
   const [isSpinning, setIsSpinning] = useState(false);
   const [localReels, setLocalReels] = useState(["?", "?", "?"]);
@@ -101,6 +109,8 @@ export default function SlotMachine({
   const [isMuted, setIsMuted] = useState(false);
   const [payoutAmount, setPayoutAmount] = useState(0);
   const [showPayout, setShowPayout] = useState(false);
+  const [showJackpotCelebration, setShowJackpotCelebration] = useState(false);
+  const [jackpotCelebrationPayout, setJackpotCelebrationPayout] = useState(0);
   const [reelsCanvasSettled, setReelsCanvasSettled] = useState(true);
   const [postSpinPending, setPostSpinPending] = useState(false);
 
@@ -114,6 +124,8 @@ export default function SlotMachine({
   const spinFreezeCutinUntilRef = useRef(0);
   const slotPostResultGraceTimerRef = useRef(null);
   const spinTimersRef = useRef([]);
+  /** スピン確定絵柄：Firestore 反映前の古い displayReels で上書きしない */
+  const spinDisplayLockRef = useRef(null);
 
   const clearSpinTimers = useCallback(() => {
     for (const id of spinTimersRef.current) {
@@ -144,10 +156,11 @@ export default function SlotMachine({
   }, []);
 
   const commitPendingAdvance = useCallback(
-    async (pending) => {
+    async (pending, opts = {}) => {
       if (!pending) return;
-      if (roomId) await commitPendingGameState(pending);
-      else await writeGS(pending);
+      const markOpts = { markDay8TurnComplete: opts.markDay8TurnComplete ?? true };
+      if (roomId) await commitPendingGameState(pending, markOpts);
+      else await writeGS(pending, markOpts);
     },
     [roomId, commitPendingGameState, writeGS],
   );
@@ -237,7 +250,12 @@ export default function SlotMachine({
     setShowWinEffect(tier);
     setCharReaction("win");
     setTimeout(() => soundRef.current?.playWin?.(tier), 80);
-    const clearFx = setTimeout(() => setShowWinEffect(null), 4000);
+    if (tier === "jackpot") {
+      setJackpotCelebrationPayout(payout ?? 0);
+      setShowJackpotCelebration(true);
+    }
+    const clearMs = tier === "jackpot" ? SLOT_JACKPOT_WIN_FX_CLEAR_MS : 4000;
+    const clearFx = setTimeout(() => setShowWinEffect(null), clearMs);
     return () => clearTimeout(clearFx);
   }, [reelsCanvasSettled, soundRef]);
 
@@ -261,11 +279,32 @@ export default function SlotMachine({
 
   useEffect(() => {
     if (!cpIsSlot || isSpinning) return;
+    if (postSpinPending || showPayout || showWinEffect) return;
+
     const dr = gs?.displayReels;
     if (!Array.isArray(dr) || dr.length !== 3) return;
-    const m = SLOT_MACHINES[selectedMachineKey] ?? SLOT_MACHINES.standard;
+
+    if (spinDisplayLockRef.current) {
+      const lockedKey = spinDisplayLockRef.current.join(",");
+      const incomingKey = dr.join(",");
+      if (incomingKey !== lockedKey) return;
+      spinDisplayLockRef.current = null;
+    }
+
+    const machineKey = gs?.slotMirrorMachineKey ?? selectedMachineKey;
+    const m = SLOT_MACHINES[machineKey] ?? SLOT_MACHINES.standard;
     setReelColumns(dr.map((mid, ci) => stripTripleForMiddleColumn(mid, m, ci)));
-  }, [cpIsSlot, isSpinning, displayReelsKey, selectedMachineKey, gs?.displayReels]);
+  }, [
+    cpIsSlot,
+    isSpinning,
+    postSpinPending,
+    showPayout,
+    showWinEffect,
+    displayReelsKey,
+    selectedMachineKey,
+    gs?.displayReels,
+    gs?.slotMirrorMachineKey,
+  ]);
 
   useEffect(() => {
     if (!awaitingConfirm) return;
@@ -306,7 +345,9 @@ export default function SlotMachine({
     const newPlayers = gs.players.map((pl, i) =>
       i !== idx ? pl : { ...pl, slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 },
     );
-    await writeGS(computeAdvanceDay8Turn({ ...gs, proxySlotTargetIdx: null }, newPlayers, logs));
+    await writeGS(computeAdvanceDay8Turn({ ...gs, proxySlotTargetIdx: null }, newPlayers, logs), {
+      markDay8TurnComplete: true,
+    });
   };
 
   const handleSpin = async (bet = SLOT_COST) => {
@@ -357,11 +398,8 @@ export default function SlotMachine({
 
     const t0 = SLOT_SYNC_T0;
     const t1 = SLOT_SYNC_T1;
-    const t2Base = reachPossible
-      ? shouldShowReachCutin
-        ? t1 + 2400
-        : SLOT_SYNC_T2_REACH
-      : SLOT_SYNC_T2_NOREACH;
+    const t2ReachNoCutin = SLOT_SYNC_T2_REACH_NOCUTIN;
+    const t2Base = reachPossible ? t2ReachNoCutin : SLOT_SYNC_T2_NOREACH;
     const tCutinReveal = shouldShowReachCutin
       ? Math.max(t1 + 480, t2Base + REACH_CUTIN_SPIN_PAD_BEFORE_REVEAL_MS)
       : Infinity;
@@ -374,6 +412,7 @@ export default function SlotMachine({
 
     clearSpinTimers();
 
+    spinDisplayLockRef.current = null;
     if (roomId) {
       const targetResult = slotPaylineMiddlesToTargetIndices(visualReels, machine);
       const slotSpinSessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
@@ -386,6 +425,7 @@ export default function SlotMachine({
           slotSpinSessionId,
           slotMirrorMachineKey: selectedMachineKey,
           isReach: reachPossible,
+          slotReachCutin: shouldShowReachCutin,
           slotVisualReels: visualReels,
         }),
       );
@@ -414,6 +454,7 @@ export default function SlotMachine({
     setShowWinEffect(null);
     setShowPayout(false);
     setPayoutAmount(0);
+    setShowJackpotCelebration(false);
     setCharReaction("spinning");
     stoppedReelsRef.current = [false, false, false];
     setSlipAnimCols([false, false, false]);
@@ -544,21 +585,19 @@ export default function SlotMachine({
       setIsReach(false);
       setReelColumns(finalStrips);
 
-      if (res.tier !== "miss") {
-        pendingWinFxRef.current = { tier: res.tier, payout: res.payout };
-      } else {
-        pendingWinFxRef.current = null;
-        setCharReaction("miss");
-      }
-
       const newLeft = p.slotTurnsLeft - 1;
       const newPullsSeat = (p.slotPullsThisSeat ?? 0) + 1;
       const newSpins = p.spinCount + 1;
       const newHeat = heat + 1;
 
       const emotionLine = buildSlotReachEmotionLine(p.characterType, shouldShowReachCutin, res.tier !== "miss");
+      const usePotTx =
+        !!roomId && gs.players.length > 1 && typeof commitDay8SlotSpin === "function";
       const useMoneyTx =
-        !!roomId && gs.players.length > 1 && typeof commitGameStateTransaction === "function";
+        !usePotTx &&
+        !!roomId &&
+        gs.players.length > 1 &&
+        typeof commitGameStateTransaction === "function";
 
       const ctx = {
         actorIdx: gs.currentPlayerIdx,
@@ -577,11 +616,22 @@ export default function SlotMachine({
       };
 
       let resultGS = null;
-      if (useMoneyTx) {
+      if (usePotTx) {
+        resultGS = await commitDay8SlotSpin(ctx);
+      } else if (useMoneyTx) {
         resultGS = await commitGameStateTransaction((g0) => applyDay8SlotSpinToFreshGameState(g0, ctx));
       } else {
         resultGS = applyDay8SlotSpinToFreshGameState(gs, ctx);
         if (resultGS) await writeGS(resultGS);
+      }
+
+      if (res.tier !== "miss") {
+        const grossPayout =
+          resultGS?.players?.[gs.currentPlayerIdx]?.lastSpinResult?.grossPayout ?? res.payout;
+        pendingWinFxRef.current = { tier: res.tier, payout: grossPayout };
+      } else {
+        pendingWinFxRef.current = null;
+        setCharReaction("miss");
       }
 
       if (!resultGS) {
@@ -602,6 +652,7 @@ export default function SlotMachine({
         clearTimeout(slotPostResultGraceTimerRef.current);
         slotPostResultGraceTimerRef.current = null;
       }
+      spinDisplayLockRef.current = visualReels;
       setIsSpinning(false);
       setLocalReels(res.reels);
       schedulePostSpinResult(resultGS);
@@ -621,6 +672,13 @@ export default function SlotMachine({
 
   return (
     <>
+      <JackpotCelebration
+        show={showJackpotCelebration}
+        actorName={cpGs?.name?.trim() || ""}
+        payout={jackpotCelebrationPayout}
+        durationMs={SLOT_JACKPOT_CELEBRATION_MS}
+        onComplete={() => setShowJackpotCelebration(false)}
+      />
       <div className={showReachCutin ? "anim-slot-reach-machine-shake" : ""}>
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">
@@ -781,12 +839,14 @@ export default function SlotMachine({
               else if (skillTier === 1) stageAuraClass = "slot-cabinet-stage--aura-skill1";
             }
             const paylineWinFx = Boolean(showWinEffect);
+            const slotSpinActive = isSpinning;
             const displayReelsMatch =
               Array.isArray(gs?.displayReels) &&
               gs.displayReels.length === 3 &&
               gs.displayReels[0] === gs.displayReels[1] &&
               gs.displayReels[0] === gs.displayReels[2];
             const paylineWinPulse =
+              !slotSpinActive &&
               reelsCanvasSettled &&
               (paylineWinFx ||
                 (gs?.slotPhase === "completed" && displayReelsMatch && (gs?.lastPayout ?? 0) > 0));
@@ -794,6 +854,8 @@ export default function SlotMachine({
             const activeMachine = SLOT_MACHINES[selectedMachineKey] ?? SLOT_MACHINES.standard;
             const showPayoutNow = reelsCanvasSettled && showPayout && payoutAmount > 0;
             const showWinFxNow = reelsCanvasSettled && showWinEffect && showWinEffect !== "miss";
+            const slotSpinning = isSpinning || (gs?.slotPhase ?? "idle") === "spinning";
+            const isVictim = slotSpinning && isLocalPlayerProxyTarget(gs, myId);
             const winBox = {
               top: "var(--slot-window-top)",
               left: "var(--slot-window-left)",
@@ -802,7 +864,7 @@ export default function SlotMachine({
             };
             return (
               <div
-                className={`relative rounded-xl border border-amber-400/30 bg-slate-950/60 p-4 isolate overflow-visible ${outerClass} ${showWinFxNow && showWinEffect === "jackpot" ? "anim-jp-rainbow" : ""}`}
+                className={`relative rounded-xl border border-amber-400/30 bg-slate-950/60 p-4 isolate overflow-visible ${outerClass} ${showWinFxNow && showWinEffect === "jackpot" ? "anim-jp-rainbow" : ""} ${isVictim ? "anim-slot-victim-frame" : ""}`}
               >
                 {showWinFxNow && (
                   <div className="absolute inset-0 z-[25] pointer-events-none overflow-hidden rounded-xl">
@@ -824,6 +886,7 @@ export default function SlotMachine({
                 )}
 
                 <div className="relative z-[8] flex flex-col items-center gap-3 w-full">
+                  <SlotProxyAccountability gs={gs} myId={myId} isSpinning={isSpinning} variant="inline" />
                   <div
                     className={[
                       "slot-cabinet-stage relative mx-auto w-full max-w-[min(100%,440px)]",
@@ -878,16 +941,10 @@ export default function SlotMachine({
                           reachCol={isReach ? 2 : -1}
                           machine={activeMachine}
                           isSpinFrozenRef={spinFreezeCutinUntilRef}
+                          spinSessionActive={slotSpinActive}
                           onReelsSettledChange={setReelsCanvasSettled}
                           className="h-full w-full"
                         />
-                        <div className="slot-win-line" aria-hidden />
-                        <span className="slot-payline-marker slot-payline-marker--l" aria-hidden>
-                          ▶
-                        </span>
-                        <span className="slot-payline-marker slot-payline-marker--r" aria-hidden>
-                          ◀
-                        </span>
                       </div>
 
                       {spinAuraActive && (

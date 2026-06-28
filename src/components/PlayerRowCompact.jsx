@@ -53,19 +53,19 @@ const PlayerRowCompact = forwardRef(function PlayerRowCompact(
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] tabular-nums text-slate-400">
         <span>
-          生活費 <span className="font-bold text-orange-300">{lc}</span>
+          運 <span className="font-bold text-amber-400">{p.stats.luck}</span>
         </span>
         <span>
           技 <span className="font-bold text-sky-400">{p.stats.skill}</span>
-        </span>
-        <span>
-          運 <span className="font-bold text-amber-400">{p.stats.luck}</span>
         </span>
         <span>
           善 <span className="font-bold text-emerald-400">{p.stats.virtue}</span>
         </span>
         <span>
           PON <span className={`font-bold ${ponClr}`}>{p.stats.pon}</span>
+        </span>
+        <span>
+          生活費 <span className="font-bold text-orange-300">{lc}</span>
         </span>
       </div>
     </div>

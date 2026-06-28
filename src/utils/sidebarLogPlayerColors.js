@@ -1,4 +1,5 @@
 import { PLAYER_FRAME_COLORS } from "../components/playerSidebarShared";
+import { parseLogEntry } from "../lib/gameLogFormat";
 
 function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -6,6 +7,10 @@ function escapeRegExp(str) {
 
 /** ログ1行から該当プレイヤーを推定（最長名優先） */
 export function findPlayerForLogEntry(entry, players) {
+  const parsed = parseLogEntry(entry);
+  if (parsed?.t === "dailyBlock" && parsed.playerId && Array.isArray(players)) {
+    return players.find((p) => p.id === parsed.playerId) ?? null;
+  }
   if (!entry || typeof entry !== "string" || !Array.isArray(players) || players.length === 0) {
     return null;
   }

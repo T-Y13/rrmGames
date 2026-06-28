@@ -1,5 +1,6 @@
 import { PLAYER_FRAME_COLORS } from "../components/playerSidebarShared";
 import { findPlayerForLogEntry } from "./sidebarLogPlayerColors";
+import { parseLogEntry } from "../lib/gameLogFormat";
 
 function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -7,6 +8,12 @@ function escapeRegExp(str) {
 
 /** @returns {number|null} */
 export function extractExplicitDayFromEntry(entry) {
+  const parsed = parseLogEntry(entry);
+  if (parsed && typeof parsed === "object" && parsed.t !== "legacy") {
+    if (parsed.t === "dayHeader" || parsed.t === "dailyBlock") return parsed.day ?? null;
+    if (parsed.t === "turnHandoff") return parsed.day ?? null;
+    if (parsed.t === "dayDivider" && parsed.day != null) return parsed.day;
+  }
   if (!entry || typeof entry !== "string") return null;
   const banner = entry.match(/━━━\s*(\d+)日目/);
   if (banner) return parseInt(banner[1], 10);
@@ -25,6 +32,8 @@ function dayTitle(day) {
 
 /** 明示的な「N日目」が無いが 8日目フェーズの行 */
 function isDay8ContextEntry(entry) {
+  const parsed = parseLogEntry(entry);
+  if (parsed?.t === "dailyBlock") return false;
   if (!entry || typeof entry !== "string") return false;
   if (extractExplicitDayFromEntry(entry) != null) return false;
   return /T\d+:|のスロットターン|の移動ターン|スロット開始|ゴール到着|ゴール済|代理スロット|👻|渋滞|タクシー|🎲|🚗|タイムアップ|タイムアウト|全員がゴール|Spectating|すごろく|8日目終了/.test(
@@ -40,10 +49,16 @@ export function playerLogStripeClass(playerGameIdx) {
 
 /**
  * ログ行から表示用テキストへ（日付・プレイヤー名の重複を除去）
+ * 構造化 dailyBlock はそのまま返す（UI 側で描画）
  */
 export function compactLogLine(entry, player, day) {
+  const parsed = parseLogEntry(entry);
+  if (parsed?.t === "dailyBlock" || parsed?.t === "dayHeader" || parsed?.t === "dayDivider" || parsed?.t === "turnHandoff") {
+    return entry;
+  }
+
   if (!entry || typeof entry !== "string") return "";
-  let text = entry.trim();
+  let text = (parsed?.text ?? entry).trim();
 
   if (player?.name) {
     const esc = escapeRegExp(player.name);
@@ -66,7 +81,7 @@ export function compactLogLine(entry, player, day) {
 
 /**
  * gs.log（新しい順）を日別タイムラインタイルへ変換
- * @returns {Array<{ day: number, title: string, sections: Array<{ playerGameIdx: number|null, playerName: string|null, stripeClass: string, lines: string[] }> }>}
+ * @returns {Array<{ day: number, title: string, showPlayerSubHeaders: boolean, sections: Array<{ playerGameIdx: number|null, playerName: string|null, stripeClass: string, entries: string[] }> }>}
  */
 export function parseLogIntoDailyTiles(log, players) {
   const entries = Array.isArray(log) ? log : [];
@@ -81,11 +96,11 @@ export function parseLogIntoDailyTiles(log, players) {
     const explicit = extractExplicitDayFromEntry(entry);
     if (explicit != null) {
       runningDay = explicit;
-    } else if (/8日目終了|8日目！全員|全員で交互に移動/.test(entry)) {
+    } else if (/8日目終了|8日目！全員|全員で交互に移動/.test(String(entry))) {
       runningDay = 8;
     } else if (isDay8ContextEntry(entry) && runningDay >= 7) {
       runningDay = 8;
-    } else if (/^━━━\s*ゲーム開始/.test(entry)) {
+    } else if (/^━━━\s*ゲーム開始/.test(String(entry))) {
       runningDay = 0;
     }
 
@@ -103,15 +118,36 @@ export function parseLogIntoDailyTiles(log, players) {
 
   return sortedDays.map((day) => {
     const dayEntries = byDay.get(day) ?? [];
-    /** @type {Array<{ playerGameIdx: number|null, playerId: string|null, playerName: string|null, stripeClass: string, lines: string[] }>} */
+    /** @type {Array<{ playerGameIdx: number|null, playerId: string|null, playerName: string|null, stripeClass: string, entries: string[] }>} */
     const sections = [];
     let current = null;
 
     for (const { entry } of dayEntries) {
-      const matched = findPlayerForLogEntry(entry, playerList);
+      const parsed = parseLogEntry(entry);
+      const matched =
+        parsed?.t === "dailyBlock"
+          ? playerList.find((x) => x.id === parsed.playerId) ?? { id: parsed.playerId, name: parsed.playerName }
+          : findPlayerForLogEntry(typeof entry === "string" ? entry : "", playerList);
       const playerGameIdx = matched ? playerList.findIndex((x) => x.id === matched.id) : null;
       const playerId = matched?.id ?? null;
-      const compact = compactLogLine(entry, matched, day);
+
+      const isGlobalHeader =
+        parsed?.t === "dayHeader" || parsed?.t === "dayDivider" || parsed?.t === "turnHandoff";
+
+      if (isGlobalHeader) {
+        if (!current) {
+          current = {
+            playerGameIdx: null,
+            playerId: null,
+            playerName: null,
+            stripeClass: "border-slate-600",
+            entries: [],
+          };
+          sections.push(current);
+        }
+        current.entries.push(entry);
+        continue;
+      }
 
       if (matched && current?.playerId !== playerId) {
         current = {
@@ -119,7 +155,7 @@ export function parseLogIntoDailyTiles(log, players) {
           playerId,
           playerName: matched.name,
           stripeClass: playerLogStripeClass(playerGameIdx),
-          lines: [],
+          entries: [],
         };
         sections.push(current);
       } else if (!current) {
@@ -128,7 +164,7 @@ export function parseLogIntoDailyTiles(log, players) {
           playerId,
           playerName: matched?.name ?? null,
           stripeClass: playerLogStripeClass(playerGameIdx),
-          lines: [],
+          entries: [],
         };
         sections.push(current);
       } else if (matched && current.playerId == null && playerId) {
@@ -139,14 +175,14 @@ export function parseLogIntoDailyTiles(log, players) {
       }
 
       if (current) {
-        current.lines.push(compact);
+        current.entries.push(entry);
       } else {
         current = {
           playerGameIdx: null,
           playerId: null,
           playerName: null,
           stripeClass: "border-slate-600",
-          lines: [compact],
+          entries: [entry],
         };
         sections.push(current);
       }
@@ -163,11 +199,11 @@ export function parseLogIntoDailyTiles(log, players) {
       day,
       title,
       showPlayerSubHeaders,
-      sections: sections.map(({ playerGameIdx, playerName, stripeClass, lines }) => ({
+      sections: sections.map(({ playerGameIdx, playerName, stripeClass, entries: sectionEntries }) => ({
         playerGameIdx,
         playerName,
         stripeClass,
-        lines,
+        entries: sectionEntries,
       })),
     };
   });

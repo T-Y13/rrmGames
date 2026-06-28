@@ -3,6 +3,7 @@ import { Dice5, Loader2 } from "lucide-react";
 import { CharacterIcon } from "./CharacterPieces";
 import StatGauge from "./StatGauge";
 import TopRightHud from "./TopRightHud";
+import CopyClipboardButton from "./CopyClipboardButton";
 import {
   CHARACTERS,
   SECRET_RIRIMU_CHARACTER_KEY,
@@ -672,13 +673,24 @@ function buildRoomRosterEntries(isPrivate, allowedPlayers, playerSlots) {
   return entries;
 }
 
-function RoomMemberRow({ entry, hostId, myId, isHost, kickLoading, onRequestKick }) {
+function RoomMemberRow({
+  entry,
+  hostId,
+  myId,
+  isHost,
+  kickLoading,
+  cancelInviteLoading,
+  onRequestKick,
+  onCancelInvite,
+}) {
   const { fullId, slot, joined } = entry;
   const ck = slot?.character;
   const c = ck ? CHARACTERS[ck] : null;
   const rowIsHost = slot?.id === hostId;
   const rowIsYou = slot?.id === myId;
   const canKick = isHost && joined && slot?.id && slot.id !== hostId;
+  const canCancelInvite = isHost && !joined;
+  const isCanceling = cancelInviteLoading === fullId;
 
   return (
     <div className="flex items-center gap-2 rounded-lg bg-slate-800/80 px-3 py-2">
@@ -694,7 +706,20 @@ function RoomMemberRow({ entry, hostId, myId, isHost, kickLoading, onRequestKick
             )}
           </div>
         )}
+        {!joined && (
+          <p className="text-[10px] text-amber-400/90 font-medium mt-0.5">未参加 — 入室待ち</p>
+        )}
       </div>
+      {canCancelInvite && (
+        <button
+          type="button"
+          onClick={() => onCancelInvite?.(fullId)}
+          disabled={!!cancelInviteLoading || kickLoading}
+          className="shrink-0 rounded-lg border border-slate-500/50 bg-slate-900/80 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 hover:bg-slate-800 hover:text-white transition-colors disabled:opacity-40"
+        >
+          {isCanceling ? "取消中…" : "招待取消"}
+        </button>
+      )}
       {canKick && (
         <button
           type="button"
@@ -784,6 +809,8 @@ function RoomMemberRoster({
   onInviteInputChange,
   inviteError,
   onInvitePlayer,
+  onCancelInvite,
+  cancelInviteLoading = null,
   onKickPlayer,
   kickLoading = false,
 }) {
@@ -851,7 +878,9 @@ function RoomMemberRoster({
               myId={myId}
               isHost={isHost}
               kickLoading={kickLoading}
+              cancelInviteLoading={cancelInviteLoading}
               onRequestKick={setKickConfirmTarget}
+              onCancelInvite={onCancelInvite}
             />
           ))}
         </div>
@@ -882,7 +911,7 @@ export default function WaitingRoom({
   waitingSessionKey = 0,
   myFullId,
   copied,
-  onCopyMyId,
+  onCopyRoomId,
   roomData,
   roomId,
   playerSlots,
@@ -899,6 +928,8 @@ export default function WaitingRoom({
   onInviteInputChange,
   inviteError,
   onInvitePlayer,
+  onCancelInvite,
+  cancelInviteLoading = null,
   onKickPlayer,
   kickLoading = false,
   seVolume,
@@ -916,8 +947,6 @@ export default function WaitingRoom({
     <div className="min-h-screen bg-slate-950 p-4 text-slate-100 flex items-center justify-center">
       <TopRightHud
         myFullId={myFullId}
-        copied={copied}
-        onCopy={onCopyMyId}
         seVolume={seVolume}
         bgmVolume={bgmVolume}
         onSeVolumeChange={onSeVolumeChange}
@@ -971,29 +1000,17 @@ export default function WaitingRoom({
             <p className="text-sm text-slate-400 mt-1">ルームIDを友達に共有してください</p>
           </div>
 
-          <div className="rounded-2xl border border-cyan-500/40 bg-cyan-500/5 p-5 text-center space-y-2">
+          <div className="rounded-2xl border border-cyan-500/40 bg-cyan-500/5 p-5 text-center space-y-3">
             <p className="text-xs text-slate-400">ルームID</p>
-            <p className="text-4xl font-bold tracking-[0.3em] text-cyan-400 font-mono">{roomId}</p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <p className="text-4xl font-bold tracking-[0.3em] text-cyan-400 font-mono select-all">{roomId}</p>
+              <CopyClipboardButton copied={copied} onCopy={onCopyRoomId} />
+            </div>
             <span
               className={`inline-block text-xs font-semibold rounded-full px-3 py-0.5 ${roomData?.isPrivate ? "bg-rose-500/20 text-rose-300 border border-rose-500/40" : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"}`}
             >
               {roomData?.isPrivate ? "🔒 プライベート（招待制）" : "🌐 公開"}
             </span>
-          </div>
-
-          <div className="rounded-xl border border-cyan-500/40 bg-cyan-500/8 px-4 py-3 space-y-1.5">
-            <p className="text-xs text-cyan-400 font-semibold">🪪 あなたの招待ID（ホストへ共有してください）</p>
-            <div className="flex items-center gap-2">
-              <span className="flex-1 font-mono text-base font-bold text-white truncate select-all">{myFullId}</span>
-              <button
-                type="button"
-                onClick={onCopyMyId}
-                className={`shrink-0 rounded-lg px-3 py-1.5 text-sm font-bold transition-all ${copied ? "bg-emerald-500 text-white scale-95" : "bg-cyan-600 hover:bg-cyan-500 text-white"}`}
-              >
-                {copied ? "コピーしました！✓" : "📋 コピー"}
-              </button>
-            </div>
-            <p className="text-xs text-slate-500">このIDをホストの「招待するプレイヤー」欄に入力してもらってください</p>
           </div>
 
           <RoomMemberRoster
@@ -1007,6 +1024,8 @@ export default function WaitingRoom({
             onInviteInputChange={onInviteInputChange}
             inviteError={inviteError}
             onInvitePlayer={onInvitePlayer}
+            onCancelInvite={onCancelInvite}
+            cancelInviteLoading={cancelInviteLoading}
             onKickPlayer={onKickPlayer}
             kickLoading={kickLoading}
           />

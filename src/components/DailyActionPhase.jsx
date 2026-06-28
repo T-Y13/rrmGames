@@ -7,8 +7,18 @@ import { SugorokuBoardPiece } from "./CharacterPieces";
 const HIGH_STAT_AURA_THRESHOLD = 80;
 
 /** 1〜7日目の行動選択・パラメータ表示 */
-export default function DailyActionPhase({ gs, cpGs, onDailyAction, onOpenDailySlot, interactionLocked = false }) {
+export default function DailyActionPhase({
+  gs,
+  cpGs,
+  onDailyAction,
+  onOpenDailySlot,
+  interactionLocked = false,
+  /** 他プレイヤー観戦：ボタンを灰色・操作不可（操作者側は false のまま） */
+  spectatorMode = false,
+}) {
   if (!cpGs) return null;
+
+  const locked = interactionLocked || spectatorMode;
 
   const dailySlotTotalBet = BAL.dailySlot.spinBet * BAL.dailySlot.spins;
   const char = CHARACTERS[cpGs.characterType] ?? CHARACTERS.salaryman;
@@ -45,6 +55,29 @@ export default function DailyActionPhase({ gs, cpGs, onDailyAction, onOpenDailyS
   const auraImgStyle = auraShadows.length > 0 ? { filter: `${auraShadows.join(" ")} saturate(1.08)` } : undefined;
   const auraSpanStyle = auraTextShadows.length > 0 ? { textShadow: auraTextShadows.join(", ") } : undefined;
 
+  const actionBtnBase =
+    "inline-flex self-start rounded-xl px-5 py-2.5 font-medium transition-colors disabled:cursor-not-allowed";
+  const spectatorBtn =
+    "bg-slate-700/95 text-slate-100 border border-slate-500/55 shadow-none hover:bg-slate-700/95 disabled:opacity-100";
+  const workBtnClass = spectatorMode
+    ? `${actionBtnBase} items-center gap-2 ${spectatorBtn}`
+    : `${actionBtnBase} items-center gap-2 bg-emerald-500/90 text-white hover:bg-emerald-500 disabled:opacity-40`;
+  const streamBtnClass = spectatorMode
+    ? `${actionBtnBase} w-fit max-w-full flex-col items-start gap-1 text-left ${spectatorBtn}`
+    : `${actionBtnBase} w-fit max-w-full flex-col items-start gap-1 text-left bg-violet-500/90 text-white hover:bg-violet-500 disabled:opacity-40`;
+  const slotBtnClass = spectatorMode
+    ? `${actionBtnBase} w-fit max-w-full flex-col items-start gap-1 text-left ${spectatorBtn}`
+    : `${actionBtnBase} w-fit max-w-full flex-col items-start gap-1 text-left bg-fuchsia-600/90 text-white hover:bg-fuchsia-500 disabled:opacity-40 disabled:cursor-not-allowed`;
+  const shrineBtnClass = spectatorMode
+    ? `${actionBtnBase} items-center gap-2 ${spectatorBtn}`
+    : `${actionBtnBase} items-center gap-2 bg-amber-600/90 text-white hover:bg-amber-500 disabled:opacity-40`;
+  const streamSubClass = spectatorMode
+    ? "text-[11px] font-normal leading-snug text-slate-300 pl-[26px] space-y-1 flex flex-col"
+    : "text-[11px] font-normal leading-snug text-violet-50/95 pl-[26px] space-y-1 flex flex-col";
+  const slotSubClass = spectatorMode
+    ? "text-[11px] font-normal leading-snug text-slate-300 pl-[26px]"
+    : "text-[11px] font-normal leading-snug text-fuchsia-50/95 pl-[26px]";
+
   return (
     <>
       <h2 className="font-semibold">
@@ -79,13 +112,26 @@ export default function DailyActionPhase({ gs, cpGs, onDailyAction, onOpenDailyS
         </div>
       </div>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className={`flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between${spectatorMode ? " relative min-h-[280px]" : ""}`}>
+        {spectatorMode && (
+          <div
+            className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
+            aria-live="polite"
+            aria-label={`${cpGs.name}が操作中`}
+          >
+            <div className="mx-4 rounded-2xl border border-violet-400/55 bg-slate-950/95 px-8 py-4 text-center shadow-[0_8px_32px_rgba(0,0,0,0.45)]">
+              <p className="text-lg font-bold tracking-wide text-violet-100 sm:text-xl">
+                {cpGs.name} が操作中
+              </p>
+            </div>
+          </div>
+        )}
         <div className="flex flex-col gap-3">
           <button
             type="button"
             onClick={() => onDailyAction("work")}
-            disabled={interactionLocked}
-            className="inline-flex items-center gap-2 self-start rounded-xl bg-emerald-500/90 px-5 py-2.5 font-medium text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={locked}
+            className={workBtnClass}
           >
             <Briefcase size={18} />
             仕事（+{workPayShown}G 目安・善行反映 / 善行+{BAL.work.virtueGain}）
@@ -93,14 +139,14 @@ export default function DailyActionPhase({ gs, cpGs, onDailyAction, onOpenDailyS
           <button
             type="button"
             onClick={() => onDailyAction("stream")}
-            disabled={interactionLocked}
-            className="inline-flex w-fit max-w-full flex-col items-start gap-1 self-start rounded-xl bg-violet-500/90 px-5 py-2.5 font-medium text-white text-left transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={locked}
+            className={streamBtnClass}
           >
             <span className="inline-flex items-center gap-2">
               <Tv size={18} aria-hidden={true} />
               配信（内容はランダム）
             </span>
-            <span className="text-[11px] font-normal leading-snug text-violet-50/95 pl-[26px] space-y-1 flex flex-col">
+            <span className={streamSubClass}>
               <span>失敗；{(streamFailRate * 100).toFixed(0)}% ＋{BAL.stream.successMin}Gのみ、ステータス増加なし</span>
               <span>成功；＋{BAL.stream.successMin}〜{BAL.stream.successMax}G（善行で増加）</span>
               <span className="pt-0.5">配信タイプ</span>
@@ -115,29 +161,31 @@ export default function DailyActionPhase({ gs, cpGs, onDailyAction, onOpenDailyS
           <button
             type="button"
             onClick={() => onOpenDailySlot?.()}
-            disabled={interactionLocked || cpGs.stats.money < dailySlotTotalBet}
+            disabled={locked || cpGs.stats.money < dailySlotTotalBet}
             title={
-              interactionLocked
+              spectatorMode
+                ? "他プレイヤーの画面です"
+                : interactionLocked
                 ? "演出中は選択できません"
                 : cpGs.stats.money < dailySlotTotalBet
                   ? `資金から${dailySlotTotalBet}G必要（現在${cpGs.stats.money}G）`
                   : `所持資金から計${dailySlotTotalBet}Gを支払い。スピンごとに技量+${BAL.dailySlot.skillGainEverySpin}（毎回確定）、役が揃えばさらに+${BAL.dailySlot.skillGainOnRole}。${BAL.dailySlot.spinBet}G×${BAL.dailySlot.spins}回（筐体演出）`
             }
-            className="inline-flex w-fit max-w-full flex-col items-start gap-1 self-start rounded-xl bg-fuchsia-600/90 px-5 py-2.5 font-medium text-white text-left hover:bg-fuchsia-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className={slotBtnClass}
           >
             <span className="inline-flex items-center gap-2">
               <Dice5 size={18} aria-hidden={true} />
               デイリースロット（資金から-{dailySlotTotalBet}G／{BAL.dailySlot.spinBet}G×{BAL.dailySlot.spins}）
             </span>
-            <span className="text-[11px] font-normal leading-snug text-fuchsia-50/95 pl-[26px]">
+            <span className={slotSubClass}>
               技量；スピンごと+{BAL.dailySlot.skillGainEverySpin}（ハズレでも）／役成立でさらに+{BAL.dailySlot.skillGainOnRole}
             </span>
           </button>
           <button
             type="button"
             onClick={() => onDailyAction("shrine")}
-            disabled={interactionLocked}
-            className="inline-flex items-center gap-2 self-start rounded-xl bg-amber-600/90 px-5 py-2.5 font-medium text-white transition-colors hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={locked}
+            className={shrineBtnClass}
           >
             <span className="text-base leading-none">⛩</span>
             神社（-{BAL.shrine.cost}G / 運+{BAL.shrine.luckGain}）

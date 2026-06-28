@@ -64,9 +64,8 @@ const PlayerRowFull = forwardRef(function PlayerRowFull(
       </div>
       <div className={`mt-2 grid grid-cols-5 gap-1 text-center text-xs ${isCurrent ? "rounded-md" : ""}`}>
         {[
-          ["生活費", "text-orange-300", livingCostForPlayer(p)],
-          ["技量", "text-sky-400", p.stats.skill],
           ["運", "text-amber-400", p.stats.luck],
+          ["技量", "text-sky-400", p.stats.skill],
           ["善行", "text-emerald-400", p.stats.virtue],
           [
             "PON",
@@ -77,6 +76,7 @@ const PlayerRowFull = forwardRef(function PlayerRowFull(
                 : "text-fuchsia-400",
             p.stats.pon,
           ],
+          ["生活費", "text-orange-300", livingCostForPlayer(p)],
         ].map(([lbl, clr, val]) => (
           <div
             key={lbl}

@@ -8,6 +8,13 @@ import {
   QUICK_NAMES,
   TILE_EFFECT_KIND,
 } from "../constants/gameBalance";
+import {
+  buildDayDividerEntry,
+  buildDayHeaderEntry,
+  buildTurnHandoffEntry,
+  serializeLogEntry,
+} from "../lib/gameLogFormat";
+import { DAILY_CUTIN_SYNC_DEFAULTS } from "../lib/dailyCutinSync";
 
 /** Firestore が Timestamp で返した場合にも ms で比較する */
 export function toEpochMsMaybe(v) {
@@ -36,7 +43,7 @@ export const rand = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
 export function estimateSugorokuHopDurationMs(fromPos, toPos) {
   const diff = toPos - fromPos;
   const steps = Math.min(Math.abs(diff), 20);
-  const msPerStep = Math.abs(diff) > 6 ? 110 : 360;
+  const msPerStep = computeSugorokuMsPerStep(Math.abs(diff));
   return Math.max(0, steps * msPerStep);
 }
 
@@ -60,10 +67,53 @@ export const SLOT_SYNC_DEFAULTS = {
   slotVisualReels: null,
 };
 
+/** 1〜7日目デイリースロット観戦同期（Firestore gameState） */
+export const DAILY_SLOT_SYNC_DEFAULTS = {
+  dailySlotPhase: "idle",
+  dailySlotSessionId: null,
+  dailySlotRound: null,
+  dailySlotRoundTotal: null,
+  dailySlotVisualReels: null,
+  dailySlotTargetResult: null,
+  dailySlotIsReach: false,
+  dailySlotTier: null,
+  dailySlotOutcome: null,
+  dailySlotSessionSummary: null,
+};
+
+/** デイリースロット1回分の演出用リール（near-miss 加工込み） */
+export function buildDailySlotSpinVisualPlan(res, machineKey = "standard") {
+  const machine = SLOT_MACHINES[machineKey] ?? SLOT_MACHINES.standard;
+  let visualReels = [...(res?.reels ?? ["?", "?", "?"])];
+  if (res?.tier === "miss") {
+    const sym = machine.symbols;
+    const nm = BAL.slot.nearMissReachChance;
+    const sp = BAL.slot.slipSymbolChance;
+    const u = Math.random();
+    if (sym.length >= 2 && u < nm) {
+      const a = sym[rand(0, sym.length - 1)];
+      const diff = sym.filter((s) => s !== a);
+      const b = diff[rand(0, diff.length - 1)];
+      visualReels = [a, a, b];
+    } else if (u < nm + sp) {
+      const slipPos = rand(0, 2);
+      visualReels[slipPos] = sym[1];
+    }
+  }
+  const { reachPossible } = getSlotReachAnimationState(visualReels, res?.tier);
+  return { visualReels, reachPossible, machine };
+}
+
 /** @deprecated 手番継続時はリール停止直後に idle へ。バースト終了時は SLOT_RESULT_END_BURST_GRACE_MS */
 export const SLOT_RESULT_COMPLETED_GRACE_MS = 4000;
 /** 1バースト（例: 3回）終了後、確認 UI までの待ち（ms） */
 export const SLOT_RESULT_END_BURST_GRACE_MS = 1200;
+/** 通常当選（big/mid 等）の筐体演出を消すまで（ms） */
+export const SLOT_WIN_FX_CLEAR_MS = 3500;
+/** ジャックポット：フルスクリーン祝砲の表示時間（ms） */
+export const SLOT_JACKPOT_CELEBRATION_MS = 2600;
+/** ジャックポット：筐体レインボー演出を消すまで（ms） */
+export const SLOT_JACKPOT_WIN_FX_CLEAR_MS = 2800;
 
 // ── 観戦側タイムライン定数（SlotMachine.jsx の手番側と合わせる） ──────────
 /** リーチなしのとき：スピン開始からリール1が止まるまで（ms） */
@@ -72,10 +122,20 @@ export const SLOT_SYNC_T0 = 1200;
 export const SLOT_SYNC_T1 = 1700;
 /** リーチなしのとき：リール3が止まるまで（ms）= t1 + 550 */
 export const SLOT_SYNC_T2_NOREACH = 2250;
-/** リーチありのとき：リール3が止まるまで（ms）= t1 + 2400 + 3500（カットイン分） */
+/** リーチあり・カットインなし：第2リール停止(t1)から第3リールまでの余韻（ms） */
+export const SLOT_SYNC_T2_REACH_HOLD_MS = 2400;
+/** リーチあり・カットインなし：スピン開始から第3リール停止まで（ms） */
+export const SLOT_SYNC_T2_REACH_NOCUTIN = SLOT_SYNC_T1 + SLOT_SYNC_T2_REACH_HOLD_MS;
+/** リーチあり・カットインあり：観戦同期用の第3リール停止目安（ms） */
 export const SLOT_SYNC_T2_REACH = 7600;
 /** リーチ判定表示（REACH!! UI）をリール2停止から何 ms 後に出すか */
 export const SLOT_SYNC_REACH_SHOW_DELAY = 400;
+
+/** 観戦・同期：第3リール停止までの ms */
+export function slotSyncReel3StopMs(reachPossible, reachCutin = false) {
+  if (!reachPossible) return SLOT_SYNC_T2_NOREACH;
+  return reachCutin ? SLOT_SYNC_T2_REACH : SLOT_SYNC_T2_REACH_NOCUTIN;
+}
 
 /** 旧クライアントが書き込んだフィールドを除去（次回書き込みで上書き） */
 export const LEGACY_SLOT_FIELD_KEYS = ["slotAnimationState", "slotSpinBroadcast", "currentSlotResult"];
@@ -933,10 +993,12 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
     if (!isSugorokuBoardPlaying(tgt)) return null;
   }
 
-  const net = res.payout - bet;
+  const potPayout = Math.max(0, Math.floor(Number(ctx.potPayout) || 0));
+  const grossPayout = res.payout + potPayout;
+  const net = grossPayout - bet;
   const moneyIdx = proxyTargetIdx != null ? proxyTargetIdx : actorIdx;
   const moneyPlayer = freshGs.players[moneyIdx];
-  const newMoney = clampMoney(moneyPlayer.stats.money - bet + res.payout);
+  const newMoney = clampMoney(moneyPlayer.stats.money - bet + grossPayout);
 
   const heatMissRed = (newHeat * 1.5).toFixed(1);
   const heatLabel =
@@ -956,6 +1018,11 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
     `  技量によりハズレを${(res.r.skillMissReduced * 100).toFixed(2)}%削減 / 運：当−${(res.r.luckDrainAtari * 100).toFixed(2)}%・小−${(res.r.luckDrainSmall * 100).toFixed(2)}%→上位 / 熟成でハズレ${(res.r.heatMissReduced * 100).toFixed(2)}%削減`,
     `  ${heatLabel} ハズレ確率が${heatMissRed}%ダウン（熟成Lv${newHeat}）`,
   ];
+  if (potPayout > 0) {
+    logs.unshift(`🎰 プログレッシブポット ${potPayout}G を獲得！（ポットリセット）`);
+  } else if (ctx.potContribution > 0) {
+    logs.push(`  💰 プログレッシブポットへ +${ctx.potContribution}G（ベットの20%）`);
+  }
   if (emotionLine) logs.push(`💬 ${actor.name}: 「${emotionLine}」`);
 
   const newPlayers = freshGs.players.map((pl, i) => {
@@ -969,7 +1036,7 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
         spinCount: newSpins,
         slotHeat: newHeat,
         slotPityCounter: pityAfter,
-        lastSpinResult: { ...res, net, spin: newSpins },
+        lastSpinResult: { ...res, net, spin: newSpins, potPayout, grossPayout },
       };
     }
     if (i === moneyIdx) {
@@ -987,7 +1054,7 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
         spinCount: newSpins,
         slotHeat: newHeat,
         slotPityCounter: pityAfter,
-        lastSpinResult: { ...res, net, spin: newSpins },
+        lastSpinResult: { ...res, net, spin: newSpins, potPayout, grossPayout },
       };
     }
     return pl;
@@ -1042,6 +1109,40 @@ export function finalizeToResults(gs, playersOverride) {
   delete next.finalBattleStartedAt;
   delete next.finalBattleEntry;
   return stripLegacySlotFirestoreFields(next);
+}
+
+/**
+ * remainingTurns が 0 のとき、まだ moving のプレイヤーをタイムアウト扱いにし、
+ * 全員完了なら結果画面へ、そうでなければ手番を進める。
+ */
+export function resolveDay8RoundExhaustion(gs, remainingTurns, extraLogs = []) {
+  if (remainingTurns > 0) return gs;
+  if (gs?.gamePhase !== "playing" || gs?.subPhase !== "day8") return gs;
+
+  const logs = [...extraLogs];
+  const players = (gs.players ?? []).map((p) => {
+    if (p?.alive === false) return p;
+    if (p?.movePhase === "moving") {
+      if (logs.length === extraLogs.length) {
+        logs.push(`⏰ 移動ターン上限（${BAL.dice.maxTurns}ターン）到達`);
+      }
+      return {
+        ...p,
+        movePhase: "missed",
+        slotTurnsLeft: 0,
+        reservedSlotTurns: 0,
+        slotPullsGranted: 0,
+        slotPullsThisSeat: 0,
+      };
+    }
+    return p;
+  });
+
+  const patched = { ...gs, players };
+  if (players.every((pl) => isDay8Done(pl, players))) {
+    return finalizeToResults({ ...patched, log: prependLogs(logs, gs.log) }, players);
+  }
+  return computeAdvanceDay8Turn(patched, players, logs);
 }
 
 function shuffleSugorokuTileKinds(arr) {
@@ -1147,6 +1248,8 @@ export function enterDay8AfterFinalBattleCue(gs) {
   const next = {
     ...ensureSugorokuTileEffects(gs),
     ...SLOT_SYNC_DEFAULTS,
+    ...DAILY_SLOT_SYNC_DEFAULTS,
+    ...DAILY_CUTIN_SYNC_DEFAULTS,
     gamePhase: "playing",
     subPhase: "day8",
     aidAvailable: Math.random() < BAL.dice.helpChance,
@@ -1159,6 +1262,7 @@ export function enterDay8AfterFinalBattleCue(gs) {
   };
   delete next.finalBattleStartedAt;
   delete next.finalBattleEntry;
+  delete next.dailyActionFx;
   next.log = prependLogs([head, banner], gs.log);
   return next;
 }
@@ -1179,7 +1283,8 @@ export function initialGameState(playerSlots) {
     return makePlayer(s.name, s.id, char, preset);
   });
   const logs = [
-    `${players[0].name}のターン（1日目）`,
+    serializeLogEntry(buildDayHeaderEntry(1)),
+    serializeLogEntry(buildTurnHandoffEntry(players[0].name, 1)),
     `━━━ ゲーム開始！${players.length === 1 ? "ソロ" : `${players.length}人`}プレイ ━━━`,
     ...players.map((p) => {
       const c = CHARACTERS[p.characterType];
@@ -1226,11 +1331,17 @@ export function computeAdvanceDaily(gs, newPlayers, extraLogs) {
         finalBattleEntry: "preDay8",
       };
     } else {
-      moreLogs = [`${newPlayers[0].name}のターン`, `━━━ ${nextDay}日目 開始 ━━━`];
+      moreLogs = [
+        serializeLogEntry(buildDayDividerEntry(nextDay)),
+        serializeLogEntry(buildDayHeaderEntry(nextDay)),
+        serializeLogEntry(buildTurnHandoffEntry(newPlayers[0].name, nextDay)),
+      ];
       patch = { currentDay: nextDay, currentPlayerIdx: 0 };
     }
   } else {
-    moreLogs = [`${newPlayers[nextIdx].name}のターン（${gs.currentDay}日目）`];
+    moreLogs = [
+      serializeLogEntry(buildTurnHandoffEntry(newPlayers[nextIdx].name, gs.currentDay)),
+    ];
     patch = { currentPlayerIdx: nextIdx };
   }
 
@@ -1374,60 +1485,90 @@ export function applySugorokuTileLandingChain(tiles, startPosIn, moverStatsIn, p
   };
 
   if (pos <= 0 || pos >= BOARD_GOAL) {
-    return { finalPos: pos, stats, popupTitles, debtTrapTriggered: false };
+    return {
+      finalPos: pos,
+      stats,
+      popupTitles,
+      debtTrapTriggered: false,
+      kind: TILE_EFFECT_KIND.NEUTRAL,
+      moneyDelta: 0,
+      ponDelta: 0,
+    };
   }
 
   const def = tiles[pos];
   const kind = def?.kind ?? TILE_EFFECT_KIND.NEUTRAL;
   if (kind === TILE_EFFECT_KIND.NEUTRAL) {
-    return { finalPos: pos, stats, popupTitles, debtTrapTriggered: false };
+    return {
+      finalPos: pos,
+      stats,
+      popupTitles,
+      debtTrapTriggered: false,
+      kind: TILE_EFFECT_KIND.NEUTRAL,
+      moneyDelta: 0,
+      ponDelta: 0,
+    };
   }
+
+  let moneyDelta = 0;
+  let ponDelta = 0;
 
   const vRaw = typeof def?.value === "number" && Number.isFinite(def.value) ? def.value : null;
   switch (kind) {
     case TILE_EFFECT_KIND.MOVE_FORWARD: {
       const n = vRaw ?? rand(SG.moveForwardMin, SG.moveForwardMax);
-      pushFx(`  🔰 マス効果 (${pos})：進行マスで +${n} 進む`, `Forward +${n} steps (+${n}マス)`);
+      pushFx(`  🔰 マス効果 (${pos})：進行マスで +${n} 進む`, `${n}マス進む`);
       pos = Math.min(BOARD_GOAL, pos + n);
       break;
     }
     case TILE_EFFECT_KIND.MOVE_BACKWARD: {
       const n = vRaw ?? rand(SG.moveBackwardMin, SG.moveBackwardMax);
-      pushFx(`  🔰 マス効果 (${pos})：転がり坂で −${n} 戻る`, `Back −${n} steps (−${n}マス)`);
+      pushFx(`  🔰 マス効果 (${pos})：転がり坂で −${n} 戻る`, `${n}マス戻る`);
       pos = Math.max(0, pos - n);
       break;
     }
     case TILE_EFFECT_KIND.GAIN_MONEY: {
       const n = vRaw ?? rand(SG.gainMoneyMin, SG.gainMoneyMax);
+      moneyDelta = n;
       stats.money = clampMoney(stats.money + n);
-      pushFx(`  🔰 マス効果 (${pos})：ひろい金で +${n}G→${stats.money}G`, `+${n}G`);
+      pushFx(`  🔰 マス効果 (${pos})：ひろい金で +${n}G→${stats.money}G`);
       break;
     }
     case TILE_EFFECT_KIND.LOSE_MONEY: {
       const n = vRaw ?? rand(SG.loseMoneyMin, SG.loseMoneyMax);
+      moneyDelta = -n;
       stats.money = clampMoney(stats.money - n);
-      pushFx(`  🔰 マス効果 (${pos})：落とし穴で −${n}G→${stats.money}G`, `−${n}G`);
+      pushFx(`  🔰 マス効果 (${pos})：落とし穴で −${n}G→${stats.money}G`);
       break;
     }
     case TILE_EFFECT_KIND.INCREASE_PON: {
       const n = vRaw ?? rand(SG.ponIncreaseMin, SG.ponIncreaseMax);
+      ponDelta = n;
       stats.pon = clamp(stats.pon + n);
-      pushFx(`  🔰 マス効果 (${pos})：炎上予約で +PON ${n}%→${stats.pon}`, `Fire +${n} PON`);
+      pushFx(`  🔰 マス効果 (${pos})：炎上予約で +PON ${n}%→${stats.pon}`, `PON+${n}%`);
       break;
     }
     case TILE_EFFECT_KIND.DEBT_TRAP: {
       if ((stats.money ?? 0) < 0) {
-        pushFx(`  ☠ 借金トラップ発動！借金中で破産…`, "Debt Trap: GAME OVER");
-        return { finalPos: pos, stats, popupTitles, debtTrapTriggered: true };
+        pushFx(`  ☠ 借金トラップ発動！借金中で破産…`, "☠ GAME OVER");
+        return {
+          finalPos: pos,
+          stats,
+          popupTitles,
+          debtTrapTriggered: true,
+          kind,
+          moneyDelta: 0,
+          ponDelta: 0,
+        };
       }
-      pushFx(`  ☠ 借金トラップだったが、借金していなかったから何もなかった...`, "借金していなかったから何もなかった...");
+      pushFx(`  ☠ 借金トラップだったが、借金していなかったから何もなかった...`, "☠ 借金なし・無効");
       break;
     }
     default:
       break;
   }
 
-  return { finalPos: pos, stats, popupTitles, debtTrapTriggered: false };
+  return { finalPos: pos, stats, popupTitles, debtTrapTriggered: false, kind, moneyDelta, ponDelta };
 }
 
 /**
@@ -1456,13 +1597,35 @@ export function resolveDay8LandingWithTiles(gs, moverIdx, landedPosDice, moverSt
 
   const tileToast =
     chain.popupTitles.length > 0
-      ? { title: "Tile effect / マス効果", lines: chain.popupTitles }
+      ? { lines: chain.popupTitles }
       : null;
+
+  const hasTileFxPresentation =
+    chain.popupTitles.length > 0 || (chain.moneyDelta ?? 0) !== 0 || (chain.ponDelta ?? 0) !== 0;
+
+  const tileEffectMeta = hasTileFxPresentation
+      ? {
+          titles: chain.popupTitles,
+          kind: chain.kind,
+          moneyDelta: chain.moneyDelta ?? 0,
+          ponDelta: chain.ponDelta ?? 0,
+        }
+      : null;
+
+  const playersAtLanding = playersOut.map((pl, i) => {
+    if (i !== moverIdx) return pl;
+    let stats = { ...pl.stats };
+    if (chain.moneyDelta) stats.money = clampMoney(stats.money - chain.moneyDelta);
+    if (chain.ponDelta) stats.pon = clamp(stats.pon - chain.ponDelta);
+    return { ...pl, stats, position: landedPosDice };
+  });
 
   return {
     gsWithTiles: ensured,
     players: playersOut,
+    playersAtLanding,
     tileToast,
+    tileEffectMeta,
     gameOverByDebt: chain.debtTrapTriggered
       ? {
           triggered: true,
@@ -1490,13 +1653,33 @@ export function computeTaxiDriveDurationMs(deltaCells) {
 /** BoardViewport のホップ補間と同じドラム式（マス効果の追いマスを書き込むタイミングと同期） */
 const SUGOROKU_HOP_MAX_STEPS_FOR_DURATION = 20;
 const SUGOROKU_HOP_SETTLE_PADDING_MS = 300;
+/** 通常移動（〜6マス）の1マスあたり ms */
+export const SUGOROKU_MS_PER_STEP_NORMAL = 360;
+/** 長距離移動の速度上限：通常の最大1.5倍速（= ms/マスの下限） */
+export const SUGOROKU_MAX_SPEED_MULTIPLIER = 1.5;
+export const SUGOROKU_MS_PER_STEP_MIN = Math.round(
+  SUGOROKU_MS_PER_STEP_NORMAL / SUGOROKU_MAX_SPEED_MULTIPLIER,
+);
+const SUGOROKU_FAST_RAMP_FULL_STEPS = SUGOROKU_HOP_MAX_STEPS_FOR_DURATION;
+
+/**
+ * マス数に応じた1マスあたりの移動時間（ms）。
+ * 7マス以上は徐々に速くなるが、通常の1.5倍速（240ms/マス）を上限とする。
+ */
+export function computeSugorokuMsPerStep(absStepCount) {
+  const steps = Math.max(0, Math.abs(absStepCount));
+  if (steps <= 6) return SUGOROKU_MS_PER_STEP_NORMAL;
+  const t = Math.min(1, (steps - 6) / (SUGOROKU_FAST_RAMP_FULL_STEPS - 6));
+  return Math.round(
+    SUGOROKU_MS_PER_STEP_NORMAL - t * (SUGOROKU_MS_PER_STEP_NORMAL - SUGOROKU_MS_PER_STEP_MIN),
+  );
+}
 
 export function computeSugorokuHopDurationMs(from, to) {
   const diff = to - from;
   const abs = Math.abs(diff);
   const steps = Math.min(abs, SUGOROKU_HOP_MAX_STEPS_FOR_DURATION);
-  const isBig = abs > 6;
-  const msPerStep = isBig ? 110 : 360;
+  const msPerStep = computeSugorokuMsPerStep(abs);
   return steps * msPerStep + SUGOROKU_HOP_SETTLE_PADDING_MS;
 }
 

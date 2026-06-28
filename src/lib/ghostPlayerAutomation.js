@@ -1,7 +1,7 @@
 import { BAL, BOARD_GOAL, SLOT_COST, SLOT_MACHINES, CHARACTERS } from "../constants/gameBalance";
+import { buildDailyActionFx } from "./dailyActionFx";
 import {
   advanceDay8AfterSlotSpinShow,
-  applyDay8SlotSpinToFreshGameState,
   applyGoalLandingConfirm,
   applyRimiruDailyEnd,
   applyVirtueWave,
@@ -32,6 +32,62 @@ function pickGhostProxyTargetIdx(gs) {
     if (isSugorokuBoardPlaying(players[i])) return i;
   }
   return null;
+}
+
+function isGhostProxyTargetValid(gs, proxyIdx) {
+  if (!Number.isInteger(proxyIdx) || proxyIdx < 0) return false;
+  const idx = gs.currentPlayerIdx;
+  if (proxyIdx === idx) return false;
+  const tgt = gs.players?.[proxyIdx];
+  return !!tgt && isSugorokuBoardPlaying(tgt);
+}
+
+/** 無効な代理標的を差し替え、またはクリアして自身の金でスロット可能にする */
+export function reassignGhostProxyTarget(gs) {
+  const idx = gs.currentPlayerIdx;
+  const actor = gs.players?.[idx];
+  if (!actor || actor.movePhase !== "arrived") return null;
+
+  const newIdx = pickGhostProxyTargetIdx(gs);
+  if (newIdx != null) {
+    const tgt = gs.players[newIdx];
+    const logs = [`🤖 ${actor.name}: 代理標的を ${tgt.name} に切替（前の標的が無効）`];
+    return {
+      ...gs,
+      proxySlotTargetIdx: newIdx,
+      log: prependLogs(logs, gs.log),
+    };
+  }
+
+  if (typeof gs.proxySlotTargetIdx === "number" && gs.proxySlotTargetIdx >= 0) {
+    const logs = [`🤖 ${actor.name}: 代理標的なし → 自身のၵ金でスロット`];
+    return {
+      ...gs,
+      proxySlotTargetIdx: null,
+      log: prependLogs(logs, gs.log),
+    };
+  }
+
+  return null;
+}
+
+function prepareGhostSlotSpinStep(gs) {
+  const idx = gs.currentPlayerIdx;
+  const p = gs.players[idx];
+  if (!p || p.movePhase !== "arrived" || p.slotTurnsLeft <= 0) return null;
+  if ((gs.slotPhase ?? "idle") !== "idle") return null;
+
+  const proxyIdx =
+    typeof gs.proxySlotTargetIdx === "number" && gs.proxySlotTargetIdx >= 0 ? gs.proxySlotTargetIdx : null;
+  if (proxyIdx != null && !isGhostProxyTargetValid(gs, proxyIdx)) {
+    const reassigned = reassignGhostProxyTarget(gs);
+    if (reassigned) return { type: "reassign", gameState: reassigned };
+    return null;
+  }
+
+  const ctx = buildGhostSlotSpinCtx(gs);
+  if (!ctx) return null;
+  return { type: "slotSpin", ctx };
 }
 
 function runGhostDailyWork(gs) {
@@ -76,7 +132,13 @@ function runGhostDailyWork(gs) {
   newPlayers = applyVirtueWave(p, virtueBefore, s.virtue, newPlayers, logs);
   newPlayers = newPlayers.map((pl, i) => (i !== idx ? pl : applyRimiruDailyEnd(pl, logs)));
 
-  return computeAdvanceDaily({ ...gs, recentPonEvent: null }, newPlayers, logs);
+  const advanced = computeAdvanceDaily({ ...gs, recentPonEvent: null }, newPlayers, logs);
+  const dailyActionFx = buildDailyActionFx({
+    playerId: p.id,
+    actionType: "work",
+    detail: { money: workTotal },
+  });
+  return dailyActionFx ? { ...advanced, dailyActionFx } : advanced;
 }
 
 function runGhostDay8Dice(gs, day8RemainingTurns) {
@@ -213,7 +275,7 @@ function runGhostBeginSlot(gs) {
   return { ...gs, players: newPlayers, log: prependLogs(logs, gs.log) };
 }
 
-function runGhostSlotSpin(gs) {
+function buildGhostSlotSpinCtx(gs) {
   const idx = gs.currentPlayerIdx;
   const p = gs.players[idx];
   if (!p || p.movePhase !== "arrived" || p.slotTurnsLeft <= 0) return null;
@@ -232,7 +294,7 @@ function runGhostSlotSpin(gs) {
   const machine = SLOT_MACHINES[GHOST_SLOT_MACHINE_KEY] ?? SLOT_MACHINES.standard;
   const newLeft = p.slotTurnsLeft - 1;
   const newPullsSeat = (p.slotPullsThisSeat ?? 0) + 1;
-  const ctx = {
+  return {
     actorIdx: idx,
     proxyTargetIdx: proxyIdx,
     bet,
@@ -247,14 +309,17 @@ function runGhostSlotSpin(gs) {
     machine,
     slotTurnsBefore: p.slotTurnsLeft,
   };
+}
 
-  let resultGS = applyDay8SlotSpinToFreshGameState(gs, ctx);
+export function finishGhostSlotBurst(resultGS) {
   if (!resultGS) return null;
-
+  const idx = resultGS.currentPlayerIdx;
   const burst = Math.max(1, BAL.dice.slotsPerSugorokuTurn ?? 3);
   const actor = resultGS.players[idx];
   const canContinueBurst =
-    actor?.movePhase === "arrived" && (actor.slotTurnsLeft ?? 0) > 0 && (actor.slotPullsThisSeat ?? 0) < burst;
+    actor?.movePhase === "arrived" &&
+    (actor.slotTurnsLeft ?? 0) > 0 &&
+    (actor.slotPullsThisSeat ?? 0) < burst;
   if (canContinueBurst) return resultGS;
   return advanceDay8AfterSlotSpinShow(resultGS);
 }
@@ -292,7 +357,7 @@ export function runGhostAutomationStep(gs, { day8RemainingTurns = BAL.dice.maxTu
       return runGhostDay8Dice(gs, day8RemainingTurns);
     }
     if (p.movePhase === "arrived") {
-      return runGhostSlotSpin(gs);
+      return prepareGhostSlotSpinStep(gs);
     }
     if (p.movePhase === "missed") {
       return computeAdvanceDay8Turn(gs, gs.players, [`🤖 ${p.name} タイムアウト済み（自動スキップ）`]);
