@@ -26,6 +26,7 @@ export function buildDailyActionLogEntry({
   actionLines = [],
   statusLines = [],
   extras = [],
+  endMoney = null,
 }) {
   const meta = ACTION_META[actionType] ?? { icon: "📌", label: actionType };
   /** @type {import("./gameLogFormat").DailyActionBlock} */
@@ -43,6 +44,7 @@ export function buildDailyActionLogEntry({
     actionLines,
     statusLines,
     extras: extras.length ? extras : undefined,
+    endMoney: typeof endMoney === "number" && Number.isFinite(endMoney) ? endMoney : undefined,
   };
   return serializeLogEntry(block);
 }
@@ -122,11 +124,15 @@ export function streamActionLines({
 }
 
 export function slotActionLines({ spinCount, betPerSpin, spinDetails, moneyBefore, moneyAfter, skillBefore, skillAfter }) {
-  const lines = spinDetails.map(({ index, message, net }) => ({
-    cat: "money",
-    icon: LOG_ICONS.money,
-    text: `${index}回目 ${message} · ${net >= 0 ? "+" : ""}${net}G`,
-  }));
+  const lines = spinDetails.map(({ index, message, net, bet }) => {
+    const betAmt = typeof bet === "number" ? bet : betPerSpin;
+    const netStr = `${net >= 0 ? "+" : ""}${net}G`;
+    return {
+      cat: "money",
+      icon: LOG_ICONS.money,
+      text: `${index}回目 ${betAmt}G → ${message}（収支${netStr}）`,
+    };
+  });
   lines.push({
     cat: "money",
     icon: LOG_ICONS.money,

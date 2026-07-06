@@ -14,6 +14,7 @@ import {
   initialStatGaugeRanges,
   livingRollFromInitialRolls,
   normalizeSlotInitialRolls,
+  isLobbyMemberReady,
   rollInitialRolls,
 } from "../utils/gameLogic";
 
@@ -730,9 +731,10 @@ function RoomMemberRow({
           退室させる
         </button>
       )}
-      <div className="flex flex-col items-end justify-center min-w-[6.5rem] min-h-[2.25rem] gap-0.5 shrink-0">
+      <div className="flex flex-col items-end justify-center min-w-[5.5rem] min-h-[2.25rem] gap-0.5 shrink-0">
         {joined && (
           <>
+            <span className="text-[10px] text-slate-500 leading-none">参加 / キャラ</span>
             <span className="text-emerald-400 text-sm leading-none" aria-label="参加済み" title="参加済み">
               ✓
             </span>
@@ -750,6 +752,19 @@ function RoomMemberRow({
             )}
           </>
         )}
+      </div>
+      <div className="flex flex-col items-center justify-center min-w-[3.25rem] shrink-0">
+        {joined ? (
+          isLobbyMemberReady(slot, hostId) ? (
+            <span className="text-emerald-400 text-lg leading-none" aria-label="準備完了" title="準備完了">
+              ✓
+            </span>
+          ) : (
+            <span className="text-slate-600 text-sm leading-none" aria-label="準備未完了">
+              —
+            </span>
+          )
+        ) : null}
       </div>
     </div>
   );
@@ -866,9 +881,10 @@ function RoomMemberRoster({
 
       {entries.length > 0 && (
         <div className="space-y-1.5">
-          <div className="grid grid-cols-[1fr_auto] gap-x-3 px-1 text-[10px] font-semibold text-slate-500">
+          <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-1 text-[10px] font-semibold text-slate-500">
             <span>{isPrivate ? "招待済み" : "プレイヤー"}</span>
-            <span className="text-right min-w-[6.5rem]">参加 / キャラ</span>
+            <span className="text-right min-w-[5.5rem]">参加 / キャラ</span>
+            <span className="text-center min-w-[3.25rem]">準備完了</span>
           </div>
           {entries.map((entry) => (
             <RoomMemberRow
@@ -922,6 +938,7 @@ export default function WaitingRoom({
   onCommitInitialRolls,
   soundRef,
   onStartGame,
+  onSetLobbyReady,
   loading,
   uiError,
   inviteInput,
@@ -943,6 +960,8 @@ export default function WaitingRoom({
   const myStatsReady = !!normalizeSlotInitialRolls(mySlot?.initialRolls);
   const allSlotsStatsReady =
     playerSlots.length > 0 && playerSlots.every((s) => normalizeSlotInitialRolls(s.initialRolls));
+  const allMembersReady = playerSlots.every((s) => isLobbyMemberReady(s, roomData?.hostId));
+  const myLobbyReady = !!mySlot?.lobbyReady;
   return (
     <div className="min-h-screen bg-slate-950 p-4 text-slate-100 flex items-center justify-center">
       <TopRightHud
@@ -951,6 +970,7 @@ export default function WaitingRoom({
         bgmVolume={bgmVolume}
         onSeVolumeChange={onSeVolumeChange}
         onBgmVolumeChange={onBgmVolumeChange}
+        onReturnToLobby={onReturnToLobby}
       />
       {roomData?.isSolo ? (
         <div className="w-full max-w-md space-y-6">
@@ -1049,17 +1069,31 @@ export default function WaitingRoom({
                 playerSlots.length < 1 ||
                 loading ||
                 playerSlots.some((s) => !s.character) ||
-                !allSlotsStatsReady
+                !allSlotsStatsReady ||
+                !allMembersReady
               }
               className="w-full rounded-xl bg-cyan-500 py-3 font-bold text-slate-950 hover:bg-cyan-400 transition-colors disabled:opacity-40"
             >
-              {loading ? "開始中…" : `準備完了 · ゲームスタート（${playerSlots.length}人）`}
+              {loading
+                ? "開始中…"
+                : allMembersReady
+                  ? `ゲームスタート（${playerSlots.length}人）`
+                  : `全員の準備完了を待っています…（${playerSlots.filter((s) => isLobbyMemberReady(s, roomData?.hostId)).length}/${playerSlots.length}）`}
             </button>
           ) : (
-            <p className="text-center text-sm text-slate-400 flex items-center justify-center gap-2">
-              <Loader2 size={14} className="animate-spin" />
-              ホストがゲームを開始するのを待っています…
-            </p>
+            <button
+              type="button"
+              onClick={() => onSetLobbyReady?.(!myLobbyReady)}
+              disabled={loading || !mySlot?.character || !myStatsReady}
+              className={[
+                "w-full rounded-xl py-3 font-bold transition-colors disabled:opacity-40",
+                myLobbyReady
+                  ? "bg-emerald-600 text-white hover:bg-emerald-500"
+                  : "bg-cyan-500 text-slate-950 hover:bg-cyan-400",
+              ].join(" ")}
+            >
+              {myLobbyReady ? "準備完了 ✓（タップで取消）" : "準備完了"}
+            </button>
           )}
           {uiError && <p className="text-sm text-rose-400 text-center">{uiError}</p>}
         </div>

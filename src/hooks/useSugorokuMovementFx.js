@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { runMovementFxSequence, isTaxiDeferredMovementFx } from "../lib/sugorokuMovementFx";
+import { runMovementFxSequence, isTaxiDeferredMovementFx, isInstantMovementFx } from "../lib/sugorokuMovementFx";
 
 /**
  * gameState.movementFx を全クライアントで再生し、表示用 viewPos / フェーズを返す。
@@ -125,6 +125,16 @@ export default function useSugorokuMovementFx({
 
     const run = async () => {
       try {
+        if (isInstantMovementFx(fx)) {
+          if (!cancelled) {
+            applyViewPosOverride(fx.fromPos, fx.playerId);
+            lastPlayedIdRef.current = fx.id;
+            holdViewAtFinalPos(fx);
+            onCompleteRef.current?.(fx);
+          }
+          return;
+        }
+
         await runMovementFxSequence(fx, {
           onPhase: (nextPhase) => {
             if (cancelled) return;
@@ -167,6 +177,11 @@ export default function useSugorokuMovementFx({
 
     return () => {
       cancelled = true;
+      if (runningIdRef.current === fx.id && lastPlayedIdRef.current !== fx.id) {
+        setPhase(null);
+        setFloatDelta(null);
+        setFloatLabelMode("steps");
+      }
     };
   }, [
     movementFxId,

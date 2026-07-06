@@ -26,6 +26,7 @@ import Lobby from "./components/Lobby";
 import SSRainParticles from "./components/SSRainParticles";
 import SlotContainer from "./components/SlotContainer";
 import SlotSpinBroadcastOverlay from "./components/SlotSpinBroadcastOverlay";
+import Day8SlotSpectatorMirror from "./components/Day8SlotSpectatorMirror";
 import ProgressivePotDisplay from "./components/ProgressivePotDisplay";
 import TurnManager from "./components/TurnManager";
 import WaitingRoom from "./components/WaitingRoom";
@@ -84,7 +85,7 @@ import {
 } from "./lib/inviteDiscovery";
 import useSugorokuMovementFx from "./hooks/useSugorokuMovementFx";
 import { buildDailyActionFx, DAILY_ACTION_FX_CLEAR_MS, attachDailyActionFxForDailyPhase, clearDailyActionFx } from "./lib/dailyActionFx";
-import { buildMovementFx, holdMoverForMovementFx, buildOrphanedMovementFxPatch, isMovementFxForPlayer, isTaxiDeferredMovementFx, runTileEffectPresentation, tileEffectExplainDurationMs } from "./lib/sugorokuMovementFx";
+import { buildMovementFx, buildPonVisualPayload, buildTaxiTrafficWaitVisualPayload, buildTaxiVisualPayload, holdMoverForMovementFx, buildOrphanedMovementFxPatch, isMovementFxForPlayer, isTaxiDeferredMovementFx, runTileEffectPresentation, tileEffectExplainDurationMs } from "./lib/sugorokuMovementFx";
 import {
   amuletPreActionLine,
   buildDailyActionLogEntry,
@@ -98,37 +99,55 @@ import {
   streamActionLines,
   workActionLines,
 } from "./lib/dailyActionLog";
+import { mergeAssetHistoryBuckets } from "./lib/playerAssetHistory";
 import {
   canWriteGoalLandingConfirm,
   isActorTurnOnGameState,
+  isRoomHost,
   isHostFinalBattleScheduledWrite,
 } from "./lib/multiplayerGameStateAuth";
 import { createSlotSoundManager } from "./lib/slotSound";
 import {
   applyGoalLandingConfirm,
+  applyGoalArrivalToPlayer,
+  buildNextGsAfterGoalArrival,
   applyRimiruDailyEnd,
   applySplashDamage,
   applyVirtueIncomeBoost,
   applyVirtueWave,
   applyDay8SlotSpinToFreshGameState,
+  buildDay8SlotSpinningGs,
+  buildDay8SlotReloadRecoveryPatch,
+  resolveDay8SlotBurstAdvance,
   clamp,
   clampMoney,
   computeAdvanceDaily,
+  applyDay8ActorMoveCommit,
+  applyDay8LandingStateToLive,
+  applyDay8TaxiIntermediateCommit,
   computeAdvanceDay8Turn,
   computeTaxiCongestedLegDurations,
   computeSugorokuHopDurationMs,
   computeTaxiDriveDurationMs,
+  day8SlotMajorWinAdvanceRemainingMs,
+  eliminateDay8Player,
   enterDay8AfterFinalBattleCue,
   finalizeToResults,
   genQuickName,
   isGhostPickTargetPhase,
   genRoomId,
   initialGameState,
+  isDay8SlotBurstFinishedOnGameState,
+  allLobbyMembersReady,
+  isLobbySlotConfigured,
   livingCostForPlayer,
+  mergeDay8SlotIdleSync,
   normalizeSlotInitialRolls,
+  slotSyncReel3StopMs,
   prependLogs,
   rankLabel,
   resolveDay8LandingWithTiles,
+  resolveDebtTrapTriggered,
   rollDie,
   shrineAmuletDropChance,
   toEpochMsMaybe,
@@ -144,14 +163,21 @@ import {
   buildLeaveRoomPatch,
 } from "./lib/roomLifecycle";
 import { runGhostAutomationStep, finishGhostSlotBurst } from "./lib/ghostPlayerAutomation";
-import { computeProgressivePotDelta } from "./lib/progressivePot";
+import { tryAcquireGhostAutomationLease } from "./lib/ghostAutomationLease";
+import { commitMarkNetworkGhostPatch } from "./lib/markNetworkGhost";
+import { BOARD_DEATH_FADE_MS, delayMs } from "./lib/boardDeathPresentation";
+import {
+  computeProgressivePotDelta,
+  readRoomTotalPot,
+  rollInitialProgressivePot,
+} from "./lib/progressivePot";
 import {
   buildClearSelfPresencePatch,
   buildGracefulLeavePatch,
-  buildMarkNetworkGhostPatch,
   clearRoomSession,
   GHOST_AUTOMATION_POLL_MS,
   HEARTBEAT_INTERVAL_MS,
+  isTurnAutomatable,
   persistRoomSession,
   PRESENCE_STALE_CHECK_MS,
   readStoredRoomSession,
@@ -160,6 +186,7 @@ import {
 import {
   applyDay8RoundTracking,
   normalizeCompletedPlayers,
+  resolveDay8IsMyTurn,
   shouldMarkDay8TurnComplete,
 } from "./lib/day8RoundTracking";
 import {
@@ -254,6 +281,11 @@ function buildDay8TileSlideMidpointPlayers(playersArr, moverIdx, midPos) {
   );
 }
 
+const GHOST_SLOT_ADVANCE_COOLDOWN_MS = 3_000;
+const RETURN_TO_LOBBY_LABEL = "タイトル画面へ";
+const RETURN_TO_LOBBY_HINT =
+  "ゲームはルーム内で続行されます（退室ボタンとは異なります）";
+
 /** 7日目ラスト→決戦直前：書き込み前に育成画面のままステータス・ログだけ反映（決戦UIへは即切り替えない） */
 function buildDay7DailyOptimisticGs(nextGs, sourceGs, advancesToSugoroku) {
   if (!advancesToSugoroku) return nextGs;
@@ -316,6 +348,7 @@ export default function App() {
   const wasLobbyPlayerRef = useRef(false);
   const lobbyInviteAutoProbeDoneRef = useRef(false);
   const ghostAutomationBusyRef = useRef(false);
+  const ghostSlotAdvanceCooldownRef = useRef(0);
   const leaveInFlightRef = useRef(false);
   const reconnectAttemptedRef = useRef(false);
   // 招待制ルーム関連
@@ -326,7 +359,6 @@ export default function App() {
   const [seVolume, setSeVolume]           = useState(() => loadSoundVolume(LS_SE_VOL, DEFAULT_SE_VOL));
   const [bgmVolume, setBgmVolume]         = useState(() => loadSoundVolume(LS_BGM_VOL, DEFAULT_BGM_VOL));
   // モード選択画面
-  const [multiOpen, setMultiOpen]         = useState(false);
   const [multiAction, setMultiAction]     = useState(null); // null|"create"|"join"
   const [assetsReady, setAssetsReady] = useState(false);
   const [assetsProgress, setAssetsProgress] = useState({ loaded: 0, total: GAME_ASSET_PRELOAD_PATHS.length });
@@ -363,6 +395,10 @@ export default function App() {
   const [shrinePhase,  setShrinePhase]  = useState(null); // null|"in"|"out"
   const [showLuckyDice, setShowLuckyDice] = useState(false);
   const taxiGSRef = useRef(null); // タクシー確定後に drive 終了時に書き込む gameState
+  /** タクシー drive 完了時に liveGs へ載せる移動コミット（手番進行はここで1回だけ） */
+  const taxiDay8CommitRef = useRef(null);
+  /** 借金トラップ脱落前に載せる移動結果（drive／ホップ完了後） */
+  const movementDay8DeathCommitRef = useRef(null);
   /** マス効果追いマス：1回目書き込み後に最終 gameState を送る */
   const taxiGSFollowUpRef = useRef(null);
   const taxiDriveDurationMsRef = useRef(2600);
@@ -376,9 +412,15 @@ export default function App() {
   const taxiSecondLegMsRef = useRef(0);
   /** 今回のタクシー操作で渋滞2ターン化したか（ride→trafficJam→drive の分岐用） */
   const pendingTaxiCongestionRef = useRef(false);
-  const prevRoomGsForTaxiSyncRef = useRef(null);
   /** 今回のタクシー演出の操作者（drive 完了書き込みで手番が進んだら arrive を出さない判定用） */
   const taxiActorPlayerIdRef = useRef(null);
+  const [taxiActorPlayerId, setTaxiActorPlayerId] = useState(null);
+  /** 観戦側：タクシー1区画 drive 後のマス効果追いマス（Firestore 書き込みなし） */
+  const taxiSpectatorTileFollowUpRef = useRef(null);
+  /** 観戦側 PON カットイン（Firestore 書き込みなし） */
+  const ponSpectatorOnlyRef = useRef(false);
+  const pendingSpectatorPonVisualRef = useRef(null);
+  const lastSpectatorMovementFxFollowUpIdRef = useRef(null);
   /** PON転倒カットイン後に書き込む gameState（転倒時のみ） */
   const ponCutinCommitRef = useRef(null);
   const ponCutinFinalizeRef = useRef(async () => {});
@@ -446,6 +488,11 @@ export default function App() {
   const pieceHoppingClearTimerRef = useRef(null);
   const [gameOverSplashMsg, setGameOverSplashMsg] = useState(null);
   const gameOverSplashTimerRef = useRef(null);
+  /** 盤上死亡演出（人助けダイアログ → フェード → 墓標のあと Firestore 反映） */
+  const [boardDeathPresentation, setBoardDeathPresentation] = useState(null);
+  const [deathFadeHandledIds, setDeathFadeHandledIds] = useState([]);
+  const pendingBoardDeathCommitRef = useRef(null);
+  const boardDeathConfirmBusyRef = useRef(false);
 
   const stopManagedAudio = useCallback((key) => {
     const audio = managedAudioRef.current[key];
@@ -561,10 +608,13 @@ export default function App() {
     workPonHud,
     shrinePhase,
   });
-  const gs          = day7DailyOptimisticGs ?? roomGs;
+  const day7DailyOptimisticActive =
+    day7DailyOptimisticGs != null && roomGs?.subPhase === "daily";
+  const gs =
+    day7DailyOptimisticActive && day7DailyOptimisticGs ? day7DailyOptimisticGs : roomGs;
   const playerSlots = roomData?.playerSlots ?? [];
   const isHost      = roomData?.hostId === myId;
-  const day7DailyWritePending = day7DailyOptimisticGs != null;
+  const day7DailyWritePending = day7DailyOptimisticActive;
   roomDataRef.current = roomData;
   const rawIsMyTurn =
     !!roomGs &&
@@ -578,12 +628,32 @@ export default function App() {
     !!myId &&
     myPlayerAlive &&
     roomCompletedPlayers.includes(myId);
-  const isMyTurn = rawIsMyTurn && !isMyDay8RoundCompleted;
+  const cpFromRoom = roomGs?.players?.[roomGs?.currentPlayerIdx];
+  const roomDay8Active =
+    roomGs?.gamePhase === "playing" && roomGs?.subPhase === "day8";
+  const playingMainRoom = roomGs?.gamePhase === "playing";
+  const isMyTurn = resolveDay8IsMyTurn({
+    rawIsMyTurn,
+    isMyDay8RoundCompleted,
+    cpIsSlot: playingMainRoom && roomGs?.subPhase === "day8" && cpFromRoom?.movePhase === "arrived",
+    cpIsWaitingSlot:
+      playingMainRoom && roomGs?.subPhase === "day8" && cpFromRoom?.movePhase === "waitingSlot",
+    cpIsGhostPick:
+      playingMainRoom && roomGs?.subPhase === "day8" && isGhostPickTargetPhase(cpFromRoom),
+    cpIsMoving:
+      playingMainRoom && roomGs?.subPhase === "day8" && cpFromRoom?.movePhase === "moving" && cpFromRoom?.alive !== false,
+    cpIsGoalLanding:
+      playingMainRoom && roomGs?.subPhase === "day8" && cpFromRoom?.movePhase === "goalLanding",
+  });
+  const ghostPickIsMyTurn =
+    rawIsMyTurn && roomDay8Active && isGhostPickTargetPhase(cpFromRoom);
   const cpGs = useMemo(() => {
-    if (!gs) return null;
-    const players = applyFxMoneyRevealToPlayers(gs.players, fxMoneyReveal);
-    return players[gs.currentPlayerIdx] ?? null;
-  }, [gs, fxMoneyReveal]);
+    const src =
+      roomGs?.subPhase === "day8" && roomGs?.gamePhase === "playing" ? roomGs : gs;
+    if (!src) return null;
+    const players = applyFxMoneyRevealToPlayers(src.players, fxMoneyReveal);
+    return players[src.currentPlayerIdx] ?? null;
+  }, [gs, roomGs, fxMoneyReveal]);
   const gsPlayersForUi = useMemo(
     () => applyFxMoneyRevealToPlayers(gs?.players, fxMoneyReveal) ?? [],
     [gs?.players, fxMoneyReveal],
@@ -596,37 +666,62 @@ export default function App() {
   gsRef.current     = roomGs;
   const displayDice  = isDiceRolling ? localDice : (gs?.lastDiceRolls ?? []);
   const playingMain = gs?.gamePhase === "playing";
+  const isMultiplayerRoom = (gs?.players?.length ?? 0) > 1 && !roomData?.isSolo;
   /** gamePhase だけ欠けた古いスナップショットでも演出を出す */
   const isFinalBattleUIMode =
     (gs?.gamePhase === "finalBattle" || gs?.subPhase === "finalBattle") && !dailyOutgoingFxActive;
-  const showSugorokuBoard = gs?.subPhase !== "daily" && !dailyOutgoingFxActive;
-  const cpIsWaitingSlot = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "waitingSlot";
-  /** 手番が別プレイヤーでも、自分が goalLanding なら GOAL 確認 UI を出す */
+  const showSugorokuBoard =
+    !dailyOutgoingFxActive && (roomGs?.subPhase ?? gs?.subPhase) !== "daily";
+  const cpIsWaitingSlot =
+    roomDay8Active
+      ? cpFromRoom?.movePhase === "waitingSlot"
+      : playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "waitingSlot";
+  /** 手番が別プレイヤーでも、自分が goalLanding なら GOAL 確認 UI を出す（ソロのみ） */
   const goalLandingSelf =
-    playingMain && gs?.subPhase === "day8" && myId
+    playingMain && gs?.subPhase === "day8" && myId && !isMultiplayerRoom
       ? gs.players?.find((pl) => pl.id === myId && pl.movePhase === "goalLanding") ?? null
       : null;
   const anyGoalLandingPlayer =
-    playingMain && gs?.subPhase === "day8"
+    playingMain && gs?.subPhase === "day8" && !isMultiplayerRoom
       ? gs.players?.find((pl) => pl.movePhase === "goalLanding") ?? null
       : null;
-  const cpIsSlot     = playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "arrived";
+  const cpIsSlot =
+    roomDay8Active
+      ? cpFromRoom?.movePhase === "arrived"
+      : playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "arrived";
   const cpIsNetworkAutomatedTurn =
-    !!cpGs && (cpGs.isGhost === true || cpGs.isGameOver === true);
+    !!cpGs &&
+    (cpGs.isGameOver === true || (cpGs.isGhost === true && cpGs.alive !== false));
+  const cpIsSpectatorSlotMirrorExcluded = cpGs?.isGameOver === true;
   const slotPhase = gs?.slotPhase ?? "idle";
+  /** 8日目スロット：手番以外に idle〜結果まで共有表示（マルチのみ） */
+  const showDay8SlotSpectatorMirror =
+    playingMain &&
+    gs?.subPhase === "day8" &&
+    isMultiplayerRoom &&
+    !rawIsMyTurn &&
+    !isMyTurn &&
+    cpIsSlot &&
+    !cpIsSpectatorSlotMirrorExcluded;
   const showSlotSpinBroadcastMirror =
     playingMain &&
     gs?.subPhase === "day8" &&
     (slotPhase === "spinning" || slotPhase === "completed") &&
-    !(isMyTurn && cpIsSlot && !cpIsNetworkAutomatedTurn);
+    !(isMyTurn && cpIsSlot && !cpIsNetworkAutomatedTurn) &&
+    !showDay8SlotSpectatorMirror;
   const showProgressivePotHud =
     playingMain &&
     gs?.subPhase === "day8" &&
     (gs?.players?.length ?? 0) > 1 &&
     !roomData?.isSolo;
-  const cpIsGhostPick = playingMain && gs?.subPhase === "day8" && isGhostPickTargetPhase(cpGs);
+  const cpIsGhostPick =
+    roomDay8Active
+      ? isGhostPickTargetPhase(cpFromRoom)
+      : playingMain && gs?.subPhase === "day8" && isGhostPickTargetPhase(cpGs);
   const isDay8Moving =
-    playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "moving" && cpGs?.alive !== false;
+    roomDay8Active
+      ? cpFromRoom?.movePhase === "moving" && cpFromRoom?.alive !== false
+      : playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "moving" && cpGs?.alive !== false;
   const boardProgress = cpGs ? Math.min(100, (cpGs.position / BOARD_GOAL) * 100) : 0;
   const day8DiceRollCount = Array.isArray(gs?.lastDiceRolls) ? gs.lastDiceRolls.length : 0;
 
@@ -665,7 +760,6 @@ export default function App() {
   const isDay8SharedMoveWatch =
     isDay8Moving && !isMyTurn && !goalLandingSelf;
   const isDailyPhase = playingMain && gs?.subPhase === "daily";
-  const isMultiplayerRoom = (gs?.players?.length ?? 0) > 1 && !roomData?.isSolo;
   const dailySlotPhase = roomGs?.dailySlotPhase ?? "idle";
   const dailyCutinBroadcast = useMemo(
     () => readDailyCutinBroadcast(roomData, roomGs),
@@ -717,7 +811,10 @@ export default function App() {
     !!cpGs &&
     !goalLandingSelf;
   const hideBlockingObserverWait =
-    isDay8SharedMoveWatch || showDailyActionSpectatorMirror || showDailySlotSpectatorMirror;
+    isDay8SharedMoveWatch ||
+    showDailyActionSpectatorMirror ||
+    showDailySlotSpectatorMirror ||
+    showDay8SlotSpectatorMirror;
 
   const clearDailyCutinLocalState = useCallback(() => {
     setStreamTypeCutin(null);
@@ -1123,10 +1220,18 @@ export default function App() {
     return () => clearTimeout(tid);
   }, [isHost, roomId, roomGs?.gamePhase, roomGs?.finalBattleStartedAt, roomGs?.finalBattleEntry]);
 
-  /** 7日目楽観状態は Firestore の最新ログ先頭と一致し、日常演出が終わってから破棄 */
+  /** 7日目楽観状態：日常フェーズを抜けたら即破棄。ログが Firestore 側で進んだら同期完了とみなす */
   useEffect(() => {
-    if (!day7DailyOptimisticGs || !roomGs?.log?.length) return;
-    if (roomGs.log[0] !== day7DailyOptimisticGs.log[0]) return;
+    if (!day7DailyOptimisticGs) return;
+    if (roomGs?.subPhase !== "daily") {
+      setDay7DailyOptimisticGs(null);
+      return;
+    }
+    if (!roomGs?.log?.length) return;
+    if (roomGs.log[0] !== day7DailyOptimisticGs.log[0]) {
+      if (!dailyOutgoingFxActive) setDay7DailyOptimisticGs(null);
+      return;
+    }
     if (dailyOutgoingFxActive) return;
     setDay7DailyOptimisticGs(null);
   }, [roomGs, day7DailyOptimisticGs, dailyOutgoingFxActive]);
@@ -1182,41 +1287,120 @@ export default function App() {
     if (!roomGs) setDay7DailyOptimisticGs(null);
   }, [roomGs]);
 
-  // ─── マルチ観戦側: タクシー演出同期（スナップ差分からローカル再生） ─────────────────
-  useEffect(() => {
-    const prev = prevRoomGsForTaxiSyncRef.current;
-    prevRoomGsForTaxiSyncRef.current = roomGs;
-    if (!roomGs || !prev) return;
-    if (isMyTurn) return;
-    if (taxiPhase != null) return;
-    if (roomGs.gamePhase !== "playing" || roomGs.subPhase !== "day8") return;
-    if (prev.gamePhase !== "playing" || prev.subPhase !== "day8") return;
+  // ─── マルチ観戦側: movementFx 完了後のタクシー / PON フォローアップ演出 ─────────────────
+  const beginSpectatorTaxiVisual = useCallback(
+    (taxiVisual, actorPlayerId) => {
+      if (!taxiVisual) return;
+      pendingTaxiCongestionRef.current = !!taxiVisual.congested;
+      taxiSpectatorTileFollowUpRef.current = null;
+      if (taxiVisual.congested) {
+        setTaxiDriveEndPos(taxiVisual.driveEndPos);
+        setTaxiJamMidPos(taxiVisual.jamMidPos ?? null);
+        taxiSecondLegMsRef.current = taxiVisual.secondLegMs ?? 0;
+        setTaxiDriveActiveMs(taxiVisual.firstLegMs);
+        taxiDriveDurationMsRef.current = taxiVisual.fullDriveMs;
+        setTaxiDriveDurationMs(taxiVisual.fullDriveMs);
+      } else if (taxiVisual.needsTileSlide) {
+        setTaxiDriveEndPos(taxiVisual.driveEndPos);
+        setTaxiJamMidPos(null);
+        taxiSecondLegMsRef.current = 0;
+        setTaxiDriveActiveMs(taxiVisual.firstLegMs);
+        taxiDriveDurationMsRef.current = taxiVisual.fullDriveMs;
+        setTaxiDriveDurationMs(taxiVisual.firstLegMs);
+        taxiSpectatorTileFollowUpRef.current = {
+          fromPos: taxiVisual.tileSlideFromPos,
+          toPos: taxiVisual.tileSlideToPos,
+          tileEffectMeta: taxiVisual.tileEffectMeta ?? null,
+        };
+      } else {
+        setTaxiDriveEndPos(taxiVisual.driveEndPos);
+        setTaxiJamMidPos(null);
+        taxiSecondLegMsRef.current = 0;
+        setTaxiDriveActiveMs(taxiVisual.firstLegMs);
+        taxiDriveDurationMsRef.current = taxiVisual.firstLegMs;
+        setTaxiDriveDurationMs(taxiVisual.firstLegMs);
+      }
+      let taxiPieceBlockMs = 900;
+      if (taxiVisual.congested) {
+        taxiPieceBlockMs = (taxiVisual.firstLegMs ?? 0) + (taxiVisual.secondLegMs ?? 0) + 200;
+      } else if (taxiVisual.needsTileSlide) {
+        taxiPieceBlockMs =
+          (taxiVisual.firstLegMs ?? 0) +
+          computeTaxiDriveDurationMs(
+            Math.abs((taxiVisual.tileSlideToPos ?? 0) - (taxiVisual.tileSlideFromPos ?? 0)),
+          ) +
+          200;
+      } else {
+        taxiPieceBlockMs = (taxiVisual.firstLegMs ?? 0) + 200;
+      }
+      schedulePieceHopBlockingMs(Math.max(700, taxiPieceBlockMs));
+      taxiActorPlayerIdRef.current = actorPlayerId ?? null;
+      setTaxiActorPlayerId(actorPlayerId ?? null);
+      taxiVisualActiveRef.current = true;
+      setTaxiDriveCongested(false);
+      setTaxiPhase("enter");
+    },
+    [schedulePieceHopBlockingMs],
+  );
 
-    const prevIdx = prev.currentPlayerIdx;
-    const roomIdx = roomGs.currentPlayerIdx;
-    // 手番が変わったフレームでは「新しい手番の人」の lastMoveEvent（過去にタクシーを使った記録など）で誤検知し、
-    // 次プレイヤーのターン開始時にタクシー drive が走ることがある。
-    if (prevIdx !== roomIdx) return;
+  /** 観戦側：渋滞2ターン目は enter 省略で drive のみ（のろのろ） */
+  const beginSpectatorTaxiTrafficWaitDrive = useCallback(
+    (taxiVisual, actorPlayerId) => {
+      if (!taxiVisual) return;
+      pendingTaxiCongestionRef.current = false;
+      taxiSpectatorTileFollowUpRef.current = null;
+      const driveMs = taxiVisual.driveMs ?? 2600;
+      setTaxiDriveEndPos(taxiVisual.driveEndPos);
+      setTaxiJamMidPos(null);
+      taxiSecondLegMsRef.current = 0;
+      setTaxiDriveActiveMs(driveMs);
+      taxiDriveDurationMsRef.current = driveMs;
+      setTaxiDriveDurationMs(driveMs);
+      if (taxiVisual.needsTileSlide) {
+        taxiSpectatorTileFollowUpRef.current = {
+          fromPos: taxiVisual.tileSlideFromPos,
+          toPos: taxiVisual.tileSlideToPos,
+          tileEffectMeta: taxiVisual.tileEffectMeta ?? null,
+        };
+      }
+      schedulePieceHopBlockingMs(Math.max(700, driveMs + 120));
+      taxiActorPlayerIdRef.current = actorPlayerId ?? null;
+      setTaxiActorPlayerId(actorPlayerId ?? null);
+      taxiVisualActiveRef.current = true;
+      setTaxiDriveCongested(true);
+      setTaxiPhase("drive");
+    },
+    [schedulePieceHopBlockingMs],
+  );
 
-    const cur = roomGs.players?.[roomIdx];
-    const prevCur = prev.players?.[prevIdx];
-    if (!cur || !prevCur || cur.id !== prevCur.id) return;
+  const applySpectatorPonVisual = useCallback((ponVisual) => {
+    if (!ponVisual) return;
+    ponSpectatorOnlyRef.current = true;
+    pendingSpectatorPonVisualRef.current = ponVisual;
+    if (typeof ponVisual.stopPos === "number") {
+      setBoardViewPosOverride(ponVisual.stopPos);
+    }
+    setPonCutin({ characterType: ponVisual.characterType ?? "salaryman" });
+  }, []);
 
-    const moved = Math.abs((cur.position ?? 0) - (prevCur.position ?? 0)) > 0;
-    const looksTaxi = String(cur.lastMoveEvent ?? "").includes("タクシー");
-    if (!moved || !looksTaxi) return;
+  const applySpectatorMovementFxFollowUp = useCallback(
+    (fx) => {
+      if (isMyTurn || !fx?.id || !fx?.playerId) return;
+      const cp = gsRef.current?.players?.[gsRef.current?.currentPlayerIdx ?? -1];
+      if (!cp || cp.id !== fx.playerId) return;
+      if (lastSpectatorMovementFxFollowUpIdRef.current === fx.id) return;
+      lastSpectatorMovementFxFollowUpIdRef.current = fx.id;
 
-    const driveMs = computeTaxiDriveDurationMs(Math.abs((cur.position ?? 0) - (prevCur.position ?? 0)));
-    taxiDriveDurationMsRef.current = driveMs;
-    setTaxiDriveDurationMs(driveMs);
-    setTaxiDriveEndPos(cur.position ?? null);
-    setTaxiJamMidPos(null);
-    taxiSecondLegMsRef.current = 0;
-    setTaxiDriveActiveMs(driveMs);
-    pendingTaxiCongestionRef.current = false;
-    setTaxiDriveCongested(false);
-    setTaxiPhase("drive");
-  }, [roomGs, isMyTurn, taxiPhase]);
+      if (fx.followUp === "taxiTrafficWait" && fx.taxiVisual) {
+        beginSpectatorTaxiTrafficWaitDrive(fx.taxiVisual, fx.playerId);
+      } else if (fx.followUp === "taxi" && fx.taxiVisual) {
+        beginSpectatorTaxiVisual(fx.taxiVisual, fx.playerId);
+      } else if (fx.followUp === "pon" && fx.ponVisual) {
+        applySpectatorPonVisual(fx.ponVisual);
+      }
+    },
+    [isMyTurn, beginSpectatorTaxiVisual, beginSpectatorTaxiTrafficWaitDrive, applySpectatorPonVisual],
+  );
 
   // ─── タクシーカットイン アニメーション シーケンス ────────────────────
   useEffect(() => {
@@ -1264,11 +1448,13 @@ export default function App() {
         taxiGSRef.current &&
         roomId;
 
-      let skipArriveForPendingTaxi = false;
+      let skipArriveForPendingTaxi = pendingTaxiCongestionRef.current;
       if (writeDriveDone && taxiGSRef.current) {
         const g = taxiGSRef.current;
-        const cp = g.players[g.currentPlayerIdx];
-        skipArriveForPendingTaxi = (cp?.pendingTaxiSteps ?? 0) > 0;
+        const actorId = taxiActorPlayerIdRef.current;
+        const actor = actorId ? g.players?.find((pl) => pl.id === actorId) : null;
+        skipArriveForPendingTaxi =
+          skipArriveForPendingTaxi || (actor?.pendingTaxiSteps ?? 0) > 0;
       }
 
       let taxiWriteOk = false;
@@ -1277,19 +1463,38 @@ export default function App() {
         const tgSnap = taxiGSRef.current;
         writtenCurPlayerId = tgSnap?.players?.[tgSnap.currentPlayerIdx]?.id ?? null;
         const followUp = taxiGSFollowUpRef.current;
+        const commit = taxiDay8CommitRef.current;
         try {
-          const tg = taxiGSRef.current;
-          taxiWriteOk = await performGameStateUpdateRef.current(tg, "actorTurn", {
-            markDay8TurnComplete: "auto",
-          });
+          if (commit?.actorId) {
+            if (followUp) {
+              taxiWriteOk = await performGameStateUpdateRef.current(null, "actorTurn", {
+                markDay8TurnComplete: false,
+                liveMutator: (liveGs) => applyDay8TaxiIntermediateCommit(liveGs, commit),
+              });
+            } else {
+              taxiWriteOk = await performGameStateUpdateRef.current(null, "actorTurn", {
+                markDay8TurnComplete: commit.arrived ? commit.isMultiplayerRoom : true,
+                turnCompletePlayerId: commit.actorId,
+                liveMutator: (liveGs) => applyDay8ActorMoveCommit(liveGs, commit),
+              });
+            }
+          } else {
+            const tg = taxiGSRef.current;
+            taxiWriteOk = await performGameStateUpdateRef.current(tg, "actorTurn", {
+              markDay8TurnComplete: "auto",
+            });
+          }
         } catch (e) {
           setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
         }
         taxiGSRef.current = null;
+        taxiDay8CommitRef.current = null;
         taxiGSFollowUpRef.current = null;
 
         if (!taxiWriteOk) {
           setTaxiPhase(null);
+          taxiActorPlayerIdRef.current = null;
+          setTaxiActorPlayerId(null);
           setPieceHopping(false);
           if (pieceHoppingClearTimerRef.current) {
             clearTimeout(pieceHoppingClearTimerRef.current);
@@ -1318,9 +1523,16 @@ export default function App() {
             const hopMs = computeSugorokuHopDurationMs(followUp.fromPos, followUp.toPos);
             setBoardViewPosOverride(followUp.toPos);
             await new Promise((r) => setTimeout(r, hopMs));
-            await performGameStateUpdateRef.current(followUp.finalGS, "actorTurn", {
-              markDay8TurnComplete: "auto",
+            await performGameStateUpdateRef.current(null, "actorTurn", {
+              markDay8TurnComplete: true,
+              turnCompletePlayerId: taxiDay8CommitRef.current?.actorId ?? null,
+              liveMutator: (liveGs) => {
+                const pendingCommit = taxiDay8CommitRef.current;
+                if (!pendingCommit) return null;
+                return applyDay8ActorMoveCommit(liveGs, pendingCommit);
+              },
             });
+            taxiDay8CommitRef.current = null;
             setBoardViewPosOverride(null);
             setFxMoneyReveal(null);
             setBoardMoneyFloatDelta(null);
@@ -1342,6 +1554,42 @@ export default function App() {
 
         setShakeScreen(true);
         setTimeout(() => setShakeScreen(false), 500);
+      }
+
+      if (
+        !writeDriveDone &&
+        taxiPhase === "drive" &&
+        tentativeNext === "arrive" &&
+        taxiSpectatorTileFollowUpRef.current
+      ) {
+        const fu = taxiSpectatorTileFollowUpRef.current;
+        taxiSpectatorTileFollowUpRef.current = null;
+        try {
+          const tileMeta = fu.tileEffectMeta;
+          if (
+            tileMeta &&
+            ((tileMeta.titles?.length ?? 0) > 0 || (tileMeta.moneyDelta ?? 0) !== 0)
+          ) {
+            await runTileEffectPresentation(tileMeta, {
+              onExplain: showTileEffectExplain,
+              onMoneyFloat: (delta) => {
+                setBoardMoneyFloatDelta(delta);
+              },
+              onMoneyApplied: () => {
+                setBoardMoneyFloatDelta(null);
+              },
+            });
+          }
+          if (typeof fu.toPos === "number") {
+            const hopMs = computeSugorokuHopDurationMs(fu.fromPos ?? fu.toPos, fu.toPos);
+            setBoardViewPosOverride(fu.toPos);
+            await new Promise((r) => setTimeout(r, hopMs));
+            setBoardViewPosOverride(null);
+          }
+        } catch (e) {
+          setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
+        }
+        setBoardMoneyFloatDelta(null);
       }
 
       let next = tentativeNext;
@@ -1377,6 +1625,7 @@ export default function App() {
       if (next === "arrive") setTaxiDriveCongested(false);
       if (next === null) {
         taxiActorPlayerIdRef.current = null;
+        setTaxiActorPlayerId(null);
         pendingTaxiCongestionRef.current = false;
         setTaxiDriveCongested(false);
         setTaxiDriveEndPos(null);
@@ -1393,6 +1642,26 @@ export default function App() {
     }, duration);
     return () => clearTimeout(t);
   }, [taxiPhase, roomId, taxiDriveActiveMs]);
+
+  /** Firestore で手番が先に進んだあと、操作者以外の盤面にタクシー演出が残らないよう消す */
+  useEffect(() => {
+    if (!taxiPhase || !taxiActorPlayerId || !cpGs?.id) return;
+    if (cpGs.id === taxiActorPlayerId) return;
+    taxiActorPlayerIdRef.current = null;
+    setTaxiActorPlayerId(null);
+    pendingTaxiCongestionRef.current = false;
+    setTaxiDriveCongested(false);
+    setTaxiDriveEndPos(null);
+    setTaxiJamMidPos(null);
+    if (pieceHoppingClearTimerRef.current) {
+      clearTimeout(pieceHoppingClearTimerRef.current);
+      pieceHoppingClearTimerRef.current = null;
+    }
+    setPieceHopping(false);
+    taxiVisualActiveRef.current = false;
+    setTaxiPhase(null);
+    releaseDay8VisualActionLock();
+  }, [gs?.currentPlayerIdx, cpGs?.id, taxiPhase, taxiActorPlayerId, releaseDay8VisualActionLock]);
 
   // ─── 1回休みの自動スキップ ───────────────────────────────────────────
   useEffect(() => {
@@ -1420,12 +1689,15 @@ export default function App() {
     }
   }, [roomGs, boardViewPosOverride, myId]);
 
-  /** リロード後に movementFx だけ残った gameState を修復（クラッシュ・復帰不能の防止） */
+  /** リロード後に movementFx だけ残った gameState を修復（移動者本人のみ — 観戦側の誤修復で演出・手番が止まるのを防ぐ） */
   useEffect(() => {
-    if (!roomId || !roomGs?.movementFx || movementFxPendingCommitRef.current) return;
+    const fx = roomGs?.movementFx;
+    if (!roomId || !fx || movementFxPendingCommitRef.current) return;
     if (taxiPhase != null) return;
-    if (isTaxiDeferredMovementFx(roomGs.movementFx)) return;
-    const key = `${roomId}:${roomGs.movementFx.id ?? ""}:${roomGs.movementFx.playerId ?? ""}`;
+    if (movementFxSync.isRunning) return;
+    if (isTaxiDeferredMovementFx(fx)) return;
+    if (fx.playerId !== myId) return;
+    const key = `${roomId}:${fx.id ?? ""}:${fx.playerId ?? ""}`;
     if (movementFxRecoveryKeyRef.current === key) return;
     const patch = buildOrphanedMovementFxPatch(roomGs);
     if (!patch) return;
@@ -1434,17 +1706,40 @@ export default function App() {
       console.warn("[movementFx] recovery failed", e);
       movementFxRecoveryKeyRef.current = null;
     });
-  }, [roomId, roomGs, updateRoom, taxiPhase]);
+  }, [roomId, roomGs, updateRoom, taxiPhase, myId, movementFxSync.isRunning]);
 
   // ─── Firestore gameState 書き込み（手番ガード／ホスト決戦進行） ─────────────────
   const performGameStateUpdate = useCallback(
     async (newGS, writeMode = "actorTurn", authCtx = {}) => {
-      const { gameState: authGOverride, roomData: authRdOverride, setStatus, markDay8TurnComplete = false } =
-        authCtx;
+      const {
+        gameState: authGOverride,
+        roomData: authRdOverride,
+        setStatus,
+        markDay8TurnComplete = false,
+        turnCompletePlayerId = null,
+        deathCommitPlayerId = null,
+        liveMutator = null,
+      } = authCtx;
       const authG = authGOverride ?? gsRef.current;
       const authRd = authRdOverride ?? roomDataRef.current;
       if (writeMode === "actorTurn") {
-        if (!isActorTurnOnGameState(authG, myId)) {
+        if (deathCommitPlayerId) {
+          if (deathCommitPlayerId !== myId) {
+            setUiError("手番が変わったため、同期を送信できませんでした。最新の状態を確認してください。");
+            return false;
+          }
+          const dieIdx = authG?.players?.findIndex((pl) => pl.id === deathCommitPlayerId);
+          if (dieIdx < 0) {
+            setUiError("脱落処理を同期できませんでした。最新の状態を確認してください。");
+            return false;
+          }
+          const stillActor =
+            authG.currentPlayerIdx === dieIdx || authG.movementFx?.playerId === deathCommitPlayerId;
+          if (!stillActor) {
+            setUiError("手番が変わったため、同期を送信できませんでした。最新の状態を確認してください。");
+            return false;
+          }
+        } else if (!isActorTurnOnGameState(authG, myId)) {
           setUiError("手番が変わったため、同期を送信できませんでした。最新の状態を確認してください。");
           return false;
         }
@@ -1460,15 +1755,22 @@ export default function App() {
         }
       } else if (writeMode === "ghostAutomation") {
         const cp = authG?.players?.[authG?.currentPlayerIdx];
-        if (!cp?.isGhost && !cp?.isGameOver) return false;
+        if (!isTurnAutomatable(cp, roomPlayers)) return false;
         if (cp?.id === myId) return false;
+      } else if (writeMode === "dailyFxClear") {
+        const fxOwner = authG?.dailyActionFx?.playerId;
+        if (!authG?.dailyActionFx?.id) return false;
+        if (!isRoomHost(authRd, myId) && myId !== fxOwner) return false;
       }
       try {
         if (
-          (writeMode === "actorTurn" || writeMode === "goalLandingConfirm" || writeMode === "ghostAutomation") &&
+          (writeMode === "actorTurn" ||
+            writeMode === "goalLandingConfirm" ||
+            writeMode === "ghostAutomation" ||
+            writeMode === "dailyFxClear") &&
           roomId &&
           authG?.gamePhase === "playing" &&
-          authG?.subPhase === "day8"
+          (authG?.subPhase === "day8" || authG?.subPhase === "daily")
         ) {
           const ref = doc(db, "rooms", roomId);
           await runTransaction(db, async (transaction) => {
@@ -1480,28 +1782,66 @@ export default function App() {
               if (!canWriteGoalLandingConfirm(liveGs, myId)) throw new Error("GOAL_CONFIRM_DENIED");
             } else if (writeMode === "ghostAutomation") {
               const liveCp = liveGs?.players?.[liveGs?.currentPlayerIdx];
-              if (!liveCp?.isGhost && !liveCp?.isGameOver) throw new Error("GHOST_AUTO_DENIED");
+              if (!isTurnAutomatable(liveCp, roomPlayers)) throw new Error("GHOST_AUTO_DENIED");
               if (liveCp?.id === myId) throw new Error("GHOST_AUTO_DENIED");
+            } else if (writeMode === "dailyFxClear") {
+              const fxOwner = liveGs?.dailyActionFx?.playerId;
+              if (!liveGs?.dailyActionFx?.id) throw new Error("FX_ALREADY_CLEAR");
+              if (!isRoomHost(liveRoom, myId) && myId !== fxOwner) throw new Error("FX_CLEAR_DENIED");
+            } else if (deathCommitPlayerId) {
+              const dieIdx = liveGs?.players?.findIndex((pl) => pl.id === deathCommitPlayerId);
+              if (dieIdx < 0) throw new Error("DEATH_ACTOR_MISSING");
+              const stillActor =
+                liveGs.currentPlayerIdx === dieIdx ||
+                liveGs.movementFx?.playerId === deathCommitPlayerId;
+              if (!stillActor || deathCommitPlayerId !== myId) throw new Error("DEATH_COMMIT_DENIED");
             } else if (!isActorTurnOnGameState(liveGs, myId)) {
               throw new Error("TURN_CHANGED");
             }
-            let markTurnCompleteFor = null;
-            if (markDay8TurnComplete === true) {
-              markTurnCompleteFor = liveGs?.players?.[liveGs?.currentPlayerIdx]?.id ?? null;
-            } else if (markDay8TurnComplete === "auto") {
-              markTurnCompleteFor = shouldMarkDay8TurnComplete(liveGs, newGS)
-                ? liveGs?.players?.[liveGs?.currentPlayerIdx]?.id ?? null
-                : null;
+            let resolvedGS = newGS;
+            if (typeof liveMutator === "function") {
+              resolvedGS = liveMutator(liveGs);
+              if (!resolvedGS) throw new Error("LIVE_MUTATOR_NULL");
+            } else if (!resolvedGS) {
+              throw new Error("NO_GAME_STATE");
+            } else if (
+              liveGs?.subPhase === "day8" &&
+              resolvedGS.subPhase !== "day8" &&
+              resolvedGS.gamePhase === "playing"
+            ) {
+              throw new Error("PHASE_REGRESSION");
             }
-            const tracked = applyDay8RoundTracking(liveRoom, newGS, { markTurnCompleteFor });
-            const updates = {
-              gameState: tracked.gameState,
-              remainingTurns: tracked.remainingTurns,
-              completedPlayers: tracked.completedPlayers,
+            resolvedGS = {
+              ...resolvedGS,
+              assetHistory: mergeAssetHistoryBuckets(liveGs, resolvedGS),
             };
+            if (liveGs?.subPhase === "day8") {
+              let markTurnCompleteFor = null;
+              if (markDay8TurnComplete === true) {
+                markTurnCompleteFor =
+                  turnCompletePlayerId ?? liveGs?.players?.[liveGs?.currentPlayerIdx]?.id ?? null;
+              } else if (markDay8TurnComplete === "auto") {
+                markTurnCompleteFor = shouldMarkDay8TurnComplete(liveGs, resolvedGS)
+                  ? turnCompletePlayerId ?? liveGs?.players?.[liveGs?.currentPlayerIdx]?.id ?? null
+                  : null;
+              }
+              const tracked = applyDay8RoundTracking(liveRoom, resolvedGS, { markTurnCompleteFor });
+              const updates = {
+                gameState: tracked.gameState,
+                remainingTurns: tracked.remainingTurns,
+                completedPlayers: tracked.completedPlayers,
+                totalPot: tracked.totalPot,
+              };
+              if (typeof setStatus === "string") updates.status = setStatus;
+              else if (tracked.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
+              else if (tracked.gameState.gamePhase === "results") updates.status = "completed";
+              transaction.update(ref, updates);
+              return;
+            }
+            const updates = { gameState: resolvedGS };
             if (typeof setStatus === "string") updates.status = setStatus;
-            else if (tracked.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
-            else if (tracked.gameState.gamePhase === "results") updates.status = "completed";
+            else if (resolvedGS.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
+            else if (resolvedGS.gamePhase === "results") updates.status = "completed";
             transaction.update(ref, updates);
           });
           return true;
@@ -1514,10 +1854,24 @@ export default function App() {
           pendingCutin && !clearsCutinFields
             ? mergeDailyCutinFieldsIntoGameState(newGS, pendingCutin)
             : newGS;
-        const updates = { gameState: mergedGS };
+        let updates = { gameState: mergedGS };
+        if (
+          roomId &&
+          mergedGS?.gamePhase === "playing" &&
+          mergedGS?.subPhase === "day8"
+        ) {
+          const roomDoc = authRd ?? roomDataRef.current;
+          const tracked = applyDay8RoundTracking(roomDoc, mergedGS, {});
+          updates = {
+            gameState: tracked.gameState,
+            remainingTurns: tracked.remainingTurns,
+            completedPlayers: tracked.completedPlayers,
+            totalPot: tracked.totalPot,
+          };
+        }
         if (typeof setStatus === "string") updates.status = setStatus;
-        else if (newGS.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
-        else if (newGS.gamePhase === "results") updates.status = "completed";
+        else if (mergedGS.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
+        else if (mergedGS.gamePhase === "results") updates.status = "completed";
         await updateRoom(updates);
         return true;
       } catch (e) {
@@ -1525,14 +1879,26 @@ export default function App() {
         return false;
       }
     },
-    [updateRoom, myId, roomId],
+    [updateRoom, myId, roomId, roomPlayers],
   );
   performGameStateUpdateRef.current = performGameStateUpdate;
 
   const writeGS = async (newGS, opts = {}) =>
-    performGameStateUpdate(newGS, "actorTurn", { markDay8TurnComplete: opts.markDay8TurnComplete ?? false });
+    performGameStateUpdate(newGS, "actorTurn", {
+      markDay8TurnComplete: opts.markDay8TurnComplete ?? false,
+      turnCompletePlayerId: opts.turnCompletePlayerId ?? null,
+    });
 
   /** 日常行動ラベル（dailyActionFx）を一定時間後にクリア。フェーズ外に残っていれば即消す */
+  const commitClearDailyActionFxFromLive = useCallback(
+    () =>
+      performGameStateUpdate(null, "dailyFxClear", {
+        markDay8TurnComplete: false,
+        liveMutator: (liveGs) => clearDailyActionFx(liveGs),
+      }),
+    [performGameStateUpdate],
+  );
+
   useEffect(() => {
     const fx = roomGs?.dailyActionFx;
     if (!fx?.id || !roomId) return undefined;
@@ -1540,21 +1906,31 @@ export default function App() {
       roomGs?.gamePhase === "finalBattle" ||
       roomGs?.subPhase === "day8" ||
       (roomGs?.gamePhase === "playing" && roomGs?.subPhase !== "daily");
+    const mayClear = myId === fx.playerId || isHost;
+    const clearFxFromLive = () => {
+      if (!mayClear) return;
+      void commitClearDailyActionFxFromLive().catch(() => {});
+    };
     if (staleDailyFx) {
-      const live = gsRef.current;
-      if (live?.dailyActionFx?.id === fx.id && (myId === fx.playerId || isHost)) {
-        void writeGS(clearDailyActionFx(live)).catch(() => {});
-      }
+      if (roomGs?.dailyActionFx?.id === fx.id) clearFxFromLive();
       return undefined;
     }
     const timer = setTimeout(() => {
       const live = gsRef.current;
+      if (live?.subPhase !== "daily") return;
       if (!live?.dailyActionFx || live.dailyActionFx.id !== fx.id) return;
-      if (myId !== fx.playerId && !isHost) return;
-      void writeGS(clearDailyActionFx(live)).catch(() => {});
+      clearFxFromLive();
     }, DAILY_ACTION_FX_CLEAR_MS);
     return () => clearTimeout(timer);
-  }, [roomGs?.dailyActionFx?.id, roomGs?.subPhase, roomGs?.gamePhase, roomId, myId, isHost, writeGS]);
+  }, [
+    roomGs?.dailyActionFx?.id,
+    roomGs?.subPhase,
+    roomGs?.gamePhase,
+    roomId,
+    myId,
+    isHost,
+    commitClearDailyActionFxFromLive,
+  ]);
 
   const writeGhostAutomationGS = async (newGS, opts = {}) =>
     performGameStateUpdate(newGS, "ghostAutomation", { markDay8TurnComplete: opts.markDay8TurnComplete ?? false });
@@ -1564,7 +1940,79 @@ export default function App() {
       markDay8TurnComplete: opts.markDay8TurnComplete ?? false,
     });
 
+  const runBoardDeathFadeThenCommit = useCallback(
+    async (presentation, resolveDeathOnLive) => {
+      let deathResult = null;
+      try {
+        setBoardDeathPresentation({ ...presentation, phase: "fade" });
+        await delayMs(BOARD_DEATH_FADE_MS);
+        setDeathFadeHandledIds((prev) =>
+          prev.includes(presentation.playerId) ? prev : [...prev, presentation.playerId],
+        );
+        const ok = await performGameStateUpdate(null, "actorTurn", {
+          deathCommitPlayerId: presentation.playerId,
+          markDay8TurnComplete: false,
+          turnCompletePlayerId: presentation.playerId,
+          liveMutator: (liveGs) => {
+            const idx = liveGs.players?.findIndex((pl) => pl.id === presentation.playerId);
+            if (idx < 0) return null;
+            if (liveGs.players[idx]?.alive === false) return null;
+            const death = resolveDeathOnLive(liveGs, idx);
+            if (!death?.gs) return null;
+            deathResult = death;
+            const nextGs = death.gs;
+            return nextGs.movementFx ? { ...nextGs, movementFx: null } : nextGs;
+          },
+        });
+        if (!ok) {
+          setUiError("脱落処理を同期できませんでした。最新の状態を確認してください。");
+        }
+      } finally {
+        setBoardDeathPresentation(null);
+        releaseDay8VisualActionLock();
+      }
+      return deathResult;
+    },
+    [performGameStateUpdate, releaseDay8VisualActionLock],
+  );
+
+  const handleBoardHelpDeathConfirm = useCallback(async () => {
+    if (boardDeathConfirmBusyRef.current) return;
+    const pending = pendingBoardDeathCommitRef.current;
+    if (!pending?.presentation || pending.type !== "help") return;
+    boardDeathConfirmBusyRef.current = true;
+    pendingBoardDeathCommitRef.current = null;
+    try {
+      beginDay8VisualAction();
+      await runBoardDeathFadeThenCommit(pending.presentation, (liveGs, idx) =>
+        eliminateDay8Player(liveGs, idx, pending.logLine),
+      );
+    } finally {
+      boardDeathConfirmBusyRef.current = false;
+    }
+  }, [runBoardDeathFadeThenCommit, beginDay8VisualAction]);
+
   ponCutinFinalizeRef.current = async () => {
+    if (ponSpectatorOnlyRef.current) {
+      ponSpectatorOnlyRef.current = false;
+      const pv = pendingSpectatorPonVisualRef.current;
+      pendingSpectatorPonVisualRef.current = null;
+      setPonCutin(null);
+      try {
+        if (pv?.needsTileSlide && typeof pv.tileSlideToPos === "number") {
+          const from =
+            typeof pv.tileSlideFromPos === "number" ? pv.tileSlideFromPos : pv.stopPos;
+          setBoardViewPosOverride(pv.tileSlideToPos);
+          await new Promise((r) =>
+            setTimeout(r, computeSugorokuHopDurationMs(from ?? pv.tileSlideToPos, pv.tileSlideToPos)),
+          );
+        }
+      } finally {
+        setBoardViewPosOverride(null);
+      }
+      return;
+    }
+
     const pending = ponCutinCommitRef.current;
     ponCutinCommitRef.current = null;
     ponHopGateRef.current = false;
@@ -1648,37 +2096,109 @@ export default function App() {
 
   handleMovementFxSequenceCompleteRef.current = async (fx) => {
     const pending = movementFxPendingCommitRef.current;
-    if (!pending || pending.fxId !== fx.id) return;
+    if (pending && pending.fxId === fx.id) {
+      if (pending.actorId !== myId) {
+        pending.syncAfterMovementFx?.();
+        return;
+      }
 
-    if (pending.actorId !== myId) {
-      pending.syncAfterMovementFx?.();
+      movementFxPendingCommitRef.current = null;
+      setFxMoneyReveal(null);
+      try {
+        await pending.run();
+      } catch (e) {
+        setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
+        setIsDiceRolling(false);
+        setTaxiPhase(null);
+        setPieceHopping(false);
+        taxiGSRef.current = null;
+        taxiDay8CommitRef.current = null;
+        taxiGSFollowUpRef.current = null;
+        releaseDay8VisualActionLock();
+      } finally {
+        if (!ponCutinCommitRef.current && !taxiVisualActiveRef.current) {
+          movementFxFinalMoneyRef.current = null;
+          releaseDay8VisualActionLock();
+        }
+      }
       return;
     }
 
-    movementFxPendingCommitRef.current = null;
-    setFxMoneyReveal(null);
-    try {
-      await pending.run();
-    } catch (e) {
-      setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
-      setIsDiceRolling(false);
-      setTaxiPhase(null);
-      setPieceHopping(false);
-      taxiGSRef.current = null;
-      taxiGSFollowUpRef.current = null;
-      releaseDay8VisualActionLock();
-    } finally {
-      if (!ponCutinCommitRef.current && !taxiVisualActiveRef.current) {
-        movementFxFinalMoneyRef.current = null;
-        releaseDay8VisualActionLock();
-      }
-    }
+    applySpectatorMovementFxFollowUp(fx);
   };
 
   const commitPendingGameState = useCallback(
     async (pending, opts = {}) => {
       await performGameStateUpdate(pending, "actorTurn", {
         markDay8TurnComplete: opts.markDay8TurnComplete ?? false,
+      });
+    },
+    [performGameStateUpdate],
+  );
+
+  /** 8日目スロット：Firestore 上の最新 gs を基準に idle 同期のみ（バースト継続時） */
+  const syncDay8SlotIdleFromLive = useCallback(
+    (displayPreferGs = null) =>
+      performGameStateUpdate(null, "actorTurn", {
+        markDay8TurnComplete: false,
+        liveMutator: (liveGs) => mergeDay8SlotIdleSync(liveGs, displayPreferGs),
+      }),
+    [performGameStateUpdate],
+  );
+
+  /** 8日目スロット：Firestore 上の最新 gs を基準に復旧（リロード復旧・スピン中断・手番進行） */
+  const commitDay8SlotLivePatch = useCallback(
+    async (expectedKind, opts = {}) => {
+      const writeMode = opts.writeMode ?? "actorTurn";
+      const markDay8TurnComplete =
+        opts.markDay8TurnComplete ?? (expectedKind === "advanceTurn");
+      return performGameStateUpdate(null, writeMode, {
+        markDay8TurnComplete,
+        turnCompletePlayerId: opts.turnCompletePlayerId ?? null,
+        liveMutator: (liveGs) => {
+          const patch = buildDay8SlotReloadRecoveryPatch(liveGs);
+          if (patch) {
+            if (expectedKind && patch.kind !== expectedKind) {
+              if (expectedKind === "advanceTurn" && patch.kind === "deferAdvance") return null;
+              if (expectedKind !== patch.kind) return null;
+            }
+            if (patch.kind === "resetSync") return mergeDay8SlotIdleSync(liveGs);
+            if (patch.kind === "advanceTurn") return patch.gs;
+          }
+          if (expectedKind === "advanceTurn") {
+            return resolveDay8SlotBurstAdvance(liveGs);
+          }
+          return null;
+        },
+      });
+    },
+    [performGameStateUpdate],
+  );
+
+  /** 8日目スロット：残りスピンを捨てて手番を進める（代理スロット含む） */
+  const commitDay8SlotSkipAdvance = useCallback(
+    async (opts = {}) => {
+      const writeMode = opts.writeMode ?? "actorTurn";
+      return performGameStateUpdate(null, writeMode, {
+        markDay8TurnComplete: opts.markDay8TurnComplete ?? true,
+        turnCompletePlayerId: opts.turnCompletePlayerId ?? null,
+        liveMutator: (liveGs) => {
+          const idx = liveGs.currentPlayerIdx;
+          const p = liveGs.players?.[idx];
+          if (!p || p.movePhase !== "arrived") return null;
+          const phase = liveGs.slotPhase ?? "idle";
+          if (phase !== "idle" && phase !== "completed") return null;
+          const pxy =
+            typeof liveGs.proxySlotTargetIdx === "number" ? liveGs.proxySlotTargetIdx : null;
+          const wallet = pxy != null && liveGs.players[pxy] ? liveGs.players[pxy] : p;
+          const logs = [
+            `${p.name} スロット終了 / ${pxy != null ? `${wallet.name}の資金 ` : "資金"}${wallet.stats.money}G / ランク${rankLabel(wallet.stats.money)}`,
+          ];
+          const newPlayers = liveGs.players.map((pl, i) =>
+            i !== idx ? pl : { ...pl, slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 },
+          );
+          return computeAdvanceDay8Turn({ ...liveGs, proxySlotTargetIdx: null }, newPlayers, logs);
+        },
       });
     },
     [performGameStateUpdate],
@@ -1697,11 +2217,16 @@ export default function App() {
           if (!isActorTurnOnGameState(prevGs, myId)) return null;
           const next = mutator(prevGs);
           if (!next) return null;
-          const tracked = applyDay8RoundTracking(snap.data(), next, {});
+          const resolved = {
+            ...next,
+            assetHistory: mergeAssetHistoryBuckets(prevGs, next),
+          };
+          const tracked = applyDay8RoundTracking(snap.data(), resolved, {});
           const updates = {
             gameState: tracked.gameState,
             remainingTurns: tracked.remainingTurns,
             completedPlayers: tracked.completedPlayers,
+            totalPot: tracked.totalPot,
           };
           if (tracked.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
           if (tracked.gameState.gamePhase === "results") updates.status = "completed";
@@ -1729,27 +2254,79 @@ export default function App() {
           const liveGs = liveRoom?.gameState;
           if (writeMode === "ghostAutomation") {
             const liveCp = liveGs?.players?.[liveGs?.currentPlayerIdx];
-            if (!liveCp?.isGhost && !liveCp?.isGameOver) return null;
+            if (!isTurnAutomatable(liveCp, roomPlayers)) return null;
             if (liveCp?.id === myId) return null;
           } else if (!isActorTurnOnGameState(liveGs, myId)) {
             return null;
           }
 
-          const isJackpot = ctx.res?.tier === "jackpot";
-          const potDelta = computeProgressivePotDelta(liveRoom?.totalPot ?? 0, ctx.bet, isJackpot);
+          const triggersPotPayout = ctx.res?.tier === "potJackpot";
+          const prevPot = readRoomTotalPot(liveRoom);
+          const potDelta = computeProgressivePotDelta(prevPot, ctx.bet, triggersPotPayout);
           const nextGs = applyDay8SlotSpinToFreshGameState(liveGs, {
             ...ctx,
             potPayout: potDelta.potPayout,
             potContribution: potDelta.contribution,
           });
           if (!nextGs) return null;
+          const resolvedGS = {
+            ...nextGs,
+            assetHistory: mergeAssetHistoryBuckets(liveGs, nextGs),
+          };
 
-          const tracked = applyDay8RoundTracking(liveRoom, nextGs, {});
+          const tracked = applyDay8RoundTracking(liveRoom, resolvedGS, {});
+          const turnAdd = Math.max(0, tracked.totalPot - prevPot);
+          const totalPot = triggersPotPayout ? potDelta.totalPot : potDelta.totalPot + turnAdd;
+          const trackedWithPot = { ...tracked, totalPot };
+          const updates = {
+            gameState: trackedWithPot.gameState,
+            remainingTurns: trackedWithPot.remainingTurns,
+            completedPlayers: trackedWithPot.completedPlayers,
+            totalPot: trackedWithPot.totalPot,
+          };
+          if (trackedWithPot.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
+          if (trackedWithPot.gameState.gamePhase === "results") updates.status = "completed";
+          transaction.update(ref, updates);
+          return trackedWithPot.gameState;
+        });
+      } catch (e) {
+        setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
+        return null;
+      }
+    },
+    [roomId, myId, roomPlayers],
+  );
+
+  /** マルチ8日目スロット：spinning フェーズのみ書き込み（観戦同期用） */
+  const commitDay8SlotSpinStart = useCallback(
+    async (ctx, writeMode = "actorTurn") => {
+      if (!roomId || !ctx) return null;
+      const ref = doc(db, "rooms", roomId);
+      try {
+        return await runTransaction(db, async (transaction) => {
+          const snap = await transaction.get(ref);
+          if (!snap.exists()) return null;
+          const liveRoom = snap.data();
+          const liveGs = liveRoom?.gameState;
+          if (writeMode === "ghostAutomation") {
+            const liveCp = liveGs?.players?.[liveGs?.currentPlayerIdx];
+            if (!isTurnAutomatable(liveCp, roomPlayers)) return null;
+            if (liveCp?.id === myId) return null;
+          } else if (!isActorTurnOnGameState(liveGs, myId)) {
+            return null;
+          }
+          const nextGs = buildDay8SlotSpinningGs(liveGs, ctx);
+          if (!nextGs) return null;
+          const resolvedGS = {
+            ...nextGs,
+            assetHistory: mergeAssetHistoryBuckets(liveGs, nextGs),
+          };
+          const tracked = applyDay8RoundTracking(liveRoom, resolvedGS, {});
           const updates = {
             gameState: tracked.gameState,
             remainingTurns: tracked.remainingTurns,
             completedPlayers: tracked.completedPlayers,
-            totalPot: potDelta.totalPot,
+            totalPot: tracked.totalPot,
           };
           if (tracked.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
           if (tracked.gameState.gamePhase === "results") updates.status = "completed";
@@ -1761,7 +2338,7 @@ export default function App() {
         return null;
       }
     },
-    [roomId, myId],
+    [roomId, myId, roomPlayers],
   );
 
   // ─── ロビー操作 ──────────────────────────────────────────────────────
@@ -1869,6 +2446,10 @@ export default function App() {
       setUiError("全員がステータス抽選を確定（同期）してから開始してください");
       return;
     }
+    if (!allLobbyMembersReady(playerSlots, myId)) {
+      setUiError("全員が準備完了するまで開始できません");
+      return;
+    }
     lobbyActionBusyRef.current = true;
     setLoading(true);
     setUiError("");
@@ -1884,13 +2465,15 @@ export default function App() {
         if (slots.length < 1) throw new Error("NO_PLAYERS");
         if (slots.some((s) => !s.character)) throw new Error("MISSING_CHAR");
         if (slots.some((s) => !normalizeSlotInitialRolls(s.initialRolls))) throw new Error("MISSING_ROLLS");
+        if (!allLobbyMembersReady(slots, d.hostId)) throw new Error("NOT_ALL_READY");
         const initGS = initialGameState(slots);
+        const startPot = rollInitialProgressivePot();
         tx.update(ref, {
           status: "playing",
           gameState: initGS,
           completedPlayers: [],
           remainingTurns: BAL.dice.maxTurns,
-          totalPot: INITIAL_PROGRESSGRESSIVE_POT,
+          totalPot: startPot,
         });
       });
     } catch (e) {
@@ -1900,6 +2483,8 @@ export default function App() {
       else if (code === "ROOM_MISSING") setUiError("ルームが見つかりません。");
       else if (code === "NO_PLAYERS" || code === "MISSING_CHAR" || code === "MISSING_ROLLS") {
         setUiError("開始条件を満たしていません。全員のキャラとステータス抽選を確認してください。");
+      } else if (code === "NOT_ALL_READY") {
+        setUiError("全員が準備完了するまで開始できません。");
       } else {
         setUiError(formatFriendlyError(e, "ゲーム開始に失敗しました。しばらくしてから再度お試しください。"));
       }
@@ -1916,7 +2501,7 @@ export default function App() {
       if (!payload) throw new Error("ダイス値が不正です");
       const newSlots = playerSlots.map((s) => {
         if (s.id !== myId) return s;
-        const next = { ...s, initialRolls: payload };
+        const next = { ...s, initialRolls: payload, lobbyReady: false };
         delete next.initialStats;
         return next;
       });
@@ -1927,6 +2512,27 @@ export default function App() {
       return false;
     }
   }, [roomId, myId, playerSlots, updateRoom]);
+
+  const handleSetLobbyReady = useCallback(
+    async (ready) => {
+      if (!roomId || !myId || isHost) return;
+      const mySlot = playerSlots.find((s) => s.id === myId);
+      if (ready && !isLobbySlotConfigured(mySlot)) {
+        setUiError("キャラクターとステータス抽選を確定してから準備完了してください");
+        return;
+      }
+      try {
+        const newSlots = playerSlots.map((s) =>
+          s.id === myId ? { ...s, lobbyReady: !!ready } : s,
+        );
+        await updateRoom({ playerSlots: newSlots });
+        setUiError("");
+      } catch (e) {
+        setUiError(formatFriendlyError(e, "準備状態の更新に失敗しました。しばらくしてから再度お試しください。"));
+      }
+    },
+    [roomId, myId, isHost, playerSlots, updateRoom],
+  );
 
   // ─── キャラクター選択（待機室） ──────────────────────────────────────
   const handleSelectCharacter = useCallback(
@@ -1943,7 +2549,7 @@ export default function App() {
       }
       const newSlots = playerSlots.map((s) => {
         if (s.id !== myId) return s;
-        let next = { ...s, character: charKey };
+        let next = { ...s, character: charKey, lobbyReady: false };
         if (initialDiceDraft != null && typeof initialDiceDraft === "object") {
           const payload = normalizeSlotInitialRolls(initialDiceDraft);
           if (payload) {
@@ -1977,7 +2583,6 @@ export default function App() {
     roomIdWithDataRef.current = null;
     setLoading(false);
     setInvitesLoading(false);
-    setMultiOpen(false);
     setMultiAction(null);
     setInvitesPanelOpen(false);
     setScreen("lobby");
@@ -2211,7 +2816,6 @@ export default function App() {
     const useName = myName.trim() || genQuickName();
     if (!myName.trim()) setMyName(useName);
     persistRoomSession(null, useName);
-    setMultiOpen(false);
     setMultiAction(null);
     setUiError("");
     setScreen("lobby");
@@ -2404,16 +3008,13 @@ export default function App() {
     if (!shouldRunGhostAutomationController({ roomData, myId, roomPlayers, isHost })) return undefined;
 
     const markStale = () => {
-      const gs = gsRef.current;
-      if (!gs) return;
-      const patch = buildMarkNetworkGhostPatch(gs, roomPlayers);
-      if (patch) void updateRoom(patch).catch(() => {});
+      void commitMarkNetworkGhostPatch(db, roomId, roomPlayers).catch(() => {});
     };
 
     markStale();
     const id = setInterval(markStale, PRESENCE_STALE_CHECK_MS);
     return () => clearInterval(id);
-  }, [roomId, roomData, myId, roomPlayers, isHost, updateRoom]);
+  }, [roomId, roomData, myId, roomPlayers, isHost]);
 
   useEffect(() => {
     if (!roomId || !roomData || roomData.isSolo) return undefined;
@@ -2424,10 +3025,32 @@ export default function App() {
       const gs = gsRef.current;
       if (!gs || gs.gamePhase !== "playing") return;
       const cp = gs.players?.[gs.currentPlayerIdx];
-      if (!cp?.isGhost && !cp?.isGameOver) return;
-      if (cp.id === myId) return;
+      if (!isTurnAutomatable(cp, roomPlayers)) return;
+
+      const leased = await tryAcquireGhostAutomationLease(db, roomId, myId);
+      if (!leased) return;
+
+      if (cp.id === myId) {
+        if (cp.alive !== false || !isDay8SlotBurstFinishedOnGameState(gs)) return;
+        const phase = gs.slotPhase ?? "idle";
+        if (phase === "spinning") return;
+        const now = Date.now();
+        if (now - ghostSlotAdvanceCooldownRef.current < GHOST_SLOT_ADVANCE_COOLDOWN_MS) return;
+        ghostSlotAdvanceCooldownRef.current = now;
+        ghostAutomationBusyRef.current = true;
+        try {
+          await commitDay8SlotLivePatch("advanceTurn", {
+            markDay8TurnComplete: true,
+            turnCompletePlayerId: cp.id,
+          });
+        } finally {
+          ghostAutomationBusyRef.current = false;
+        }
+        return;
+      }
 
       const step = runGhostAutomationStep(gs, {
+        roomPlayers,
         day8RemainingTurns:
           Number.isFinite(Number(roomData?.remainingTurns)) && Number(roomData?.remainingTurns) >= 0
             ? Math.floor(Number(roomData.remainingTurns))
@@ -2438,15 +3061,33 @@ export default function App() {
       ghostAutomationBusyRef.current = true;
       try {
         if (step.type === "slotSpin") {
+          const spinningGs = await commitDay8SlotSpinStart(step.ctx, "ghostAutomation");
+          if (!spinningGs) return;
+          const waitMs = slotSyncReel3StopMs(!!spinningGs.isReach, false);
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
           const resultGS = await commitDay8SlotSpin(step.ctx, "ghostAutomation");
           if (resultGS) {
             const afterBurst = finishGhostSlotBurst(resultGS);
             if (afterBurst && afterBurst !== resultGS) {
-              await writeGhostAutomationGS(afterBurst, { markDay8TurnComplete: "auto" });
+              const jpWait = day8SlotMajorWinAdvanceRemainingMs(resultGS);
+              if (jpWait > 0) {
+                await new Promise((resolve) => setTimeout(resolve, jpWait));
+              }
+              const now = Date.now();
+              if (now - ghostSlotAdvanceCooldownRef.current >= GHOST_SLOT_ADVANCE_COOLDOWN_MS) {
+                ghostSlotAdvanceCooldownRef.current = now;
+                await commitDay8SlotLivePatch("advanceTurn", {
+                  markDay8TurnComplete: "auto",
+                  turnCompletePlayerId: cp?.id ?? null,
+                  writeMode: "ghostAutomation",
+                });
+              }
             }
           }
         } else if (step.type === "reassign") {
           await writeGhostAutomationGS(step.gameState);
+        } else if (step.type === "advance") {
+          await writeGhostAutomationGS(step.gameState, { markDay8TurnComplete: "auto" });
         } else {
           await writeGhostAutomationGS(step, { markDay8TurnComplete: "auto" });
         }
@@ -2458,7 +3099,17 @@ export default function App() {
     void tick();
     const id = setInterval(() => void tick(), GHOST_AUTOMATION_POLL_MS);
     return () => clearInterval(id);
-  }, [roomId, roomData, myId, roomPlayers, isHost, writeGhostAutomationGS, commitDay8SlotSpin]);
+  }, [
+    roomId,
+    roomData,
+    myId,
+    roomPlayers,
+    isHost,
+    writeGhostAutomationGS,
+    commitDay8SlotSpin,
+    commitDay8SlotSpinStart,
+    commitDay8SlotLivePatch,
+  ]);
 
   useEffect(() => {
     if (!roomId) {
@@ -2619,9 +3270,9 @@ export default function App() {
     [myId, myFullId, myName, fetchRoom, updateRoomById, setRoomId, restoreScreenFromRoom],
   );
 
-  /** ゴール直後ターン終了 → waitingSlot（または権利0ならその場で終了処理）へ */
+  /** ゴール直後ターン終了 → waitingSlot（または権利0ならその場で終了処理）へ（ソロのみ手動） */
   const handleGoalLandingConfirm = async () => {
-    if (!gs || !myId) return;
+    if (!gs || !myId || isMultiplayerRoom) return;
     if (!acceptTurnAction()) return;
     const confirmed = applyGoalLandingConfirm(gs, myId);
     if (!confirmed) return;
@@ -2647,6 +3298,31 @@ export default function App() {
   };
 
   const autoBeginWaitingSlotRef = useRef(false);
+  const autoGoalLandingConfirmRef = useRef(false);
+  /** マルチ：古い save 等で goalLanding が残った場合は自動で確認相当へ進める */
+  useEffect(() => {
+    if (!isMultiplayerRoom || !myId || !roomGs) {
+      autoGoalLandingConfirmRef.current = false;
+      return;
+    }
+    const me = roomGs.players?.find((pl) => pl.id === myId);
+    if (me?.movePhase !== "goalLanding") {
+      autoGoalLandingConfirmRef.current = false;
+      return;
+    }
+    if (autoGoalLandingConfirmRef.current) return;
+    autoGoalLandingConfirmRef.current = true;
+    const confirmed = applyGoalLandingConfirm(roomGs, myId);
+    if (!confirmed) {
+      autoGoalLandingConfirmRef.current = false;
+      return;
+    }
+    const advanced = computeAdvanceDay8Turn(confirmed, confirmed.players, []);
+    void writeGoalLandingConfirm(advanced, { markDay8TurnComplete: true }).finally(() => {
+      autoGoalLandingConfirmRef.current = false;
+    });
+  }, [isMultiplayerRoom, myId, roomGs, writeGoalLandingConfirm]);
+
   useEffect(() => {
     if (!isMyTurn || !cpIsWaitingSlot) {
       autoBeginWaitingSlotRef.current = false;
@@ -2745,6 +3421,7 @@ export default function App() {
     const pending = pendingDailyTurnWriteRef.current;
     pendingDailyTurnWriteRef.current = null;
     if (!pending) return;
+    if (gsRef.current?.subPhase !== "daily") return;
     finishDailyCutinSession();
     const ok = await writeGS({
       ...pending.nextGsWithFx,
@@ -2901,11 +3578,11 @@ export default function App() {
         s.skill = clamp(s.skill + skBase + skRole);
         spinDetails.push({
           index: i + 1,
+          bet: betAmt,
           message: res?.message ?? "？",
           net,
           moneyAfterSpin: s.money,
           skillAfterSpin: s.skill,
-          skillGainDetail: `+${skBase}${skRole ? ` · 役ボ+${skRole}` : ""}`,
         });
       });
 
@@ -2979,6 +3656,7 @@ export default function App() {
           actionLines,
           statusLines,
           extras: logExtras,
+          endMoney: newPlayers[idx].stats.money,
         }),
       ];
 
@@ -3434,6 +4112,7 @@ export default function App() {
         actionLines,
         statusLines,
         extras: logExtras,
+        endMoney: newPlayers[gs.currentPlayerIdx].stats.money,
       }),
     ];
 
@@ -3505,17 +4184,18 @@ export default function App() {
   // ─── 8日目：移動行動 ─────────────────────────────────────────────────
   const handleMoveAction = async (actionType) => {
     if (!isMyTurn || !gs) return;
-    if (day8ActionLocked) return;
+    if (day8ActionLocked || boardDeathPresentation) return;
     const idx = gs.currentPlayerIdx;
     const p = gs.players[idx];
     if (p.movePhase !== "moving") return;
+
     if (!acceptTurnAction()) return;
-    beginDay8VisualAction();
 
     const pendingTraffic = p.pendingTaxiSteps ?? 0;
 
     /** 渋滞2ターン目：前半で止まっている残りマスだけ進んでターン終了 */
     if (pendingTraffic > 0) {
+      beginDay8VisualAction();
       if (isDiceRolling) return;
       if (actionType !== "taxiTrafficWait") return;
       if (ponTileSlideTimerRef.current) {
@@ -3545,15 +4225,6 @@ export default function App() {
         ponSplashDamage: false,
         skipTileEffects: true,
       });
-      if (rrWait.gameOverByDebt?.triggered) {
-        await writeGS({
-          ...gs,
-          gamePhase: "gameOver",
-          gameOverMsg: rrWait.gameOverByDebt.message,
-          log: prependLogs([`💀 GAME OVER: ${rrWait.gameOverByDebt.message}`], gs.log),
-        });
-        return;
-      }
       const moverWait = rrWait.players[idx];
       const newPosFinal = moverWait.position;
       const statsFinal = moverWait.stats;
@@ -3591,14 +4262,13 @@ export default function App() {
           pendingTaxiSteps: 0,
         };
         if (arrivedWait) {
-          return {
-            ...base,
-            movePhase: "goalLanding",
-            slotTurnsLeft: 0,
-            reservedSlotTurns: slotReservedWait,
-            slotPullsGranted: 0,
-            slotPullsThisSeat: 0,
-          };
+          const { player, extraLogs } = applyGoalArrivalToPlayer(
+            base,
+            slotReservedWait,
+            isMultiplayerRoom,
+          );
+          extraLogs.forEach((line) => logsWait.push(line));
+          return player;
         }
         if (timedOutWait) {
           return { ...base, movePhase: "missed", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
@@ -3608,11 +4278,7 @@ export default function App() {
 
       const gsWithDiceWait = { ...rrWait.gsWithTiles, lastDiceRolls: [] };
       const nextGSWait = arrivedWait
-        ? {
-            ...gsWithDiceWait,
-            players: newPlayersWait,
-            log: prependLogs(logsWait, gsWithDiceWait.log),
-          }
+        ? buildNextGsAfterGoalArrival(gsWithDiceWait, newPlayersWait, logsWait, isMultiplayerRoom)
         : computeAdvanceDay8Turn(gsWithDiceWait, newPlayersWait, logsWait);
 
       const needsTileSlideWait = newPosFinal !== landedDiceWait;
@@ -3627,27 +4293,113 @@ export default function App() {
       /** 渋滞2ターン目：移動距離は残りマスだが、速度は「通常1ターン目のドライブ」の半分（所要2倍） */
       const baseDriveMs = computeTaxiDriveDurationMs(Math.abs(taxiEndPosWait - p.position));
       const driveMsWait = baseDriveMs * 2;
-      schedulePieceHopBlockingMs(Math.max(700, driveMsWait + 120));
-      taxiDriveDurationMsRef.current = driveMsWait;
-      setTaxiDriveDurationMs(driveMsWait);
-      setTaxiDriveEndPos(taxiEndPosWait);
-      setTaxiJamMidPos(null);
-      taxiSecondLegMsRef.current = 0;
-      setTaxiDriveActiveMs(driveMsWait);
+
+      const taxiVisualWait = buildTaxiTrafficWaitVisualPayload({
+        fromPos: p.position,
+        driveEndPos: taxiEndPosWait,
+        driveMs: driveMsWait,
+        needsTileSlide: needsTileSlideWait,
+        tileSlideFromPos: landedDiceWait,
+        tileSlideToPos: newPosFinal,
+        tileEffectMeta: rrWait.tileEffectMeta,
+      });
+
+      const movementFxWait = buildMovementFx({
+        playerId: p.id,
+        fromPos: p.position,
+        landedPos: p.position,
+        finalPos: p.position,
+        stepDelta: pendingTraffic,
+        diceRolls: [],
+        followUp: "taxiTrafficWait",
+        taxiVisual: taxiVisualWait,
+      });
+
       taxiGSRef.current = needsTileSlideWait && intermediateGSWait ? intermediateGSWait : nextGSWait;
+      taxiDay8CommitRef.current = {
+        actorId: p.id,
+        arrived: arrivedWait,
+        isMultiplayerRoom,
+        gsWithDice: { lastDiceRolls: [] },
+        newPlayers: newPlayersWait,
+        actionLogs: logsWait,
+        ...(needsTileSlideWait ? { tileSlide: { landedDice: landedDiceWait } } : {}),
+      };
       taxiGSFollowUpRef.current =
         needsTileSlideWait && intermediateGSWait
           ? { finalGS: nextGSWait, fromPos: landedDiceWait, toPos: newPosFinal }
           : null;
       pendingTaxiCongestionRef.current = false;
       pendingSugorokuTileFxToastRef.current = rrWait.tileToast;
-      setTaxiDriveCongested(true);
-      taxiActorPlayerIdRef.current = p.id;
-      /** 渋滞2ターン目：すでにタクシー乗車中なので enter/boarding/ride は出さず drive のみ */
-      taxiVisualActiveRef.current = true;
-      setTaxiPhase("drive");
+      pendingTileEffectMetaRef.current = rrWait.tileEffectMeta;
+
+      const beginTaxiTrafficWaitDrive = () => {
+        schedulePieceHopBlockingMs(Math.max(700, driveMsWait + 120));
+        taxiDriveDurationMsRef.current = driveMsWait;
+        setTaxiDriveDurationMs(driveMsWait);
+        setTaxiDriveEndPos(taxiEndPosWait);
+        setTaxiJamMidPos(null);
+        taxiSecondLegMsRef.current = 0;
+        setTaxiDriveActiveMs(driveMsWait);
+        setTaxiDriveCongested(true);
+        taxiActorPlayerIdRef.current = p.id;
+        setTaxiActorPlayerId(p.id);
+        taxiVisualActiveRef.current = true;
+        setTaxiPhase("drive");
+      };
+
+      movementFxPendingCommitRef.current = {
+        fxId: movementFxWait.id,
+        actorId: p.id,
+        run: async () => {
+          beginTaxiTrafficWaitDrive();
+          const live = gsRef.current;
+          if (live?.movementFx?.id === movementFxWait.id) {
+            await writeGS({ ...live, movementFx: null });
+          }
+        },
+      };
+
+      const animStartGsWait = {
+        ...gs,
+        movementFx: movementFxWait,
+        players: holdMoverForMovementFx(gs.players, idx, p),
+      };
+      const okTraffic = await writeGS(animStartGsWait);
+      if (!okTraffic) {
+        movementFxPendingCommitRef.current = null;
+        releaseDay8VisualActionLock();
+      }
       return;
     }
+
+    // PON≥deathThreshold + 人助け → 50%即死（すごろく）— 視覚ロック前に判定（ダイアログ中にボタンが暗くならない）
+    if (actionType === "help" && p.stats.pon >= BAL.pon.deathThreshold) {
+      if (Math.random() < BAL.pon.deathChance) {
+        pendingBoardDeathCommitRef.current = {
+          type: "help",
+          gs,
+          idx,
+          logLine: `💀 ${p.name} / PON${p.stats.pon}で人助け失敗！（脱落 — 代理スロットで他プレイヤーに干渉可能）`,
+          presentation: {
+            playerId: p.id,
+            position: p.position,
+            characterType: p.characterType,
+            name: p.name,
+          },
+        };
+        setBoardDeathPresentation({
+          phase: "helpDialog",
+          playerId: p.id,
+          position: p.position,
+          characterType: p.characterType,
+          name: p.name,
+        });
+        return;
+      }
+    }
+
+    beginDay8VisualAction();
 
     if (isDiceRolling) return;
     if (ponTileSlideTimerRef.current) {
@@ -3658,31 +4410,6 @@ export default function App() {
     setPonHopCompleteEnabled(false);
     setBoardViewPosOverride(null);
     taxiGSFollowUpRef.current = null;
-
-    // PON≥deathThreshold + 人助け → 50%即死（すごろく）
-    if (actionType === "help" && p.stats.pon >= BAL.pon.deathThreshold) {
-      if (Math.random() < BAL.pon.deathChance) {
-        const isMulti = gs.players.length > 1;
-        const newPlayers = gs.players.map((pl, i) =>
-          i === gs.currentPlayerIdx ? { ...pl, alive: false, movePhase: "spectating" } : pl,
-        );
-        if (isMulti && gs.subPhase === "day8") {
-          const logs = [`💀 ${p.name} / PON${p.stats.pon}で人助け失敗！（脱落 — 代理スロットで他プレイヤーに干渉可能）`];
-          await writeGS(computeAdvanceDay8Turn({ ...gs, players: newPlayers }, newPlayers, logs), {
-            markDay8TurnComplete: true,
-          });
-          return;
-        }
-        await writeGS({
-          ...gs,
-          players: newPlayers,
-          gamePhase: "gameOver",
-          gameOverMsg: `${p.name} はPON${p.stats.pon}の状態で人助けに失敗し、社会的に抹殺された…`,
-          log: prependLogs([`💀 GAME OVER: ${p.name} / PON${p.stats.pon}で人助け失敗！`], gs.log),
-        });
-        return;
-      }
-    }
 
     let step = 0, diceRolls = [], eventMsg = "", advantageRoll = false;
     let extraTurns = 0; // タクシーの追加消費ターン
@@ -3770,15 +4497,7 @@ export default function App() {
       ponSplashDamage: ponFired,
       skipTileEffects: actionType === "taxi",
     });
-    if (rr.gameOverByDebt?.triggered) {
-      await writeGS({
-        ...gs,
-        gamePhase: "gameOver",
-        gameOverMsg: rr.gameOverByDebt.message,
-        log: prependLogs([`💀 GAME OVER: ${rr.gameOverByDebt.message}`], gs.log),
-      });
-      return;
-    }
+    const debtTrapTriggered = !!rr.gameOverByDebt?.triggered;
     const moverOut = rr.players[idx];
     const newPosFinal = moverOut.position;
     const statsFinal = moverOut.stats;
@@ -3827,14 +4546,9 @@ export default function App() {
         pendingTaxiSteps: pendingStepsNext,
       };
       if (arrived) {
-        return {
-          ...base,
-          movePhase: "goalLanding",
-          slotTurnsLeft: 0,
-          reservedSlotTurns: slotReserved,
-          slotPullsGranted: 0,
-          slotPullsThisSeat: 0,
-        };
+        const { player, extraLogs } = applyGoalArrivalToPlayer(base, slotReserved, isMultiplayerRoom);
+        extraLogs.forEach((line) => logs.push(line));
+        return player;
       }
       if (timedOut) {
         return { ...base, movePhase: "missed", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
@@ -3844,7 +4558,7 @@ export default function App() {
 
     const gsWithDice = { ...rr.gsWithTiles, lastDiceRolls: diceRolls };
     const nextGS = arrived
-      ? { ...gsWithDice, players: newPlayers, log: prependLogs(logs, rr.gsWithTiles.log) }
+      ? buildNextGsAfterGoalArrival(gsWithDice, newPlayers, logs, isMultiplayerRoom)
       : computeAdvanceDay8Turn(gsWithDice, newPlayers, logs);
 
     const needsSugorokuTileSlide = newPosFinal !== landedDice;
@@ -3884,7 +4598,33 @@ export default function App() {
       finalPos: fxFinalPos,
       stepDelta: actionType === "taxi" ? step : fxLandedPos - p.position,
       diceRolls,
-      tileEffect: actionType === "taxi" || ponFired ? null : rr.tileEffectMeta,
+      tileEffect: actionType === "taxi" || (ponFired && !debtTrapTriggered) ? null : rr.tileEffectMeta,
+      ...(actionType === "taxi"
+        ? {
+            followUp: "taxi",
+            taxiVisual: buildTaxiVisualPayload({
+              fromPos: p.position,
+              newPosFinal,
+              landedDice,
+              needsTileSlide: needsSugorokuTileSlide,
+              congested: taxiCongestionSplit,
+              diceRollStep: diceRolls[0] ?? step,
+              tileEffectMeta: rr.tileEffectMeta,
+            }),
+          }
+        : {}),
+      ...(ponFired
+        ? {
+            followUp: "pon",
+            ponVisual: buildPonVisualPayload({
+              characterType: p.characterType,
+              stopPos: needsSugorokuTileSlide ? landedDice : newPosFinal,
+              needsTileSlide: needsSugorokuTileSlide,
+              tileSlideFromPos: landedDice,
+              tileSlideToPos: needsSugorokuTileSlide ? newPosFinal : null,
+            }),
+          }
+        : {}),
     });
 
     const animStartGs = {
@@ -3894,10 +4634,61 @@ export default function App() {
       log: prependLogs(logs, rr.gsWithTiles.log),
     };
 
+    const commitDebtTrapAfterMovement = async () => {
+      await runBoardDeathFadeThenCommit(
+        {
+          playerId: p.id,
+          position: rr.players[idx]?.position ?? newPosFinal,
+          characterType: p.characterType,
+          name: p.name,
+        },
+        (liveGs, dieIdx) => {
+          const commit = movementDay8DeathCommitRef.current;
+          const gsForDeath =
+            commit?.actorId === liveGs.players?.[dieIdx]?.id
+              ? applyDay8LandingStateToLive(liveGs, commit)
+              : liveGs;
+          if (!gsForDeath) return null;
+          return resolveDebtTrapTriggered(gsForDeath, dieIdx);
+        },
+      );
+      movementDay8DeathCommitRef.current = null;
+    };
+
+    if (debtTrapTriggered) {
+      movementDay8DeathCommitRef.current = {
+        actorId: p.id,
+        newPlayers,
+        gsWithDice: { lastDiceRolls: diceRolls },
+        actionLogs: logs,
+      };
+      movementFxPendingCommitRef.current = {
+        fxId: movementFx.id,
+        actorId: p.id,
+        run: commitDebtTrapAfterMovement,
+      };
+      const okDebt = await writeGS(animStartGs);
+      if (!okDebt) {
+        movementFxPendingCommitRef.current = null;
+        movementDay8DeathCommitRef.current = null;
+        releaseDay8VisualActionLock();
+      }
+      return;
+    }
+
     if (actionType === "taxi") {
       pendingTaxiCongestionRef.current = taxiCongestionSplit;
       pendingSugorokuTileFxToastRef.current = rr.tileToast;
       pendingTileEffectMetaRef.current = rr.tileEffectMeta;
+      taxiDay8CommitRef.current = {
+        actorId: p.id,
+        arrived,
+        isMultiplayerRoom,
+        gsWithDice: { lastDiceRolls: diceRolls },
+        newPlayers,
+        actionLogs: logs,
+        ...(needsSugorokuTileSlide ? { tileSlide: { landedDice } } : {}),
+      };
 
       const beginTaxiVisualSequence = () => {
         if (taxiCongestionSplit) {
@@ -3960,6 +4751,7 @@ export default function App() {
         }
         schedulePieceHopBlockingMs(Math.max(700, taxiPieceBlockMs));
         taxiActorPlayerIdRef.current = p.id;
+        setTaxiActorPlayerId(p.id);
         setTaxiDriveCongested(false);
         taxiVisualActiveRef.current = true;
         setTaxiPhase("enter");
@@ -4026,15 +4818,16 @@ export default function App() {
       actorId: p.id,
       run: async () => {
         if (arrived) {
-          const ok = await writeGS(clearMovementFx(nextGS));
+          const ok = await writeGS(clearMovementFx(nextGS), {
+            markDay8TurnComplete: isMultiplayerRoom,
+            turnCompletePlayerId: p.id,
+          });
           if (!ok) return;
         } else {
-          const advancedGs = clearMovementFx(
-            nextGS?.gamePhase === "results"
-              ? nextGS
-              : computeAdvanceDay8Turn({ ...animStartGs, players: newPlayers }, newPlayers, []),
-          );
-          const ok = await writeGS(advancedGs, { markDay8TurnComplete: true });
+          const ok = await writeGS(clearMovementFx(nextGS), {
+            markDay8TurnComplete: true,
+            turnCompletePlayerId: p.id,
+          });
           if (!ok) return;
         }
       },
@@ -4163,16 +4956,6 @@ export default function App() {
       onCopyMyId={handleCopyMyId}
       loading={loading}
       onSoloPlay={handleSoloPlay}
-      multiOpen={multiOpen}
-      onToggleMultiOpen={() => {
-        resumeSoundFromUserGesture();
-        setMultiOpen((wasOpen) => {
-          const next = !wasOpen;
-          setMultiAction(next ? "create" : null);
-          return next;
-        });
-        setUiError("");
-      }}
       multiAction={multiAction}
       onSetMultiAction={(updater) => {
         resumeSoundFromUserGesture();
@@ -4218,6 +5001,7 @@ export default function App() {
       onCommitInitialRolls={handleCommitInitialRolls}
       soundRef={soundRef}
       onStartGame={handleStartGame}
+      onSetLobbyReady={handleSetLobbyReady}
       loading={loading}
       uiError={uiError}
       inviteInput={inviteInput}
@@ -4248,6 +5032,9 @@ export default function App() {
         bgmVolume={bgmVolume}
         onSeVolumeChange={handleSeVolumeChange}
         onBgmVolumeChange={handleBgmVolumeChange}
+        onReturnToLobby={handleReturnToLobby}
+        returnToLobbyLabel={RETURN_TO_LOBBY_LABEL}
+        returnToLobbyHint={RETURN_TO_LOBBY_HINT}
       />
       <div className="w-full max-w-md space-y-6 text-center">
         <div className="text-7xl">💀</div>
@@ -4266,7 +5053,7 @@ export default function App() {
         )}
         <button onClick={handleReturnToLobby}
           className="rounded-xl bg-cyan-500 px-8 py-3 font-bold text-slate-950 hover:bg-cyan-400 transition-colors">
-          ロビーへ戻る
+          {RETURN_TO_LOBBY_LABEL}
         </button>
       </div>
     </div>
@@ -4292,7 +5079,10 @@ export default function App() {
           bgmVolume={bgmVolume}
           onSeVolumeChange={handleSeVolumeChange}
           onBgmVolumeChange={handleBgmVolumeChange}
-        />
+        onReturnToLobby={handleReturnToLobby}
+        returnToLobbyLabel={RETURN_TO_LOBBY_LABEL}
+        returnToLobbyHint={RETURN_TO_LOBBY_HINT}
+      />
         {/* SSランク パーティクル雨 */}
         {hasSSWinner && <SSRainParticles />}
         <div className="mx-auto max-w-4xl space-y-5 relative z-10">
@@ -4320,6 +5110,11 @@ export default function App() {
                     <div className="flex-1">
                       <div className="font-semibold flex items-center gap-2 flex-wrap">
                         <span className={isSSPlayer ? "text-yellow-200" : ""}>{p.name}</span>
+                        <CharacterIcon
+                          characterType={p.characterType}
+                          imgClassName="h-8 w-8 shrink-0 object-contain"
+                          spanClassName="text-xl leading-none"
+                        />
                         {p.id === myId && <span className="text-xs text-cyan-400 border border-cyan-400/40 rounded px-1">YOU</span>}
                         {(p.amulets ?? 0) > 0 && <span className="text-xs text-amber-400">🧿×{p.amulets}</span>}
                       </div>
@@ -4354,7 +5149,7 @@ export default function App() {
               onClick={handleReturnToLobby}
               className="w-full rounded-xl bg-cyan-500 py-3 font-bold text-slate-950 hover:bg-cyan-400 transition-colors"
             >
-              ロビーへ戻る
+              {RETURN_TO_LOBBY_LABEL}
             </button>
           )}
           {uiError && (
@@ -4402,7 +5197,19 @@ export default function App() {
         bgmVolume={bgmVolume}
         onSeVolumeChange={handleSeVolumeChange}
         onBgmVolumeChange={handleBgmVolumeChange}
+        onReturnToLobby={handleReturnToLobby}
+        returnToLobbyLabel={RETURN_TO_LOBBY_LABEL}
+        returnToLobbyHint={RETURN_TO_LOBBY_HINT}
       />
+
+      {uiError ? (
+        <div
+          className="fixed bottom-4 left-1/2 z-[250] w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 rounded-xl border border-rose-500/40 bg-rose-950/90 px-4 py-3 text-sm text-rose-100 shadow-lg"
+          role="alert"
+        >
+          {uiError}
+        </div>
+      ) : null}
 
       <ProgressivePotDisplay
         totalPot={roomData?.totalPot ?? 0}
@@ -4418,7 +5225,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ── PON転倒カットイン（すごろく・自分クライアントのみ） ── */}
+      {/* ── PON転倒カットイン（手番・観戦とも movementFx 同期） ── */}
       {ponCutin && (
         <PonCutin
           active
@@ -4735,6 +5542,8 @@ export default function App() {
                     ) : (
                       <>Waiting for others to act…</>
                     )
+                  ) : showDay8SlotSpectatorMirror ? (
+                    <>{cpGs?.name}がスロット操作中</>
                   ) : (
                     <>
                       <Loader2 size={10} className="animate-spin" />
@@ -4873,6 +5682,10 @@ export default function App() {
             <DailyActionSpectatorMirror gs={gs} cpGs={cpGs} />
           )}
 
+          {showDay8SlotSpectatorMirror && cpGs && (
+            <Day8SlotSpectatorMirror gs={gs} cpGs={cpGs} soundRef={soundRef} myId={myId} />
+          )}
+
           {isMyTurn && dailySlotOpen && dailySlotSpinStats && cpGs && (
             <DailySlotTrainingModal
               open={dailySlotOpen}
@@ -4909,6 +5722,7 @@ export default function App() {
             showDiceTotal={showDiceTotal}
             displayDice={displayDice}
             taxiPhase={taxiPhase}
+            taxiActorPlayerId={taxiActorPlayerId}
             taxiDriveCongested={taxiDriveCongested}
             taxiDriveEndPos={taxiDriveEndPos}
             taxiDriveDurationMs={taxiDriveDurationMs}
@@ -4933,14 +5747,17 @@ export default function App() {
             goalLandingSelf={goalLandingSelf}
             tileEffectLines={sugorokuTileFxToast?.lines ?? null}
             tileEffectKind={sugorokuTileFxToast?.kind ?? null}
+            boardDeathPresentation={boardDeathPresentation}
+            deathFadeHandledIds={deathFadeHandledIds}
+            onBoardHelpDeathConfirm={handleBoardHelpDeathConfirm}
           />
           )}
 
-          {isMyTurn && cpIsGhostPick && cpGs && (
+          {ghostPickIsMyTurn && cpIsGhostPick && cpGs && (
             <TurnManager
-              gs={gs}
+              gs={roomDay8Active ? roomGs : gs}
               cpGs={cpGs}
-              isMyTurn={isMyTurn}
+              isMyTurn={ghostPickIsMyTurn}
               writeGS={writeGS}
               interactionLocked={day8ActionLocked}
             />
@@ -4953,6 +5770,9 @@ export default function App() {
               isMyTurn={isMyTurn}
               writeGS={writeGS}
               commitPendingGameState={commitPendingGameState}
+              commitDay8SlotLivePatch={commitDay8SlotLivePatch}
+              commitDay8SlotSkipAdvance={commitDay8SlotSkipAdvance}
+              syncDay8SlotIdleFromLive={syncDay8SlotIdleFromLive}
               commitGameStateTransaction={commitGameStateTransaction}
               commitDay8SlotSpin={commitDay8SlotSpin}
               soundRef={soundRef}
@@ -4969,8 +5789,9 @@ export default function App() {
         </section>
 
         <button onClick={handleReturnToLobby}
-          className="text-xs text-slate-600 underline hover:text-slate-400">
-          ロビーへ戻る（ゲームは続行中）
+          className="text-xs text-slate-600 underline hover:text-slate-400"
+          title={RETURN_TO_LOBBY_HINT}>
+          {RETURN_TO_LOBBY_LABEL}（ゲーム続行）
         </button>
         </div>
       </div>
@@ -4990,6 +5811,7 @@ export default function App() {
               </p>
               <p className="text-sm text-slate-400 leading-relaxed">
                 退室後は自動操作（ゴースト）でゲームが続行されます。再接続する場合は同じブラウザから再度入場してください。
+                「タイトル画面へ」とは異なり、ルームから正式に抜けます。
               </p>
             </div>
             <div className="flex gap-2">

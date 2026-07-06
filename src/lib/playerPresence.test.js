@@ -3,6 +3,7 @@ import {
   buildClearSelfPresencePatch,
   buildGracefulLeavePatch,
   buildMarkNetworkGhostPatch,
+  isTurnAutomatable,
 } from "./playerPresence";
 
 const gs = (players) => ({ gamePhase: "playing", players, currentPlayerIdx: 0 });
@@ -75,5 +76,26 @@ describe("buildClearSelfPresencePatch", () => {
 
     const left = gs([{ id: "a", isGhost: true, isGameOver: true }]);
     expect(buildClearSelfPresencePatch(left, "a")).toBeNull();
+  });
+});
+
+describe("isTurnAutomatable", () => {
+  const stalePlayers = { dead: { updatedAt: { toMillis: () => Date.now() - 120_000 } } };
+  const freshPlayers = { dead: { updatedAt: { toMillis: () => Date.now() } } };
+
+  it("automates network ghost", () => {
+    expect(isTurnAutomatable({ id: "a", isGhost: true }, {})).toBe(true);
+  });
+
+  it("automates eliminated player when disconnected", () => {
+    expect(
+      isTurnAutomatable({ id: "dead", alive: false }, stalePlayers),
+    ).toBe(true);
+  });
+
+  it("automates eliminated player when online (8日目ゴースト手番)", () => {
+    expect(
+      isTurnAutomatable({ id: "dead", alive: false }, freshPlayers),
+    ).toBe(true);
   });
 });

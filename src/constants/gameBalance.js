@@ -14,6 +14,8 @@ export const QUICK_NAMES = [
 ];
 
 export const BOARD_GOAL = 50;
+/** 検証用: マス1〜N を借金トラップ固定（0 で通常生成に戻す） */
+export const SUGOROKU_VERIFY_DEATH_TEST_TRAP_FIRST_N = 12;
 /** すごろく効果マス種別（8日目盤のみ） */
 export const TILE_EFFECT_KIND = Object.freeze({
   NEUTRAL: "NEUTRAL",
@@ -41,11 +43,17 @@ export const FINAL_BATTLE_HOST_DELAY_LEGACY_MS =
 export const DAY8_MAX_TURNS = 15;
 export const SLOT_COST = 100;
 /** 各スピンのベットに対するプログレッシブポット拠出率（マルチ8日目） */
-export const PROGRESSIVE_POT_RATE = 0.2;
-/** ルーム作成／ゲーム開始時のプログレッシブポット初期値 */
-export const INITIAL_PROGRESSGRESSIVE_POT = 1000;
+export const PROGRESSIVE_POT_RATE = 0.3;
+/** ルーム作成時のプログレッシブポット初期値（8日目開始時も同値） */
+export const INITIAL_PROGRESSGRESSIVE_POT = 17500;
 export const SLOT_BETS = [100, 300, 500, 1000];
-export const SLOT_SYMBOLS = ["7", "BAR", "🍒", "⭐", "🔔", "💎"];
+/** 代理スロット：標的の所持金に対する最大掛け金率（端数切捨て） */
+export const PROXY_SLOT_MAX_BET_RATE = 0.3;
+/** 代理スロット：この所持金以下のプレイヤーは標的に選べない（500G以下＝選べない） */
+export const PROXY_SLOT_MIN_SELECTABLE_MONEY = 500;
+/** 代理スロット：死亡者（操作者）のステータスをスロット確率へ反映する倍率（半分・切捨て） */
+export const PROXY_SLOT_ACTOR_STAT_RATE = 0.5;
+export const SLOT_SYMBOLS = ["7", "BAR", "🍒", "⭐", "🔔"];
 
 export const BAL = {
   /** 新規参加者の初期資金（持ち込み） */
@@ -66,9 +74,9 @@ export const BAL = {
     successMin: 400,
     successMax: 1800,
     chat: { virtueGainMin: 5, virtueGainMax: 15 },
-    game: { skillGainMin: 15, skillGainMax: 35 },
+    game: { skillGainMin: 5, skillGainMax: 20 },
   },
-  work: { reward: 1300, skillGain: 0, virtueGain: 3 },
+  work: { reward: 1300, skillGain: 0, virtueGain: 10 },
   living: { dailyCost: 500 },
   rimiru: {
     interestPercent: 10,
@@ -100,6 +108,13 @@ export const BAL = {
     virtueWaveThresh: 100,
     virtueWavePonDelta: -5,
     splashRadius: 3,
+    /** すごろく：運が閾値以上でラッキーダイス（2個目）が確率発動。運80→40%、+1%/運、上限100% */
+    luckyDice: {
+      luckThreshold: 80,
+      baseChancePct: 40,
+      pctPerLuckAbove: 1,
+      maxChancePct: 100,
+    },
   },
   slot: {
     skillBaseline: 50,
@@ -150,7 +165,7 @@ export const BAL = {
   },
   /** 1〜7日目：デイリースロット（技能練習）。spinBet を spinSlot に渡して 8日目同等の役配当。複数回連続で回転 */
   dailySlot: {
-    spinBet: 300,
+    spinBet: 250,
     spins: 2,
     /** 各スピン終了ごとに技量加算（ハズレでも） */
     skillGainEverySpin: 10,
@@ -167,10 +182,13 @@ export const SLOT_MACHINES = {
     desc: "バランス型。まずはここから。",
     color: "text-amber-300",
     border: "border-amber-500/50 bg-amber-500/10",
-    symbols: ["7", "BAR", "🍒", "⭐", "🔔", "💎"],
+    symbols: ["7", "BAR", "🍒", "⭐", "🔔"],
+    /** マルチ8日目POT JP用（有効時のみリールに追加） */
+    potSymbol: "💰",
     // 初期（素の勝率）を 35% にして、ハズレを 65% にする
-    baseRates: { jp: 0.005, big: 0.02, mid: 0.05, atari: 0.08, small: 0.195 },
-    basePayout: { miss: 0, small: 80, atari: 150, mid: 300, big: 1000, jackpot: 3000 },
+    // potJp: 固定1%（運・熟成・技量・ピティ再配分では増えない。将来専用要素で上げる想定）
+    baseRates: { potJp: 0.01, jp: 0.005, big: 0.02, mid: 0.05, atari: 0.08, small: 0.195 },
+    basePayout: { miss: 0, small: 80, atari: 150, mid: 300, big: 1000, jackpot: 3000, potJackpot: 0 },
   },
 };
 

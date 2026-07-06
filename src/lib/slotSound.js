@@ -608,7 +608,7 @@ export function createSlotSoundManager() {
     },
 
     playWin(tier = "small") {
-      const key = tier === "jackpot" ? "jackpot" : "win";
+      const key = tier === "jackpot" || tier === "potJackpot" ? "jackpot" : "win";
       if (playFile(key)) return;
       const freqMap = {
         small: [523, 659],
@@ -616,6 +616,7 @@ export function createSlotSoundManager() {
         mid: [523, 659, 784, 1047],
         big: [523, 659, 784, 1047, 1319],
         jackpot: [523, 659, 784, 1047, 1319, 1568, 2093],
+        potJackpot: [659, 784, 988, 1175, 1568, 1976, 2637],
       };
       arpeggio(freqMap[tier] ?? freqMap.small, 0.065, 0.14);
     },

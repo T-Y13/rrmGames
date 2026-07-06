@@ -28,6 +28,19 @@ export function isNetworkAutomated(p) {
   return !!(p && (p.isGhost === true || p.isGameOver === true));
 }
 
+/**
+ * 他クライアントが代わりに手番を進めてよいか。
+ * - ネットワーク切断（isGhost / isGameOver）
+ * - 8日目脱落ゴースト（alive:false）は接続中でも他端末が代理操作する
+ */
+export function isTurnAutomatable(p, roomPlayers, now = Date.now()) {
+  if (!p?.id) return false;
+  if (isNetworkAutomated(p)) return true;
+  if (p.alive === false) return true;
+  if (isPlayerPresenceStale(roomPlayers, p.id, now)) return true;
+  return false;
+}
+
 export function shouldRunGhostAutomationController({ roomData, myId, roomPlayers, isHost }) {
   if (!roomData || !myId || roomData.isSolo) return false;
   if (!roomData.gameState || !["playing", "FINAL_BATTLE"].includes(roomData.status)) return false;

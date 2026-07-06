@@ -317,6 +317,23 @@ export const GAME_STYLES = `
     animation: pulseRideshare 1.2s ease-in-out infinite;
   }
   .anim-fadein  { animation: fadeIn      0.5s  ease-out forwards; }
+
+  @keyframes boardDeathFadeOut {
+    from { opacity: 1; transform: scale(1) translateY(0); filter: grayscale(0); }
+    to { opacity: 0; transform: scale(0.88) translateY(6px); filter: grayscale(0.35); }
+  }
+  .anim-board-death-fade-out {
+    animation: boardDeathFadeOut 0.68s ease-out forwards;
+  }
+
+  @keyframes boardTombFadeIn {
+    from { opacity: 0; transform: scale(0.82) translateY(10px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  .anim-board-tomb-fade-in {
+    animation: boardTombFadeIn 0.55s ease-out forwards;
+  }
+
   .anim-tick    { animation: countTick   0.35s ease-out; }
   .taxi-dark    { background: rgba(0,0,0,0.88); }
 

@@ -178,9 +178,36 @@ service cloud.firestore {
         && (n < 4 || !mustFreezeGhostSlot(3, cp, hasPxy, pxy) || gs1.players[3] == gs0.players[3]);
     }
 
+    // 脱落者（ゴースト）の代理スロット終了 → 次プレイヤーへ currentPlayerIdx を進める書き込みを許可
+    function ghostTurnHandoffAfterSlotOk(gs0, gs1) {
+      let cp = gs0.currentPlayerIdx;
+      let n = gs0.players.size();
+      let ap0 = gs0.players[cp];
+      let ap1g = gs1.players[cp];
+      let phase0 = !('slotPhase' in gs0) || gs0.slotPhase == null ? 'idle' : gs0.slotPhase;
+      let slotBurnt = !('slotTurnsLeft' in ap0) || ap0.slotTurnsLeft == null || ap0.slotTurnsLeft <= 0;
+      let handedOff = ap1g.movePhase == 'spectating' || ap1g.ghostActedThisRound == true;
+      return gs0 is map
+        && gs1 is map
+        && actorIsGhost(gs0)
+        && gs1.currentPlayerIdx != cp
+        && gs1.players.size() == n
+        && cp >= 0
+        && cp < n
+        && (!('proxySlotTargetIdx' in gs1) || gs1.proxySlotTargetIdx == null)
+        && ap0 is map
+        && ap1g is map
+        && (phase0 == 'idle' || phase0 == 'completed')
+        && slotBurnt
+        && handedOff;
+    }
+
     function ghostProxyMoneyOkIfGhostActor(roomBefore, gs1) {
       let gs0 = roomBefore.gameState;
-      return !(gs0 is map) || !actorIsGhost(gs0) || ghostProxyFrozenOk(gs0, gs1);
+      return !(gs0 is map)
+        || !actorIsGhost(gs0)
+        || ghostTurnHandoffAfterSlotOk(gs0, gs1)
+        || ghostProxyFrozenOk(gs0, gs1);
     }
 
     function dailyCutinFieldsShapeValid(data) {
@@ -255,7 +282,9 @@ service cloud.firestore {
         && affected.hasOnly(['gameState', 'status', 'remainingTurns', 'completedPlayers', 'totalPot'])
         && before.gameState == null
         && after.gameState != null
-        && after.totalPot == 1000
+        && after.totalPot is int
+        && after.totalPot >= 15000
+        && after.totalPot <= 20000
         && after.remainingTurns is int
         && after.remainingTurns >= 0
         && after.completedPlayers is list
@@ -397,7 +426,7 @@ service cloud.firestore {
         && cp >= 0
         && cp < gs.players.size()
         && ap is map
-        && (ap.isGhost == true || ap.isGameOver == true);
+        && (ap.isGhost == true || ap.isGameOver == true || ap.alive == false);
     }
 
     function networkGhostMarkPlayerPair(beforeP, afterP) {
@@ -472,6 +501,22 @@ service cloud.firestore {
         && after.playerSlots == before.playerSlots
         && after.playerIds == before.playerIds
         && after.hostId == before.hostId;
+    }
+
+    function ghostAutomationLeaseValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      let lease = after.ghostAutomationLease;
+      return (before.status == 'playing' || before.status == 'FINAL_BATTLE')
+        && uid() in before.playerIds
+        && affected.hasOnly(['ghostAutomationLease'])
+        && lease is map
+        && lease.keys().hasOnly(['holderId', 'expiresAt'])
+        && lease.holderId == uid()
+        && lease.expiresAt is number
+        && lease.expiresAt >= request.time.toMillis()
+        && lease.expiresAt <= request.time.toMillis() + 30000;
     }
 
     function ghostAutomationTurnValid() {
@@ -630,6 +675,7 @@ service cloud.firestore {
               || hostKickFromLobbyValid()
               || presenceGhostMarkValid()
               || presenceSelfPatchValid()
+              || ghostAutomationLeaseValid()
               || ghostAutomationTurnValid()
               || dailyCutinRoomBroadcastValid()
             )

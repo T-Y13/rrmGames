@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatStatChange, parseLogEntry, serializeLogEntry, buildDayHeaderEntry } from "./gameLogFormat";
-import { buildDailyActionLogEntry, livingExpenseLines, ponGainLine } from "./dailyActionLog";
+import { buildDailyActionLogEntry, livingExpenseLines, ponGainLine, slotActionLines } from "./dailyActionLog";
 import { parseLogIntoDailyTiles } from "../utils/sidebarLogDailyTiles";
 
 describe("gameLogFormat", () => {
@@ -37,6 +37,25 @@ describe("dailyActionLog", () => {
     expect(block.t).toBe("dailyBlock");
     expect(block.actionLines).toHaveLength(1);
     expect(block.statusLines).toHaveLength(3);
+  });
+
+  it("formats daily slot spins with bet and hit per round", () => {
+    const built = slotActionLines({
+      spinCount: 3,
+      betPerSpin: 50,
+      spinDetails: [
+        { index: 1, bet: 50, message: "ハズレ…", net: -50 },
+        { index: 2, bet: 50, message: "🔔 当たり！", net: 25 },
+        { index: 3, bet: 50, message: "🍒 小役", net: 10 },
+      ],
+      moneyBefore: 600,
+      moneyAfter: 585,
+      skillBefore: 10,
+      skillAfter: 25,
+    });
+    expect(built.lines[0].text).toBe("1回目 50G → ハズレ…（収支-50G）");
+    expect(built.lines[1].text).toBe("2回目 50G → 🔔 当たり！（収支+25G）");
+    expect(built.lines[2].text).toBe("3回目 50G → 🍒 小役（収支+10G）");
   });
 });
 

@@ -9,7 +9,7 @@ export function formatFriendlyError(error, fallbackMessage) {
 
   const code = error.code;
   if (code === "permission-denied") {
-    return "権限または接続の問題で処理できませんでした。ログイン状態とネットワークをご確認ください。";
+    return "権限または接続の問題で処理できませんでした。広告ブロッカー等の拡張機能で Firebase がブロックされていないか、ログイン状態とネットワークをご確認ください。";
   }
   if (code === "unavailable" || code === "deadline-exceeded") {
     return "サーバーに接続できませんでした。しばらくしてから再度お試しください。";

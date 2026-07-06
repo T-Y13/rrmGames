@@ -11,7 +11,13 @@ import {
   DAILY_SLOT_SYNC_DEFAULTS,
   pickWrongSymbol,
   randomStripTriple,
+  SLOT_SYNC_REACH_SHOW_DELAY,
+  SLOT_SYNC_T0,
+  SLOT_SYNC_T1,
+  SLOT_SYNC_T2_NOREACH,
+  SLOT_SYNC_T2_REACH_NOCUTIN,
   slotPaylineMiddlesToTargetIndices,
+  slotTargetIndicesToPaylineMiddles,
   spinSlot,
   stripTripleForMiddleColumn,
 } from "../utils/gameLogic";
@@ -75,6 +81,9 @@ export default function DailySlotTrainingModal({
   const syncSessionIdRef = useRef(null);
   const lastSpectatorSpinKeyRef = useRef(null);
   const spectatorSpinInFlightRef = useRef(false);
+  const spectatorSpinTimersRef = useRef([]);
+  const broadcastGsRef = useRef(broadcastGs);
+  broadcastGsRef.current = broadcastGs;
   const winFxTimerRef = useRef(null);
   const syncBroadcastRef = useRef(syncBroadcast);
   const prevOpenRef = useRef(false);
@@ -169,12 +178,21 @@ export default function DailySlotTrainingModal({
     setAuraStats(statsForSpin ?? null);
   }, [open, spectatorMode, broadcastGs?.dailySlotSessionId, statsForSpin, machine]);
 
+  const clearSpectatorSpinTimers = React.useCallback(() => {
+    spectatorSpinTimersRef.current.forEach(clearTimeout);
+    spectatorSpinTimersRef.current = [];
+    if (shuffleIntervalRef.current) {
+      clearInterval(shuffleIntervalRef.current);
+      shuffleIntervalRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     return () => {
-      if (shuffleIntervalRef.current) clearInterval(shuffleIntervalRef.current);
+      clearSpectatorSpinTimers();
       if (winFxTimerRef.current) clearTimeout(winFxTimerRef.current);
     };
-  }, []);
+  }, [clearSpectatorSpinTimers]);
 
   /** 8日目筐体と同じ手順で1スピンの演出のみ（Promise で完了する） */
   const playSpinAnimationRound = React.useCallback(
@@ -280,7 +298,6 @@ export default function DailySlotTrainingModal({
           sm?.stopSpin();
           finalizeColumn(2, finalStrips[2], true);
           setIsReach(false);
-          setReelColumns(finalStrips);
 
           const won = res.tier !== "miss";
           if (won && !skipWinFx) {
@@ -315,6 +332,7 @@ export default function DailySlotTrainingModal({
 
     const results = [];
     let working = { ...statsForSpin };
+    let lastDisplayReels = null;
 
     try {
       for (let round = 0; round < spins; round++) {
@@ -351,6 +369,7 @@ export default function DailySlotTrainingModal({
         const net = res.payout - res.bet;
         const won = res.tier !== "miss";
         const displayReels = visualPlan.visualReels ?? res.reels;
+        lastDisplayReels = displayReels;
         if (syncBroadcast?.patch && syncSessionIdRef.current) {
           await syncBroadcast.patch({
             dailySlotPhase: "roundResult",
@@ -393,17 +412,15 @@ export default function DailySlotTrainingModal({
 
       if (syncBroadcast?.patch && syncSessionIdRef.current) {
         const lastRes = results[results.length - 1];
-        const lastPlan = lastRes ? buildDailySlotSpinVisualPlan(lastRes, machineKey) : null;
-        const lastReels = lastPlan?.visualReels ?? lastRes?.reels ?? null;
         await syncBroadcast.patch({
           dailySlotPhase: "sessionDone",
           dailySlotSessionSummary: sessionSummary,
           dailySlotRound: spins,
           dailySlotRoundTotal: spins,
-          ...(Array.isArray(lastReels) && lastReels.length === 3
+          ...(Array.isArray(lastDisplayReels) && lastDisplayReels.length === 3
             ? {
-                dailySlotVisualReels: lastReels,
-                dailySlotTargetResult: slotPaylineMiddlesToTargetIndices(lastReels, machine),
+                dailySlotVisualReels: lastDisplayReels,
+                dailySlotTargetResult: slotPaylineMiddlesToTargetIndices(lastDisplayReels, machine),
                 dailySlotIsReach: false,
                 dailySlotTier: lastRes?.tier !== "miss" ? lastRes.tier : null,
               }
@@ -425,25 +442,135 @@ export default function DailySlotTrainingModal({
     }
   };
 
+  const applySpectatorRoundOutcome = React.useCallback(
+    (bg) => {
+      const outcome = bg?.dailySlotOutcome;
+      if (outcome) setOutcomeBanner(outcome);
+      const tier = bg?.dailySlotTier;
+      if (winFxTimerRef.current) clearTimeout(winFxTimerRef.current);
+      if (tier) {
+        setShowWinEffect(tier);
+        setCharReaction("win");
+        try {
+          soundRef?.current?.playWin?.(tier);
+        } catch (_) {}
+        winFxTimerRef.current = setTimeout(() => setShowWinEffect(null), 4000);
+      } else if (bg?.dailySlotPhase === "roundResult") {
+        setShowWinEffect(null);
+        setCharReaction("miss");
+      }
+    },
+    [soundRef],
+  );
+
+  /** 観戦側：8日目スロット同期と同様、演出中は Firestore からリールを上書きしない */
   const playSpectatorSpinRound = React.useCallback(
     async (bg) => {
       const visualReels = bg?.dailySlotVisualReels;
       if (!Array.isArray(visualReels) || visualReels.length !== 3) return;
-      const roundLabel = `第 ${bg.dailySlotRound ?? "?"} / ${bg.dailySlotRoundTotal ?? spins} 回`;
-      const visualPlan = {
-        visualReels,
-        reachPossible: Boolean(bg.dailySlotIsReach),
-        machine,
+
+      const targetIndices = bg?.dailySlotTargetResult;
+      const realMids =
+        Array.isArray(targetIndices) && targetIndices.length === 3
+          ? slotTargetIndicesToPaylineMiddles(targetIndices, machineKey)
+          : visualReels;
+      const visualStrips = visualReels.map((mid, ci) => stripTripleForMiddleColumn(mid, machine, ci));
+      const realStrip2 = stripTripleForMiddleColumn(realMids[2], machine, 2);
+      const reachPossible = Boolean(bg?.dailySlotIsReach);
+      const reel3StopMs = reachPossible ? SLOT_SYNC_T2_REACH_NOCUTIN : SLOT_SYNC_T2_NOREACH;
+
+      clearSpectatorSpinTimers();
+      stoppedReelsRef.current = [false, false, false];
+      setSlipAnimCols([false, false, false]);
+      setBouncingReel(-1);
+      setIsReach(false);
+      setShowWinEffect(null);
+      setCharReaction("spinning");
+      setReelColumns(idleReelColumnsForMachine(machine));
+
+      const pushTimer = (id) => {
+        spectatorSpinTimersRef.current.push(id);
       };
-      await playSpinAnimationRound(
-        statsForSpin,
-        { tier: "miss", reels: visualReels, payout: 0, bet: 0 },
-        roundLabel,
-        visualPlan,
-        { skipWinFx: true },
-      );
+
+      setCabinetRecoil(true);
+      pushTimer(window.setTimeout(() => setCabinetRecoil(false), 340));
+      setIsSpinning(true);
+
+      const sm = soundRef?.current;
+      try {
+        sm?.playStart?.();
+      } catch (_) {}
+      pushTimer(window.setTimeout(() => {
+        try {
+          sm?.startSpin?.();
+        } catch (_) {}
+      }, 200));
+
+      shuffleIntervalRef.current = setInterval(() => {
+        const stopped = stoppedReelsRef.current;
+        setReelColumns((prev) => prev.map((col, i) => (stopped[i] ? col : randomStripTriple(machine))));
+      }, 80);
+
+      const stopReel = (idx, strip) => {
+        stoppedReelsRef.current[idx] = true;
+        setReelColumns((prev) => {
+          const next = [...prev];
+          next[idx] = strip;
+          return next;
+        });
+        setBouncingReel(idx);
+        try {
+          sm?.playStop?.(idx);
+        } catch (_) {}
+        pushTimer(window.setTimeout(() => setBouncingReel(-1), 430));
+      };
+
+      await new Promise((resolve) => {
+        pushTimer(window.setTimeout(() => stopReel(0, visualStrips[0]), SLOT_SYNC_T0));
+        pushTimer(window.setTimeout(() => stopReel(1, visualStrips[1]), SLOT_SYNC_T1));
+        if (reachPossible) {
+          pushTimer(
+            window.setTimeout(() => {
+              setIsReach(true);
+              setCharReaction("reach");
+              pushTimer(
+                window.setTimeout(() => {
+                  try {
+                    sm?.playReach?.();
+                  } catch (_) {}
+                }, 150),
+              );
+            }, SLOT_SYNC_T1 + SLOT_SYNC_REACH_SHOW_DELAY),
+          );
+        }
+        pushTimer(
+          window.setTimeout(() => {
+            if (shuffleIntervalRef.current) {
+              clearInterval(shuffleIntervalRef.current);
+              shuffleIntervalRef.current = null;
+            }
+            try {
+              sm?.stopSpin?.();
+            } catch (_) {}
+            stopReel(2, realStrip2);
+            setIsReach(false);
+            setIsSpinning(false);
+            resolve();
+          }, reel3StopMs),
+        );
+      });
+
+      const latest = broadcastGsRef.current;
+      if (
+        latest &&
+        latest.dailySlotSessionId === bg?.dailySlotSessionId &&
+        latest.dailySlotRound === bg?.dailySlotRound &&
+        (latest.dailySlotPhase === "roundResult" || latest.dailySlotPhase === "sessionDone")
+      ) {
+        applySpectatorRoundOutcome(latest);
+      }
     },
-    [machine, playSpinAnimationRound, spins, statsForSpin],
+    [applySpectatorRoundOutcome, clearSpectatorSpinTimers, machine, machineKey, soundRef],
   );
 
   useEffect(() => {
@@ -462,37 +589,9 @@ export default function DailySlotTrainingModal({
 
   useEffect(() => {
     if (!spectatorMode || !broadcastGs) return;
-    const phase = broadcastGs.dailySlotPhase ?? "idle";
-    if (phase !== "roundResult" && phase !== "sessionDone") return;
-    if (spectatorSpinInFlightRef.current || isSpinning) return;
-    const syncedCols = reelColumnsFromVisualReels(broadcastGs.dailySlotVisualReels, machine);
-    if (syncedCols) setReelColumns(syncedCols);
-  }, [
-    spectatorMode,
-    broadcastGs?.dailySlotPhase,
-    broadcastGs?.dailySlotVisualReels,
-    broadcastGs?.dailySlotRound,
-    broadcastGs?.dailySlotSessionId,
-    isSpinning,
-    machine,
-  ]);
-
-  useEffect(() => {
-    if (!spectatorMode || !broadcastGs) return;
     if ((broadcastGs.dailySlotPhase ?? "idle") !== "roundResult") return;
-    const outcome = broadcastGs.dailySlotOutcome;
-    if (outcome) setOutcomeBanner(outcome);
-    const tier = broadcastGs.dailySlotTier;
-    if (winFxTimerRef.current) clearTimeout(winFxTimerRef.current);
-    if (tier) {
-      setShowWinEffect(tier);
-      setCharReaction("win");
-      soundRef?.current?.playWin?.(tier);
-      winFxTimerRef.current = setTimeout(() => setShowWinEffect(null), 4000);
-    } else {
-      setShowWinEffect(null);
-      setCharReaction("miss");
-    }
+    if (spectatorSpinInFlightRef.current || isSpinning) return;
+    applySpectatorRoundOutcome(broadcastGs);
   }, [
     spectatorMode,
     broadcastGs?.dailySlotPhase,
@@ -500,7 +599,8 @@ export default function DailySlotTrainingModal({
     broadcastGs?.dailySlotRound,
     broadcastGs?.dailySlotOutcome,
     broadcastGs?.dailySlotTier,
-    soundRef,
+    isSpinning,
+    applySpectatorRoundOutcome,
   ]);
 
   useEffect(() => {
@@ -515,17 +615,15 @@ export default function DailySlotTrainingModal({
     spectatorSpinInFlightRef.current = true;
     setSpinRoundIdx(round);
     setSessionDone(false);
+    setOutcomeBanner(null);
     void playSpectatorSpinRound(broadcastGs).finally(() => {
       spectatorSpinInFlightRef.current = false;
-      const syncedCols = reelColumnsFromVisualReels(broadcastGs.dailySlotVisualReels, machine);
-      if (syncedCols) setReelColumns(syncedCols);
     });
   }, [
     spectatorMode,
     broadcastGs?.dailySlotPhase,
     broadcastGs?.dailySlotSessionId,
     broadcastGs?.dailySlotRound,
-    broadcastGs?.dailySlotVisualReels,
     playSpectatorSpinRound,
   ]);
 
@@ -778,7 +876,7 @@ export default function DailySlotTrainingModal({
                   className="relative z-[26] mt-2 text-center text-lg font-black text-amber-300 animate-pulse"
                   style={{ textShadow: "0 0 20px #fbbf24, 0 0 40px #f59e0b" }}
                 >
-                  🎰 777 JACKPOT!! 🎰
+                  🎰 超大当たり!! 🎰
                 </p>
               )}
             </div>

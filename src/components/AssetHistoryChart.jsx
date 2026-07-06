@@ -57,7 +57,7 @@ export default function AssetHistoryChart({ gameState }) {
       <div className="space-y-1">
         <h3 className="text-sm font-bold text-slate-200 tracking-wide">資産推移</h3>
         <p className="text-[11px] text-slate-500 leading-relaxed">
-          1〜7日目は日次終了時、8日目はターン（T1–15）ごとの所持金
+          1〜7日目は日次終了時、8日目は移動・スロット手番（3スピン後）ごとの所持金
         </p>
       </div>
       <div className="h-[min(420px,55vh)] w-full min-h-[280px]">

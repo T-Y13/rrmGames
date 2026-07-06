@@ -4,10 +4,14 @@ import { CharacterIcon } from "./CharacterPieces";
 import {
   hasSugorokuBoardTargets,
   isGhostPickTargetPhase,
-  isSugorokuBoardPlaying,
   pickGhostSlotTarget,
   skipGhostTurnAllPlayersArrived,
 } from "../utils/gameLogic";
+import {
+  PROXY_SLOT_RULES_LINES,
+  canSelectAsProxySlotTarget,
+  computeProxySlotMaxBet,
+} from "../lib/slotProxyTarget";
 
 /**
  * マルチ8日目：脱落プレイヤーの代理スロット標的選択・観戦スキップ。
@@ -18,14 +22,14 @@ export default function TurnManager({ gs, cpGs, isMyTurn, writeGS, interactionLo
     if (!isGhostPickTargetPhase(cpGs)) return;
     if (hasSugorokuBoardTargets(gs.players)) return;
     const next = skipGhostTurnAllPlayersArrived(gs);
-    if (next) void writeGS(next);
+    if (next) void writeGS(next, { markDay8TurnComplete: true });
   }, [isMyTurn, gs, cpGs, writeGS]);
 
   if (!gs || !cpGs || !isMyTurn || !isGhostPickTargetPhase(cpGs)) return null;
 
   const targets = gs.players
     .map((p, idx) => ({ p, idx }))
-    .filter(({ p }) => isSugorokuBoardPlaying(p));
+    .filter(({ p }) => canSelectAsProxySlotTarget(p));
 
   const handlePick = async (targetIdx) => {
     if (interactionLocked) return;
@@ -39,31 +43,46 @@ export default function TurnManager({ gs, cpGs, isMyTurn, writeGS, interactionLo
         <Users size={20} className="shrink-0" />
         <h2 className="text-lg font-black tracking-tight">代理スロット — 標的を選ぶ</h2>
       </div>
-      <p className="text-sm text-slate-300 leading-relaxed">
-        すごろく中のプレイヤーを一人選び、その人の資金でスロットを回します（当たり・ハズレは標的の所持金に反映）。
-      </p>
-      <ul className="space-y-2">
-        {targets.map(({ p, idx }) => (
-          <li key={p.id}>
-            <button
-              type="button"
-              disabled={interactionLocked}
-              onClick={() => void handlePick(idx)}
-              className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-800/60 px-4 py-3 text-left transition-colors hover:border-violet-500/60 hover:bg-violet-500/10 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <span className="flex items-center gap-2 font-semibold text-slate-100">
-                <CharacterIcon
-                  characterType={p.characterType}
-                  imgClassName="h-8 w-8 shrink-0 object-contain"
-                  spanClassName="text-2xl leading-none"
-                />
-                {p.name}
-              </span>
-              <span className="text-sm font-bold tabular-nums text-amber-200">{p.stats.money}G</span>
-            </button>
-          </li>
-        ))}
-      </ul>
+      <div className="rounded-lg border border-violet-500/30 bg-violet-950/30 px-3 py-2.5 text-xs text-slate-300 space-y-1 leading-relaxed">
+        <p className="font-semibold text-violet-200/95">ルール</p>
+        <ul className="list-disc list-inside space-y-0.5">
+          {PROXY_SLOT_RULES_LINES.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      </div>
+      {targets.length === 0 ? (
+        <p className="text-sm text-slate-400">現在、選べるプレイヤーがいません（すごろく中・所持金500G超が必要）。</p>
+      ) : (
+        <ul className="space-y-2">
+          {targets.map(({ p, idx }) => {
+            const maxBet = computeProxySlotMaxBet(p.stats?.money ?? 0);
+            return (
+              <li key={p.id}>
+                <button
+                  type="button"
+                  disabled={interactionLocked}
+                  onClick={() => void handlePick(idx)}
+                  className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-800/60 px-4 py-3 text-left transition-colors hover:border-violet-500/60 hover:bg-violet-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <span className="flex items-center gap-2 font-semibold text-slate-100">
+                    <CharacterIcon
+                      characterType={p.characterType}
+                      imgClassName="h-8 w-8 shrink-0 object-contain"
+                      spanClassName="text-2xl leading-none"
+                    />
+                    {p.name}
+                  </span>
+                  <span className="text-right text-sm tabular-nums">
+                    <span className="block font-bold text-amber-200">{p.stats.money}G</span>
+                    <span className="block text-[11px] text-violet-300/90">1スピン最大 {maxBet}G</span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

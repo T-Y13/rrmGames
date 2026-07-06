@@ -4,7 +4,16 @@ import SoundSettingsControl from "./SoundSettingsControl";
 /**
  * 右上: 名前#ID、その下に ⚙ から音量パネル
  */
-export default function TopRightHud({ myFullId, seVolume, bgmVolume, onSeVolumeChange, onBgmVolumeChange }) {
+export default function TopRightHud({
+  myFullId,
+  seVolume,
+  bgmVolume,
+  onSeVolumeChange,
+  onBgmVolumeChange,
+  onReturnToLobby,
+  returnToLobbyLabel,
+  returnToLobbyHint,
+}) {
   if (!myFullId) return null;
 
   return (
@@ -19,6 +28,9 @@ export default function TopRightHud({ myFullId, seVolume, bgmVolume, onSeVolumeC
         bgmVolume={bgmVolume}
         onSeVolumeChange={onSeVolumeChange}
         onBgmVolumeChange={onBgmVolumeChange}
+        onReturnToLobby={onReturnToLobby}
+        returnToLobbyLabel={returnToLobbyLabel}
+        returnToLobbyHint={returnToLobbyHint}
         className="w-full pr-0.5"
       />
     </div>

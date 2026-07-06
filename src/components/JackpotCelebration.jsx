@@ -25,11 +25,13 @@ function buildParticles(seed) {
  */
 export default function JackpotCelebration({
   show = false,
+  variant = "jackpot",
   actorName = "",
   payout = 0,
   durationMs = SLOT_JACKPOT_CELEBRATION_MS,
   onComplete,
 }) {
+  const isPot = variant === "pot";
   const particles = useMemo(() => buildParticles(show ? Date.now() % 1000 : 0), [show]);
 
   useEffect(() => {
@@ -122,28 +124,41 @@ export default function JackpotCelebration({
             }}
           >
             <motion.div
-              className="mb-3 inline-block rounded-full border-2 border-amber-300/80 bg-amber-500/20 px-4 py-1 text-xs font-bold tracking-[0.35em] text-amber-200 uppercase sm:text-sm"
+              className={`mb-3 inline-block rounded-full border-2 px-4 py-1 text-xs font-bold tracking-[0.35em] uppercase sm:text-sm ${
+                isPot
+                  ? "border-lime-300/80 bg-lime-500/20 text-lime-200"
+                  : "border-amber-300/80 bg-amber-500/20 text-amber-200"
+              }`}
               animate={{
-                boxShadow: [
-                  "0 0 12px rgba(251,191,36,0.4)",
-                  "0 0 28px rgba(251,191,36,0.85)",
-                  "0 0 12px rgba(251,191,36,0.4)",
-                ],
+                boxShadow: isPot
+                  ? [
+                      "0 0 12px rgba(132,204,22,0.4)",
+                      "0 0 28px rgba(132,204,22,0.85)",
+                      "0 0 12px rgba(132,204,22,0.4)",
+                    ]
+                  : [
+                      "0 0 12px rgba(251,191,36,0.4)",
+                      "0 0 28px rgba(251,191,36,0.85)",
+                      "0 0 12px rgba(251,191,36,0.4)",
+                    ],
               }}
               transition={{ duration: 0.9, repeat: Infinity }}
             >
-              Jackpot
+              {isPot ? "Pot Jackpot" : "Jackpot"}
             </motion.div>
 
             <motion.h1
               className="font-black leading-none tracking-tight text-transparent bg-clip-text"
               style={{
                 fontSize: "clamp(2.5rem, 10vw, 4.5rem)",
-                backgroundImage:
-                  "linear-gradient(180deg, #fff7c2 0%, #fde047 35%, #f59e0b 70%, #d97706 100%)",
-                WebkitTextStroke: "2px rgba(120,53,15,0.75)",
+                backgroundImage: isPot
+                  ? "linear-gradient(180deg, #ecfccb 0%, #bef264 35%, #84cc16 70%, #4d7c0f 100%)"
+                  : "linear-gradient(180deg, #fff7c2 0%, #fde047 35%, #f59e0b 70%, #d97706 100%)",
+                WebkitTextStroke: isPot ? "2px rgba(54,83,20,0.75)" : "2px rgba(120,53,15,0.75)",
                 paintOrder: "stroke fill",
-                filter: "drop-shadow(0 0 24px rgba(251,191,36,0.9)) drop-shadow(0 4px 0 rgba(120,53,15,0.5))",
+                filter: isPot
+                  ? "drop-shadow(0 0 24px rgba(132,204,22,0.9)) drop-shadow(0 4px 0 rgba(54,83,20,0.5))"
+                  : "drop-shadow(0 0 24px rgba(251,191,36,0.9)) drop-shadow(0 4px 0 rgba(120,53,15,0.5))",
               }}
               animate={{
                 scale: [1, 1.06, 1, 1.04, 1],
@@ -151,7 +166,7 @@ export default function JackpotCelebration({
               }}
               transition={{ duration: 0.65, repeat: Infinity, ease: "easeInOut" }}
             >
-              777 JACKPOT!!
+              {isPot ? "POT JACKPOT!!" : "超大当たり!!"}
             </motion.h1>
 
             <motion.p
@@ -160,7 +175,7 @@ export default function JackpotCelebration({
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.22, duration: 0.32 }}
             >
-              🎰 超大当たり！ 🎰
+              {isPot ? "🏆 POT全額GET!! 🏆" : "🎰 超大当たり！ 🎰"}
             </motion.p>
 
             {(actorName || payout > 0) && (

@@ -1,6 +1,6 @@
 import React, { forwardRef } from "react";
 import { CharacterIcon } from "./CharacterPieces";
-import { BAL } from "../constants/gameBalance";
+import { BAL, BOARD_GOAL } from "../constants/gameBalance";
 import { livingCostForPlayer } from "../utils/gameLogic";
 import { PLAYER_FRAME_COLORS } from "./playerSidebarShared";
 
@@ -108,7 +108,7 @@ const PlayerRowFull = forwardRef(function PlayerRowFull(
         <div className="mt-1.5 text-xs">
           {p.movePhase === "moving" && (
             <span className="text-slate-400">
-              スタートから{p.position}マス目（T{p.moveTurns}）
+              ゴールまで{Math.max(0, BOARD_GOAL - (p.position ?? 0))}マス（T{p.moveTurns}）
             </span>
           )}
           {p.movePhase === "goalLanding" && (

@@ -1,9 +1,32 @@
 import { BAL } from "../constants/gameBalance";
-import { resolveDay8RoundExhaustion } from "../utils/gameLogic";
+import { readRoomTotalPot, resolveTotalPotAfterRoomTracking } from "./progressivePot";
+import {
+  computeAdvanceDay8Turn,
+  hasSugorokuBoardTargets,
+  isDay8Done,
+  resolveDay8RoundExhaustion,
+} from "../utils/gameLogic";
 
 export function normalizeCompletedPlayers(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.filter((id) => typeof id === "string" && id.length > 0);
+}
+
+/**
+ * 8日目 UI：ラウンド完了済みでも、自分の手番でスロット／待機中なら操作可能にする。
+ */
+export function resolveDay8IsMyTurn({
+  rawIsMyTurn,
+  isMyDay8RoundCompleted,
+  cpIsSlot = false,
+  cpIsWaitingSlot = false,
+  cpIsGhostPick = false,
+  cpIsMoving = false,
+  cpIsGoalLanding = false,
+}) {
+  if (!rawIsMyTurn) return false;
+  if (!isMyDay8RoundCompleted) return true;
+  return !!(cpIsSlot || cpIsWaitingSlot || cpIsGhostPick || cpIsMoving || cpIsGoalLanding);
 }
 
 export function deriveDay8RoundStateFromRoom(roomDoc) {
@@ -22,6 +45,49 @@ export function getAlivePlayerIds(gameState) {
   return (gameState?.players ?? [])
     .filter((p) => p?.alive !== false && typeof p?.id === "string")
     .map((p) => p.id);
+}
+
+/** このラウンドで行動完了が必要なプレイヤー ID（生存者＋代理スロット待ちの脱落者） */
+export function day8PlayersPendingRoundAction(gameState, completedPlayers = []) {
+  const players = gameState?.players ?? [];
+  const done = normalizeCompletedPlayers(completedPlayers);
+  return players
+    .filter((p) => {
+      if (!p?.id || done.includes(p.id)) return false;
+      if (p.alive !== false) return true;
+      if (!hasSugorokuBoardTargets(players)) return false;
+      return true;
+    })
+    .map((p) => p.id);
+}
+
+function allAliveMarkedComplete(players, completedPlayers) {
+  const aliveIds = (players ?? [])
+    .filter((p) => p?.alive !== false && p?.id)
+    .map((p) => p.id);
+  if (aliveIds.length === 0) return true;
+  const done = normalizeCompletedPlayers(completedPlayers);
+  return aliveIds.every((id) => done.includes(id));
+}
+
+function resetDay8RoundAfterAllPending(remainingTurns, gameState) {
+  const nextRemaining = Math.max(0, remainingTurns - 1);
+  const roundsUsed = Math.max(0, BAL.dice.maxTurns - nextRemaining);
+  const players = Array.isArray(gameState?.players)
+    ? gameState.players.map((pl) => ({
+        ...pl,
+        roundHandoffDone: false,
+        ...(pl?.alive !== false
+          ? { moveTurns: Math.max(Number(pl.moveTurns) || 0, roundsUsed) }
+          : { ghostActedThisRound: false }),
+      }))
+    : gameState?.players;
+
+  return {
+    remainingTurns: nextRemaining,
+    completedPlayers: [],
+    gameState: players ? { ...gameState, players } : gameState,
+  };
 }
 
 /**
@@ -52,12 +118,19 @@ export function completeDay8TurnAction({
     return { remainingTurns, completedPlayers, gameState };
   }
 
-  const aliveIds = getAlivePlayerIds(gameState);
-  if (aliveIds.length === 0) {
+  const pendingIds = day8PlayersPendingRoundAction(gameState, completedPlayers);
+  const players = gameState?.players ?? [];
+  const actor = players.find((p) => p?.id === playerId);
+
+  if (pendingIds.length === 0) {
+    /** ボード上に誰もいないとき：生存者全員完了後の脱落スキップでラウンドを締める */
+    if (actor?.alive === false && allAliveMarkedComplete(players, completedPlayers)) {
+      return resetDay8RoundAfterAllPending(remainingTurns, gameState);
+    }
     return { remainingTurns, completedPlayers, gameState };
   }
 
-  if (!aliveIds.includes(playerId)) {
+  if (!pendingIds.includes(playerId)) {
     return { remainingTurns, completedPlayers, gameState };
   }
 
@@ -65,30 +138,25 @@ export function completeDay8TurnAction({
     ? completedPlayers
     : [...completedPlayers, playerId];
 
-  const completedAliveCount = aliveIds.filter((id) => nextCompleted.includes(id)).length;
-  if (completedAliveCount < aliveIds.length) {
+  const pendingDone = pendingIds.every((id) => nextCompleted.includes(id));
+  const playersWithHandoff = Array.isArray(gameState?.players)
+    ? gameState.players.map((pl) =>
+        pl?.id === playerId ? { ...pl, roundHandoffDone: true } : pl,
+      )
+    : gameState?.players;
+  const gsWithHandoff = playersWithHandoff
+    ? { ...gameState, players: playersWithHandoff }
+    : gameState;
+
+  if (!pendingDone) {
     return {
       remainingTurns,
       completedPlayers: nextCompleted,
-      gameState,
+      gameState: gsWithHandoff,
     };
   }
 
-  const nextRemaining = Math.max(0, remainingTurns - 1);
-  const roundsUsed = Math.max(0, BAL.dice.maxTurns - nextRemaining);
-  const players = Array.isArray(gameState?.players)
-    ? gameState.players.map((pl) =>
-        pl?.alive !== false
-          ? { ...pl, moveTurns: Math.max(Number(pl.moveTurns) || 0, roundsUsed) }
-          : pl,
-      )
-    : gameState?.players;
-
-  return {
-    remainingTurns: nextRemaining,
-    completedPlayers: [],
-    gameState: players ? { ...gameState, players } : gameState,
-  };
+  return resetDay8RoundAfterAllPending(remainingTurns, gsWithHandoff);
 }
 
 /**
@@ -125,6 +193,15 @@ export function shouldMarkDay8TurnComplete(prevGs, nextGs) {
 
   if (prevP.movePhase === "missed") return true;
 
+  if (
+    prevP.alive === false &&
+    prevP.movePhase === "arrived" &&
+    nextP?.movePhase === "spectating" &&
+    nextP?.ghostActedThisRound === true
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -137,7 +214,9 @@ export function shouldMarkDay8TurnComplete(prevGs, nextGs) {
 export function applyDay8RoundTracking(roomDoc, nextGs, options = {}) {
   const prevGs = roomDoc?.gameState;
   let trackedGs = nextGs;
+  const { remainingTurns: prevRemaining } = deriveDay8RoundStateFromRoom(roomDoc);
   let { remainingTurns, completedPlayers } = deriveDay8RoundStateFromRoom(roomDoc);
+  const prevTotalPot = readRoomTotalPot(roomDoc);
 
   const entersDay8 =
     nextGs?.gamePhase === "playing" &&
@@ -161,13 +240,40 @@ export function applyDay8RoundTracking(roomDoc, nextGs, options = {}) {
     remainingTurns = merged.remainingTurns;
     completedPlayers = merged.completedPlayers;
     trackedGs = merged.gameState;
+
+    /** ラウンド完了マーク後も current が rotation 完了済みなら次の手番へ（今マークした本人は除外） */
+    const cpIdx = trackedGs?.currentPlayerIdx;
+    const cp = Number.isInteger(cpIdx) ? trackedGs?.players?.[cpIdx] : null;
+    const prevCurrentIdx = prevGs?.currentPlayerIdx;
+    const turnAlreadyRotatedInPayload =
+      Number.isInteger(prevCurrentIdx) &&
+      Number.isInteger(cpIdx) &&
+      prevCurrentIdx !== cpIdx;
+    if (
+      cp &&
+      markId &&
+      cp.id !== markId &&
+      isDay8Done(cp, trackedGs.players) &&
+      !turnAlreadyRotatedInPayload
+    ) {
+      trackedGs = computeAdvanceDay8Turn(trackedGs, trackedGs.players, []);
+    }
   }
 
   trackedGs = resolveDay8RoundExhaustion(trackedGs, remainingTurns);
+
+  const totalPot = resolveTotalPotAfterRoomTracking({
+    prevRemaining,
+    nextRemaining: remainingTurns,
+    prevGs,
+    nextGs: trackedGs,
+    prevTotalPot,
+  });
 
   return {
     gameState: trackedGs,
     remainingTurns,
     completedPlayers,
+    totalPot,
   };
 }

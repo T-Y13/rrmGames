@@ -2,11 +2,13 @@ import {
   BAL,
   BOARD_GOAL,
   CHARACTERS,
+  DAY8_MAX_TURNS,
   LAST_DAILY_DAY,
   SLOT_COST,
   SLOT_MACHINES,
   QUICK_NAMES,
   TILE_EFFECT_KIND,
+  SUGOROKU_VERIFY_DEATH_TEST_TRAP_FIRST_N,
 } from "../constants/gameBalance";
 import {
   buildDayDividerEntry,
@@ -15,6 +17,15 @@ import {
   serializeLogEntry,
 } from "../lib/gameLogFormat";
 import { DAILY_CUTIN_SYNC_DEFAULTS } from "../lib/dailyCutinSync";
+import { canSelectAsProxySlotTarget, canContinueAsProxySlotTarget, canProxySlotBetAt, computeProxySlotMaxBet } from "../lib/slotProxyTarget";
+import {
+  createEmptyAssetHistory,
+  finalizeDay8AssetHistory,
+  recordDailyMoney,
+  snapshotDailyEndAllPlayers,
+  snapshotDay8TurnEndAllPlayers,
+  resolveDay8HistoryTurn,
+} from "../lib/playerAssetHistory";
 
 /** Firestore が Timestamp で返した場合にも ms で比較する */
 export function toEpochMsMaybe(v) {
@@ -48,7 +59,7 @@ export function estimateSugorokuHopDurationMs(fromPos, toPos) {
 }
 
 export const prependLogs = (newEntries, existing = []) =>
-  [...newEntries.slice().reverse(), ...existing].slice(0, 30);
+  [...newEntries.slice().reverse(), ...existing].slice(0, 100);
 
 /** 全員表示用スロット同期（Firestore gameState 上位フィールド） */
 export const SLOT_SYNC_DEFAULTS = {
@@ -115,6 +126,29 @@ export const SLOT_JACKPOT_CELEBRATION_MS = 2600;
 /** ジャックポット：筐体レインボー演出を消すまで（ms） */
 export const SLOT_JACKPOT_WIN_FX_CLEAR_MS = 2800;
 
+/** 超大当たり／POT JP 後、次手番へ進めるまでの最低待ち（祝砲＋筐体演出） */
+export function day8SlotMajorWinCelebrationHoldMs() {
+  return Math.max(SLOT_JACKPOT_CELEBRATION_MS, SLOT_JACKPOT_WIN_FX_CLEAR_MS) + 400;
+}
+
+export function day8SlotActorMajorWinTier(gs, actorIdx = gs?.currentPlayerIdx) {
+  const p = gs?.players?.[actorIdx];
+  const tier = p?.lastSpinResult?.tier;
+  return tier === "jackpot" || tier === "potJackpot" ? tier : null;
+}
+
+/** @returns {number} 0 = 待ち終了 */
+export function day8SlotMajorWinAdvanceRemainingMs(gs, nowMs = Date.now()) {
+  if (!day8SlotActorMajorWinTier(gs)) return 0;
+  const settledAt = Number(gs?.slotResultSettledAt);
+  if (!Number.isFinite(settledAt)) return day8SlotMajorWinCelebrationHoldMs();
+  return Math.max(0, day8SlotMajorWinCelebrationHoldMs() - (nowMs - settledAt));
+}
+
+export function shouldDeferDay8SlotTurnAdvanceForMajorWin(gs, nowMs = Date.now()) {
+  return day8SlotMajorWinAdvanceRemainingMs(gs, nowMs) > 0;
+}
+
 // ── 観戦側タイムライン定数（SlotMachine.jsx の手番側と合わせる） ──────────
 /** リーチなしのとき：スピン開始からリール1が止まるまで（ms） */
 export const SLOT_SYNC_T0 = 1200;
@@ -126,15 +160,39 @@ export const SLOT_SYNC_T2_NOREACH = 2250;
 export const SLOT_SYNC_T2_REACH_HOLD_MS = 2400;
 /** リーチあり・カットインなし：スピン開始から第3リール停止まで（ms） */
 export const SLOT_SYNC_T2_REACH_NOCUTIN = SLOT_SYNC_T1 + SLOT_SYNC_T2_REACH_HOLD_MS;
-/** リーチあり・カットインあり：観戦同期用の第3リール停止目安（ms） */
-export const SLOT_SYNC_T2_REACH = 7600;
+/** リーチカットイン：オーバー表示開始タイミング（手番側 tCutinReveal と同値） */
+export const SLOT_SYNC_REACH_CUTIN_REVEAL_MS = Math.max(
+  SLOT_SYNC_T1 + 480,
+  SLOT_SYNC_T2_REACH_NOCUTIN,
+);
+/** リーチカットイン：オーバー表示時間（手番側 REACH_CUTIN_ON_SCREEN_MS と同値） */
+export const SLOT_SYNC_REACH_CUTIN_ON_SCREEN_MS = 2000;
+/** カットイン dismiss 後〜第3リール停止まで（手番側 REACH_CUTIN_AFTER_DISMISS_MS と同値） */
+export const SLOT_SYNC_REACH_CUTIN_AFTER_DISMISS_MS = 1000;
+/** ハズレ時ガセ dismiss の最大 ms（手番側と同値） */
+export const SLOT_SYNC_REACH_CUTIN_GASE_DISMISS_MS = 720;
+/** リーチあり・カットインあり：観戦同期の第3リール停止（手番側 reel3StopAt + dismiss + afterDismiss） */
+export const SLOT_SYNC_T2_REACH_CUTIN =
+  Math.max(
+    SLOT_SYNC_T2_REACH_NOCUTIN,
+    SLOT_SYNC_REACH_CUTIN_REVEAL_MS + SLOT_SYNC_REACH_CUTIN_ON_SCREEN_MS,
+  ) +
+  SLOT_SYNC_REACH_CUTIN_GASE_DISMISS_MS +
+  SLOT_SYNC_REACH_CUTIN_AFTER_DISMISS_MS;
+/** @deprecated 互換 alias — 旧 7600ms は手番側より長く、idle 先行で結果が消えていた */
+export const SLOT_SYNC_T2_REACH = SLOT_SYNC_T2_REACH_CUTIN;
 /** リーチ判定表示（REACH!! UI）をリール2停止から何 ms 後に出すか */
 export const SLOT_SYNC_REACH_SHOW_DELAY = 400;
 
 /** 観戦・同期：第3リール停止までの ms */
 export function slotSyncReel3StopMs(reachPossible, reachCutin = false) {
   if (!reachPossible) return SLOT_SYNC_T2_NOREACH;
-  return reachCutin ? SLOT_SYNC_T2_REACH : SLOT_SYNC_T2_REACH_NOCUTIN;
+  return reachCutin ? SLOT_SYNC_T2_REACH_CUTIN : SLOT_SYNC_T2_REACH_NOCUTIN;
+}
+
+/** 観戦同期用スピンセッション ID（スピン開始のたびに新規発行） */
+export function createSlotSpinSessionId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
 /** 旧クライアントが書き込んだフィールドを除去（次回書き込みで上書き） */
@@ -147,12 +205,97 @@ export function stripLegacySlotFirestoreFields(gs) {
   return o;
 }
 
+/** gameState から idle 表示用の中段3絵柄を拾う（displayReels / slotVisualReels / 直前スピン） */
+export function pickDisplayReelsFromGameState(gs) {
+  if (!gs || typeof gs !== "object") return null;
+  for (const key of ["displayReels", "slotVisualReels"]) {
+    const dr = gs[key];
+    if (Array.isArray(dr) && dr.length === 3 && !isPlaceholderDisplayReels(dr)) {
+      return [...dr];
+    }
+  }
+  const actor = gs?.players?.[gs?.currentPlayerIdx ?? 0];
+  const fromVisual = actor?.lastSpinResult?.visualReels;
+  if (Array.isArray(fromVisual) && fromVisual.length === 3 && !isPlaceholderDisplayReels(fromVisual)) {
+    return [...fromVisual];
+  }
+  const fromLast = actor?.lastSpinResult?.reels;
+  if (Array.isArray(fromLast) && fromLast.length === 3 && !isPlaceholderDisplayReels(fromLast)) {
+    return [...fromLast];
+  }
+  return null;
+}
+
+/** idle 復帰時：有効な displayReels を維持、無ければ直前スピン or バラバラ初期表示 */
+export function resolveIdleDisplayReels(gs, fallbackGs = null) {
+  const picked = pickDisplayReelsFromGameState(gs) ?? pickDisplayReelsFromGameState(fallbackGs);
+  if (picked) return picked;
+  const mk =
+    gs?.slotMirrorMachineKey ?? fallbackGs?.slotMirrorMachineKey ?? "standard";
+  const pot = (gs?.players?.length ?? fallbackGs?.players?.length ?? 0) > 1;
+  return defaultIdleDisplayReels(mk, pot);
+}
+
+/** 8日目スロット：同期フィールドだけ idle に戻す（プレイヤーの slotTurnsLeft 等は liveGs を維持） */
+export function mergeDay8SlotIdleSync(liveGs, displayPreferGs = null) {
+  if (!liveGs || typeof liveGs !== "object") return liveGs;
+  return stripLegacySlotFirestoreFields({
+    ...liveGs,
+    ...SLOT_SYNC_DEFAULTS,
+    showSpinResult: false,
+    displayReels: resolveIdleDisplayReels(displayPreferGs ?? liveGs, liveGs),
+  });
+}
+
 /** 観戦オーバーレイ：リーチなし時の全リール同時停止までの固定時間（後方互換）（ms） */
 export const SLOT_SYNC_SPIN_MS = SLOT_SYNC_T2_NOREACH;
 
+/** マルチ8日目POT JP のリール絵柄（未設定時 💰） */
+export function getSlotPotSymbol(machine) {
+  return machine?.potSymbol ?? "💰";
+}
+
+/** 確率バー等UI用：各tierのリール中段絵柄 */
+export function getSlotTierReelSymbols(machine) {
+  const sy = machine?.symbols ?? [];
+  return {
+    potJackpot: getSlotPotSymbol(machine),
+    jackpot: sy[0] ?? "7",
+    big: sy[1] ?? "BAR",
+    mid: "⭐",
+    atari: "🔔",
+    small: "🍒",
+  };
+}
+
+/** tier表示名（ツールチップ・アクセシビリティ用） */
+export const SLOT_TIER_LABELS = {
+  potJackpot: "POT JP",
+  jackpot: "超大当たり",
+  big: "大当たり",
+  mid: "中当たり",
+  atari: "当たり",
+  small: "小当たり",
+};
+
+/** POT JP 有効時は potSymbol をリール列に含める */
+export function getSlotReelSymbols(machine, potJackpotEnabled = false) {
+  const base = machine?.symbols ?? [];
+  const potSym = getSlotPotSymbol(machine);
+  if (!potJackpotEnabled) return base;
+  if (base.includes(potSym)) return base;
+  return [...base, potSym];
+}
+
+/** スピン演出・Canvas 用（symbols に POT 絵柄を反映） */
+export function slotMachineForReels(machine, potJackpotEnabled = false) {
+  return { ...machine, symbols: getSlotReelSymbols(machine, potJackpotEnabled) };
+}
+
 /** `targetResult`（筐体 symbols のインデックス 3 つ）→ 中段の絵柄 */
-export function slotTargetIndicesToPaylineMiddles(targetResult, machineKey) {
-  const m = SLOT_MACHINES[machineKey] ?? SLOT_MACHINES.standard;
+export function slotTargetIndicesToPaylineMiddles(targetResult, machineKey, potJackpotEnabled = false) {
+  const base = SLOT_MACHINES[machineKey] ?? SLOT_MACHINES.standard;
+  const m = slotMachineForReels(base, potJackpotEnabled);
   const sy = m.symbols ?? [];
   if (!Array.isArray(targetResult) || targetResult.length !== 3) return ["?", "?", "?"];
   return targetResult.map((ix) => {
@@ -169,6 +312,37 @@ export function slotPaylineMiddlesToTargetIndices(visualReels, machine) {
     const ix = sy.indexOf(sym);
     return ix >= 0 ? ix : 0;
   });
+}
+
+/** 観戦スピン：`slotSpinSessionId` / `targetResult` を解決（idle 取り逃しキャッチアップ用） */
+export function resolveSlotBroadcastSpinContext(gsSnap) {
+  if (!gsSnap || typeof gsSnap !== "object") return null;
+  const mk = gsSnap.slotMirrorMachineKey ?? "standard";
+  const potJackpotEnabled = (gsSnap.players?.length ?? 0) > 1;
+  const machine = slotMachineForReels(SLOT_MACHINES[mk] ?? SLOT_MACHINES.standard, potJackpotEnabled);
+
+  let targetResult = gsSnap.targetResult;
+  if (!Array.isArray(targetResult) || targetResult.length !== 3) {
+    const dr = gsSnap.displayReels;
+    if (!Array.isArray(dr) || dr.length !== 3) return null;
+    targetResult = slotPaylineMiddlesToTargetIndices(dr, machine);
+  }
+
+  let sessionId = gsSnap.slotSpinSessionId;
+  if (typeof sessionId !== "string" || !sessionId) {
+    const spinNum = gsSnap.players?.[gsSnap.currentPlayerIdx ?? 0]?.lastSpinResult?.spin;
+    if (typeof spinNum !== "number" || spinNum <= 0) return null;
+    sessionId = `catchup-${gsSnap.currentPlayerIdx ?? 0}-${spinNum}`;
+  }
+
+  return { sessionId, targetResult };
+}
+
+/** 観戦スピン：同一プレイヤー・同一 spin 番号のキー */
+export function slotBroadcastSpinAnimKey(gsSnap) {
+  const idx = gsSnap?.currentPlayerIdx ?? 0;
+  const spinNum = gsSnap?.players?.[idx]?.lastSpinResult?.spin ?? 0;
+  return `${idx}:${spinNum}`;
 }
 
 export const genRoomId = () => {
@@ -316,6 +490,26 @@ export function normalizeSlotInitialRolls(raw) {
   return { luck, skill, virtue, pon };
 }
 
+/** 待機室：キャラ＋抽選確定済みか */
+export function isLobbySlotConfigured(slot) {
+  return !!(slot?.character && normalizeSlotInitialRolls(slot.initialRolls));
+}
+
+/** 待機室：メンバー一覧の準備完了表示（ホストは設定済みなら自動で完了扱い） */
+export function isLobbyMemberReady(slot, hostId) {
+  if (!isLobbySlotConfigured(slot)) return false;
+  if (slot.id === hostId) return true;
+  return slot.lobbyReady === true;
+}
+
+export function allLobbyMembersReady(playerSlots, hostId) {
+  return (
+    Array.isArray(playerSlots) &&
+    playerSlots.length > 0 &&
+    playerSlots.every((s) => isLobbyMemberReady(s, hostId))
+  );
+}
+
 /**
  * Firestore `playerSlots[].initialStats` を検証し、makePlayer に渡せる5値だけにする。
  * 後方互換：旧ロビーで保存された「補正込み最終値」用。
@@ -338,9 +532,22 @@ export function virtueMinRoll(virtue) {
   return 1;
 }
 
+/** すごろく：ラッキーダイス（2個目）発動確率（0〜100） */
+export function sugorokuLuckyDiceChancePct(luck) {
+  const cfg = BAL.dice.luckyDice ?? {};
+  const threshold = Number(cfg.luckThreshold) || 80;
+  const base = Number(cfg.baseChancePct) || 40;
+  const perPoint = Number(cfg.pctPerLuckAbove) || 1;
+  const cap = Number(cfg.maxChancePct) || 100;
+  const lk = Number(luck) || 0;
+  if (lk < threshold) return 0;
+  return Math.min(cap, base + (lk - threshold) * perPoint);
+}
+
 export function rollDie(stats) {
   const minVal = virtueMinRoll(stats.virtue);
-  const useAdv = stats.luck >= 80;
+  const advChance = sugorokuLuckyDiceChancePct(stats.luck);
+  const useAdv = advChance > 0 && Math.random() * 100 < advChance;
   const a = rand(minVal, 6);
   if (useAdv) {
     const b = rand(minVal, 6);
@@ -352,15 +559,18 @@ export function rollDie(stats) {
 /** student（ビギナーズラック）：ハズレ −8pt 分を JP+2%・大当+3%・小役+3% へ（合計100%を維持） */
 const STUDENT_SLOT_LUCK_DELTA = { jp: 0.02, big: 0.03, small: 0.03 };
 
-export function calcSlotRates(stats, machine, heat = 0, characterType = null) {
+export function calcSlotRates(stats, machine, heat = 0, characterType = null, opts = null) {
   const { baseRates: br } = machine;
   const S = BAL.slot;
+  const potJackpotEnabled = opts?.potJackpotEnabled === true;
+  /** POT JP はベース率固定。運・熟成・技量・キャラ補正・ピティ再配分の対象外 */
+  const potJp = potJackpotEnabled ? (br.potJp ?? 0) : 0;
   let jp = br.jp;
   let big = br.big;
   let mid = br.mid;
   let atari = br.atari;
   let small = br.small;
-  let miss = 1 - (jp + big + mid + atari + small);
+  let miss = 1 - (potJp + jp + big + mid + atari + small);
 
   const skEx = Math.max(0, stats.skill - S.skillBaseline);
   const skillBlocks = skEx >= S.skillBlockSize ? Math.floor(skEx / S.skillBlockSize) : 0;
@@ -405,18 +615,19 @@ export function calcSlotRates(stats, machine, heat = 0, characterType = null) {
     atari += heatMissReduced * S.heatWeightAtari;
   }
 
-  const sumWin = jp + big + mid + atari + small;
+  const sumWin = potJp + jp + big + mid + atari + small;
   miss = Math.max(0, 1 - sumWin);
 
   if (characterType === "student") {
     jp += STUDENT_SLOT_LUCK_DELTA.jp;
     big += STUDENT_SLOT_LUCK_DELTA.big;
     small += STUDENT_SLOT_LUCK_DELTA.small;
-    const adjSumWin = jp + big + mid + atari + small;
+    const adjSumWin = potJp + jp + big + mid + atari + small;
     miss = Math.max(0, 1 - adjSumWin);
   }
 
   return {
+    potJp,
     jp,
     big,
     mid,
@@ -460,9 +671,11 @@ export function shrineAmuletDropChance(virtue, baseRate) {
 }
 
 function rollWinTierFromRates(r, roll01) {
-  const winSum = r.jp + r.big + r.mid + r.atari + r.small;
+  const winSum = r.potJp + r.jp + r.big + r.mid + r.atari + r.small;
   if (!(winSum > 0)) return "small";
   let x = roll01 * winSum;
+  if (x < r.potJp) return "potJackpot";
+  x -= r.potJp;
   if (x < r.jp) return "jackpot";
   x -= r.jp;
   if (x < r.big) return "big";
@@ -474,7 +687,21 @@ function rollWinTierFromRates(r, roll01) {
 }
 
 function buildSlotSpinResult(tier, ctx) {
-  const { machine, bp, sym, r, bet, machineKey, pay, pityCounterAfter, pityForced, maxPity } = ctx;
+  const {
+    machine,
+    baseMachine,
+    bp,
+    sym,
+    r,
+    bet,
+    machineKey,
+    pay,
+    pityCounterAfter,
+    pityForced,
+    maxPity,
+  } = ctx;
+  const reelMachine = machine;
+  const defMachine = baseMachine ?? machine;
   const meta = { r, bet, machineKey, pityCounterAfter, pityForced, maxPity };
   switch (tier) {
     case "miss":
@@ -482,25 +709,37 @@ function buildSlotSpinResult(tier, ctx) {
         tier: "miss",
         payout: 0,
         message: "ハズレ…",
-        reels: rollMissReelTriple(machine),
+        reels: rollMissReelTriple(reelMachine),
         ...meta,
       };
     case "jackpot":
       return {
         tier: "jackpot",
         payout: pay(bp.jackpot),
-        message: "🎰 777 JACKPOT!! 超大当たり！",
+        message: "🎰 777 超大当たり！",
         reels: [sym[0], sym[0], sym[0]],
         ...meta,
       };
-    case "big":
+    case "potJackpot": {
+      const potSym = getSlotPotSymbol(defMachine);
+      return {
+        tier: "potJackpot",
+        payout: pay(bp.potJackpot ?? 0),
+        message: "🏆 POT JP!! ポット全額GET！",
+        reels: [potSym, potSym, potSym],
+        ...meta,
+      };
+    }
+    case "big": {
+      const bar = sym[1] ?? "BAR";
       return {
         tier: "big",
         payout: pay(bp.big),
-        message: "💎 大当たり！！",
-        reels: ["💎", "💎", "💎"],
+        message: "BAR 大当たり！！",
+        reels: [bar, bar, bar],
         ...meta,
       };
+    }
     case "mid":
       return {
         tier: "mid",
@@ -558,15 +797,18 @@ export function spinSlot(
   pityOpts = null,
 ) {
   const machine = SLOT_MACHINES[machineKey] ?? SLOT_MACHINES.standard;
+  const potJackpotEnabled = pityOpts?.potJackpotEnabled === true;
+  const reelMachine = slotMachineForReels(machine, potJackpotEnabled);
   const { basePayout: bp, symbols: sym } = machine;
-  const r = calcSlotRates(stats, machine, heat, characterType);
+  const r = calcSlotRates(stats, machine, heat, characterType, { potJackpotEnabled });
   if (import.meta.env.DEV && typeof console !== "undefined" && console.log) {
     const Ss = BAL.slot;
+    const potLine = potJackpotEnabled ? `POT ${(r.potJp * 100).toFixed(2)}% / ` : "";
     console.log(
       `[スロット確率] 技量によりハズレを${(r.skillMissReduced * 100).toFixed(2)}%削減（${Ss.skillBaseline}超え満${Ss.skillBlockSize}点ごと${(Ss.skillMissReducePerBlock * 100).toFixed(1)}%×中${(Ss.skillToMid * 100).toFixed(0)}%・当${(Ss.skillToAtari * 100).toFixed(0)}%・小${(Ss.skillToSmall * 100).toFixed(0)}%配分） / ` +
         `運により当−${(r.luckDrainAtari * 100).toFixed(2)}%・小−${(r.luckDrainSmall * 100).toFixed(2)}%（計${(r.luckConverted * 100).toFixed(2)}%）をJP30%・大70%へ / ` +
         `熟成でハズレを${(r.heatMissReduced * 100).toFixed(2)}%削減 → ` +
-        `JP ${(r.jp * 100).toFixed(2)}% ハズレ ${(r.miss * 100).toFixed(2)}%`,
+        `${potLine}JP ${(r.jp * 100).toFixed(2)}% ハズレ ${(r.miss * 100).toFixed(2)}%`,
     );
   }
 
@@ -575,7 +817,7 @@ export function spinSlot(
   const pityForced = pityCounterBefore >= maxPity;
   let ratesForRoll = r;
 
-  // 天井発動スピン：ハズレ率を 0% にして、削れた miss を当たり各役へ比率再配分
+  // 天井発動スピン：ハズレ率を 0% にして、削れた miss を当たり各役へ比率再配分（POT JP は固定のまま）
   if (pityForced && r.miss > 0) {
     const winSum = r.jp + r.big + r.mid + r.atari + r.small;
     if (winSum > 0) {
@@ -583,6 +825,7 @@ export function spinSlot(
       ratesForRoll = {
         ...r,
         miss: 0,
+        potJp: r.potJp,
         jp: r.jp + bonus * (r.jp / winSum),
         big: r.big + bonus * (r.big / winSum),
         mid: r.mid + bonus * (r.mid / winSum),
@@ -605,17 +848,21 @@ export function spinSlot(
     let acc = ratesForRoll.miss;
     if (roll < acc) tier = "miss";
     else {
-      acc += ratesForRoll.jp;
-      if (roll < acc) tier = "jackpot";
+      acc += ratesForRoll.potJp;
+      if (roll < acc) tier = "potJackpot";
       else {
-        acc += ratesForRoll.big;
-        if (roll < acc) tier = "big";
+        acc += ratesForRoll.jp;
+        if (roll < acc) tier = "jackpot";
         else {
-          acc += ratesForRoll.mid;
-          if (roll < acc) tier = "mid";
+          acc += ratesForRoll.big;
+          if (roll < acc) tier = "big";
           else {
-            acc += ratesForRoll.atari;
-            tier = roll < acc ? "atari" : "small";
+            acc += ratesForRoll.mid;
+            if (roll < acc) tier = "mid";
+            else {
+              acc += ratesForRoll.atari;
+              tier = roll < acc ? "atari" : "small";
+            }
           }
         }
       }
@@ -624,7 +871,8 @@ export function spinSlot(
 
   const pityCounterAfter = pityForced ? 0 : pityCounterBefore + 1;
   return buildSlotSpinResult(tier, {
-    machine,
+    machine: reelMachine,
+    baseMachine: machine,
     bp,
     sym,
     r: ratesForRoll,
@@ -648,7 +896,7 @@ export function getSlotReachAnimationState(visualReels, tier) {
   const b = visualReels[1];
   const c = visualReels[2];
   if (a !== b) return { reachPossible: false };
-  const reachWin = ["jackpot", "big", "mid"].includes(tier);
+  const reachWin = ["potJackpot", "jackpot", "big", "mid"].includes(tier);
   const reachTease = tier === "miss" && a !== c;
   return { reachPossible: reachWin || reachTease };
 }
@@ -662,7 +910,10 @@ export function stripTripleForMiddleColumn(middleSym, machine, columnIndex) {
   const sym = machine.symbols;
   if (!sym.length) return [middleSym, middleSym, middleSym];
   let idx = sym.indexOf(middleSym);
-  if (idx < 0) idx = 0;
+  if (idx < 0) {
+    const anchor = sym[Math.min(1, sym.length - 1)] ?? sym[0];
+    return stripTripleForMiddleColumn(anchor, machine, columnIndex);
+  }
   const len = sym.length;
   const prev = sym[(idx - 1 + len) % len];
   const next = sym[(idx + 1) % len];
@@ -678,6 +929,21 @@ export function stripTripleForMiddleColumn(middleSym, machine, columnIndex) {
 export function randomStripTriple(machine) {
   const sym = machine.symbols;
   return [sym[rand(0, sym.length - 1)], sym[rand(0, sym.length - 1)], sym[rand(0, sym.length - 1)]];
+}
+
+/** `displayReels` プレースホルダ（中段すべて ? → UI 上 777 に見える） */
+export function isPlaceholderDisplayReels(dr) {
+  return !Array.isArray(dr) || dr.length !== 3 || dr.every((s) => s === "?");
+}
+
+/** idle 時の初期表示：中段3つが揃わないランダム絵柄 */
+export function defaultIdleDisplayReels(machineKey = "standard", potJackpotEnabled = false) {
+  const machine = slotMachineForReels(SLOT_MACHINES[machineKey] ?? SLOT_MACHINES.standard, potJackpotEnabled);
+  let mids = randomStripTriple(machine);
+  if (mids.length === 3 && mids[0] === mids[1] && mids[1] === mids[2]) {
+    mids = [mids[0], mids[1], pickWrongSymbol(mids[0], machine)];
+  }
+  return mids;
 }
 
 export function pickWrongSymbol(correct, machine) {
@@ -833,10 +1099,13 @@ export function isDay8Done(p, allPlayers) {
   if (!p.alive) {
     if (!multi) return true;
     if (!hasSugorokuBoardTargets(list)) return true;
-    if (p.movePhase === "ghostPickTarget") return false;
+    if (p.ghostActedThisRound) return true;
     if (p.movePhase === "arrived" && (p.slotTurnsLeft ?? 0) > 0) return false;
-    return true;
+    return false;
   }
+
+  /** このラウンドの手番は終えた（すごろく上は moving のままでも次の手番へ） */
+  if (p.roundHandoffDone) return true;
 
   if (p.movePhase === "moving") return false;
   if (p.movePhase === "goalLanding") return false;
@@ -850,9 +1119,90 @@ export function isDay8Done(p, allPlayers) {
   return true;
 }
 
+/**
+ * 8日目ゲーム全体が終了したか（ラウンド送り roundHandoffDone / ghostActed は無視）。
+ * computeAdvanceDay8Turn の results 確定にのみ使用。
+ */
+export function isDay8GameFinished(p, allPlayers) {
+  const list = Array.isArray(allPlayers) ? allPlayers : null;
+  const multi = list && list.length > 1;
+
+  if (!p) return true;
+
+  if (!p.alive) {
+    if (!multi) return true;
+    return !hasSugorokuBoardTargets(list);
+  }
+
+  if (p.movePhase === "moving") return false;
+  if (p.movePhase === "goalLanding") return false;
+  if (p.movePhase === "waitingSlot") return (p.reservedSlotTurns ?? 0) <= 0;
+  if (p.movePhase === "missed") return true;
+  if (p.movePhase === "arrived") return (p.slotTurnsLeft ?? 0) <= 0;
+  return true;
+}
+
 /** 脱落者が標的選び待ちか */
 export function isGhostPickTargetPhase(p) {
   return !!(p && p.alive === false && p.movePhase === "ghostPickTarget");
+}
+
+/**
+ * ゴール到着時の movePhase 決定。マルチでは goalLanding を省略して waitingSlot / arrived へ。
+ * @returns {{ player: object, extraLogs: string[] }}
+ */
+export function applyGoalArrivalToPlayer(base, slotReserved, autoConfirmMulti = false) {
+  const r = slotReserved ?? 0;
+  const name = base?.name ?? "プレイヤー";
+  if (!autoConfirmMulti) {
+    return {
+      player: {
+        ...base,
+        movePhase: "goalLanding",
+        slotTurnsLeft: 0,
+        reservedSlotTurns: r,
+        slotPullsGranted: 0,
+        slotPullsThisSeat: 0,
+      },
+      extraLogs: [],
+    };
+  }
+  if (r <= 0) {
+    return {
+      player: {
+        ...base,
+        movePhase: "arrived",
+        slotTurnsLeft: 0,
+        reservedSlotTurns: 0,
+        slotPullsGranted: 0,
+        slotPullsThisSeat: 0,
+      },
+      extraLogs: [`${name}: ゴール済み／スロット権利0回でラウンド不参加`],
+    };
+  }
+  const maxPulls = r * BAL.dice.slotsPerSugorokuTurn;
+  return {
+    player: {
+      ...base,
+      movePhase: "waitingSlot",
+      slotTurnsLeft: 0,
+      reservedSlotTurns: r,
+      slotPullsGranted: 0,
+      slotPullsThisSeat: 0,
+    },
+    extraLogs: [
+      `${name}: ゴール到着ターン終了　→ スロット${r}ターンブン（計最大${maxPulls}回）は次の自分のターンで開始できます`,
+    ],
+  };
+}
+
+/** ゴール到着後の gameState。マルチでは確認省略のうえターン進行まで含める */
+export function buildNextGsAfterGoalArrival(gsWithDice, newPlayers, logs, autoConfirmMulti) {
+  const withLog = { ...gsWithDice, players: newPlayers, log: prependLogs(logs, gsWithDice.log) };
+  if (autoConfirmMulti) {
+    return computeAdvanceDay8Turn(withLog, newPlayers, []);
+  }
+  return withLog;
 }
 
 /**
@@ -898,6 +1248,117 @@ export function applyGoalLandingConfirm(gs, playerId) {
 }
 
 /**
+ * 8日目：脱落（人助け即死・テスト用 debugDeath など）。
+ * @returns {{ gs: object, markDay8TurnComplete: boolean }|null}
+ */
+export function getBoardDeathPosition(p, boardGoal = BOARD_GOAL) {
+  const pos = Number(p?.position);
+  if (!Number.isFinite(pos)) return null;
+  const goal = Number(boardGoal);
+  const clamped = Math.max(0, Math.floor(pos));
+  if (Number.isFinite(goal) && clamped >= goal) return null;
+  return clamped;
+}
+
+/** 盤上脱落：死亡位置を固定し墓標表示に使う */
+export function snapshotDeathOnBoard(pl, boardGoal = BOARD_GOAL) {
+  const deathPosition = getBoardDeathPosition(pl, boardGoal);
+  if (deathPosition == null) return { ...pl, alive: false };
+  return { ...pl, alive: false, deathPosition };
+}
+
+export function getBoardTombDisplayPosition(p, boardGoal = BOARD_GOAL) {
+  if (p?.alive !== false) return null;
+  if (typeof p.deathPosition === "number" && Number.isFinite(p.deathPosition)) {
+    const dp = Math.floor(p.deathPosition);
+    const goal = Number(boardGoal);
+    if (Number.isFinite(goal) && dp >= goal) return null;
+    return dp >= 0 ? dp : null;
+  }
+  return getBoardDeathPosition(p, boardGoal);
+}
+
+export function eliminateDay8Player(gs, playerIdx, deathLogLine) {
+  const players = gs?.players;
+  if (!Array.isArray(players) || !Number.isInteger(playerIdx) || playerIdx < 0 || playerIdx >= players.length) {
+    return null;
+  }
+  const p = players[playerIdx];
+  if (p?.alive === false) return null;
+  const logs = [deathLogLine];
+  if (players.length > 1 && gs.subPhase === "day8") {
+    /** 移動中の脱落：この手番だけ進行対象から外し、次プレイヤーへ渡す（代理スロットは後続ローテーション） */
+    const playersForAdvance = players.map((pl, i) =>
+      i === playerIdx
+        ? snapshotDeathOnBoard({ ...pl, movePhase: "spectating", ghostActedThisRound: true })
+        : pl,
+    );
+    const advanced = computeAdvanceDay8Turn(
+      { ...gs, currentPlayerIdx: playerIdx, players: playersForAdvance },
+      playersForAdvance,
+      logs,
+    );
+    const finalPlayers = advanced.players.map((pl, i) =>
+      i === playerIdx
+        ? snapshotDeathOnBoard({ ...pl, movePhase: "spectating", ghostActedThisRound: false })
+        : pl,
+    );
+    return {
+      gs: { ...advanced, players: finalPlayers },
+      markDay8TurnComplete: false,
+    };
+  }
+  const name = p?.name ?? "プレイヤー";
+  const pon = p?.stats?.pon ?? 0;
+  const newPlayers = players.map((pl, i) =>
+    i === playerIdx ? snapshotDeathOnBoard({ ...pl, movePhase: "spectating" }) : pl,
+  );
+  return {
+    gs: {
+      ...gs,
+      players: newPlayers,
+      gamePhase: "gameOver",
+      gameOverMsg: `${name} はPON${pon}の状態で人助けに失敗し、社会的に抹殺された…`,
+      log: prependLogs([`💀 GAME OVER: ${name} / PON${pon}で人助け失敗！`, ...logs], gs.log),
+    },
+    markDay8TurnComplete: false,
+  };
+}
+
+/**
+ * 借金トラップ発動時：マルチ8日目は脱落（代理スロット）、ソロはゲームオーバー。
+ * @returns {{ gs: object, markDay8TurnComplete: boolean }|null}
+ */
+export function resolveDebtTrapTriggered(gs, playerIdx) {
+  const players = gs?.players;
+  if (!Array.isArray(players) || !Number.isInteger(playerIdx) || playerIdx < 0 || playerIdx >= players.length) {
+    return null;
+  }
+  const name = players[playerIdx]?.name ?? "プレイヤー";
+  const soloMsg = `${name} は借金トラップを踏み、破産してゲームオーバー…`;
+  if (players.length > 1 && gs.subPhase === "day8") {
+    return eliminateDay8Player(
+      gs,
+      playerIdx,
+      `💀 ${name} は借金トラップを踏み、破産して脱落（代理スロットで他プレイヤーに干渉可能）`,
+    );
+  }
+  const newPlayers = players.map((pl, i) =>
+    i === playerIdx ? snapshotDeathOnBoard({ ...pl, movePhase: "spectating" }) : pl,
+  );
+  return {
+    gs: {
+      ...gs,
+      players: newPlayers,
+      gamePhase: "gameOver",
+      gameOverMsg: soloMsg,
+      log: prependLogs([`💀 GAME OVER: ${soloMsg}`], gs.log),
+    },
+    markDay8TurnComplete: false,
+  };
+}
+
+/**
  * 標的がいなくなった幽霊手番をスキップして進める。
  * @returns {object|null}
  */
@@ -914,7 +1375,26 @@ export function skipGhostTurnAllPlayersArrived(gs) {
     `👻 ${p.name}: 手番スキップ`,
   ];
   const newPlayers = players.map((pl, i) =>
-    i === idx ? { ...pl, movePhase: "spectating", slotTurnsLeft: 0, slotPullsThisSeat: 0 } : pl,
+    i === idx
+      ? { ...pl, movePhase: "spectating", slotTurnsLeft: 0, slotPullsThisSeat: 0, ghostActedThisRound: true }
+      : pl,
+  );
+  return computeAdvanceDay8Turn({ ...gs, players: newPlayers, proxySlotTargetIdx: null }, newPlayers, logs);
+}
+
+/** すごろく中の標的がいるが代理選択条件を満たすプレイヤーがいない幽霊手番をスキップ */
+export function skipGhostTurnNoPickableProxy(gs) {
+  const idx = gs?.currentPlayerIdx;
+  const players = gs?.players;
+  if (!Array.isArray(players) || !Number.isInteger(idx) || idx < 0 || idx >= players.length) return null;
+  const p = players[idx];
+  if (p.alive !== false || p.movePhase !== "ghostPickTarget") return null;
+  if (!hasSugorokuBoardTargets(players)) return null;
+  const logs = [`👻 ${p.name}: 代理標的なし（条件未達）→手番スキップ`];
+  const newPlayers = players.map((pl, i) =>
+    i === idx
+      ? { ...pl, movePhase: "spectating", slotTurnsLeft: 0, slotPullsThisSeat: 0, ghostActedThisRound: true }
+      : pl,
   );
   return computeAdvanceDay8Turn({ ...gs, players: newPlayers, proxySlotTargetIdx: null }, newPlayers, logs);
 }
@@ -930,9 +1410,13 @@ export function pickGhostSlotTarget(gs, targetIdx) {
   if (actor.alive !== false || actor.movePhase !== "ghostPickTarget") return null;
   if (!Number.isInteger(targetIdx) || targetIdx < 0 || targetIdx >= players.length || targetIdx === idx) return null;
   const tgt = players[targetIdx];
-  if (!isSugorokuBoardPlaying(tgt)) return null;
+  if (!canSelectAsProxySlotTarget(tgt)) return null;
   const burst = Math.max(1, BAL.dice.slotsPerSugorokuTurn ?? 3);
   const pulls = burst;
+  const maxBet = computeProxySlotMaxBet(tgt.stats?.money ?? 0);
+  const logs = [
+    `👻 ${actor.name} → 代理スロット標的: ${tgt.name}（${tgt.stats.money}G・このスピン最大${maxBet}G）`,
+  ];
   const newPlayers = players.map((pl, i) => {
     if (i !== idx) return pl;
     return {
@@ -944,13 +1428,81 @@ export function pickGhostSlotTarget(gs, targetIdx) {
       slotPullsThisSeat: 0,
     };
   });
-  const logs = [`👻 ${actor.name} → 代理スロット標的: ${tgt.name}（${tgt.stats.money}G）`];
   return {
     ...gs,
     players: newPlayers,
     proxySlotTargetIdx: targetIdx,
     log: prependLogs(logs, gs.log),
   };
+}
+
+/** 8日目スロット1回分のログ行（1〜3回目・掛け金・当たりのみ） */
+export function formatDay8SlotSpinLogLine({
+  actorName,
+  proxyTargetName = null,
+  pullIndex,
+  bet,
+  message,
+  net,
+  newMoney,
+  potPayout = 0,
+}) {
+  const prefix = proxyTargetName
+    ? `【代理→${proxyTargetName}】${actorName} `
+    : `${actorName} `;
+  let hit = message ?? "？";
+  if (potPayout > 0 && !/POT/i.test(hit)) {
+    hit = `${hit}（POT +${potPayout}G）`;
+  }
+  const netStr = `${net >= 0 ? "+" : ""}${net}G`;
+  return `${prefix}${pullIndex}回目 ${bet}G → ${hit}（収支${netStr}・資金${newMoney}G）`;
+}
+
+/**
+ * Firestore トランザクション内：スロット回転開始（spinning）を書き込む。
+ * @param {object} freshGs
+ * @param {object} ctx
+ * @returns {object|null}
+ */
+export function buildDay8SlotSpinningGs(freshGs, ctx) {
+  const { actorIdx, bet, visualReels, machine, reelMachine } = ctx;
+  if (!freshGs || freshGs.subPhase !== "day8" || freshGs.gamePhase !== "playing") return null;
+  if (!Number.isInteger(actorIdx) || actorIdx < 0 || actorIdx >= freshGs.players.length) return null;
+  const actor = freshGs.players[actorIdx];
+  if (actor.movePhase !== "arrived") return null;
+  if ((freshGs.slotPhase ?? "idle") !== "idle") return null;
+  const before = ctx.slotTurnsBefore;
+  const liveLeft = actor.slotTurnsLeft ?? 0;
+  if (liveLeft !== before) return null;
+
+  const proxyTargetIdx =
+    typeof ctx.proxyTargetIdx === "number" && ctx.proxyTargetIdx >= 0 ? ctx.proxyTargetIdx : null;
+  if (proxyTargetIdx != null) {
+    if (freshGs.proxySlotTargetIdx !== proxyTargetIdx) return null;
+    const tgt = freshGs.players[proxyTargetIdx];
+    if (!canContinueAsProxySlotTarget(tgt)) return null;
+    if (!canProxySlotBetAt(tgt.stats?.money ?? 0, bet)) return null;
+  }
+
+  const rm = reelMachine ?? machine;
+  const targetResult = slotPaylineMiddlesToTargetIndices(visualReels, rm);
+  const { reachPossible } = getSlotReachAnimationState(visualReels, ctx.res?.tier);
+
+  return stripLegacySlotFirestoreFields({
+    ...freshGs,
+    slotPhase: "spinning",
+    activeBet: bet,
+    targetResult,
+    slotSpinSessionId: createSlotSpinSessionId(),
+    slotMirrorMachineKey: machine?.key ?? "standard",
+    isReach: reachPossible,
+    slotReachCutin: false,
+    slotVisualReels: visualReels,
+    displayReels: null,
+    showSpinResult: false,
+    lastPayout: null,
+    slotResultSettledAt: null,
+  });
 }
 
 /**
@@ -978,7 +1530,15 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
   if (!Number.isInteger(actorIdx) || actorIdx < 0 || actorIdx >= freshGs.players.length) return null;
   const actor = freshGs.players[actorIdx];
   if (actor.movePhase !== "arrived") return null;
-  if (actor.slotTurnsLeft !== ctx.slotTurnsBefore) return null;
+  const spinPhase = freshGs.slotPhase ?? "idle";
+  if (spinPhase !== "spinning" && spinPhase !== "idle") return null;
+  const before = ctx.slotTurnsBefore;
+  const liveLeft = actor.slotTurnsLeft ?? 0;
+  if (liveLeft !== before && liveLeft !== before - 1) return null;
+  const appliedLeft = liveLeft === before - 1 ? liveLeft : newLeft;
+  const livePulls = actor.slotPullsThisSeat ?? 0;
+  const appliedPulls = liveLeft === before - 1 ? Math.max(livePulls, newPullsSeat) : newPullsSeat;
+  const appliedSpins = liveLeft === before - 1 ? Math.max(actor.spinCount ?? 0, newSpins) : newSpins;
 
   if (proxyTargetIdx != null) {
     if (freshGs.proxySlotTargetIdx !== proxyTargetIdx) return null;
@@ -990,7 +1550,8 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
     )
       return null;
     const tgt = freshGs.players[proxyTargetIdx];
-    if (!isSugorokuBoardPlaying(tgt)) return null;
+    if (!canContinueAsProxySlotTarget(tgt)) return null;
+    if (!canProxySlotBetAt(tgt.stats?.money ?? 0, bet)) return null;
   }
 
   const potPayout = Math.max(0, Math.floor(Number(ctx.potPayout) || 0));
@@ -1000,30 +1561,19 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
   const moneyPlayer = freshGs.players[moneyIdx];
   const newMoney = clampMoney(moneyPlayer.stats.money - bet + grossPayout);
 
-  const heatMissRed = (newHeat * 1.5).toFixed(1);
-  const heatLabel =
-    newHeat >= 10 ? "🔥 BURNING!!" : newHeat >= 6 ? "🌡️ 熱くなってきた！" : "🌀 台が温まってきた！";
-  const pityLine = res.pityForced
-    ? `  🎯 善行ピティ: 連続ハズレ${res.maxPity}回で今回は役確定（カウンタリセット）`
-    : `  🎯 善行ピティ: ${pityAfter}/${res.maxPity}（善行が高いほど天井までの回数が減ります）`;
-  const proxyNote =
-    proxyTargetIdx != null
-      ? `【代理→${freshGs.players[proxyTargetIdx].name}の資金】`
-      : "";
-  const tgtSlotNet = (moneyPlayer.slotNet ?? 0) + net;
   const logs = [
-    `${proxyNote}${actor.name} スロット${newSpins}回[${machine.emoji}${machine.label}|${bet}G]: ${res.message} / 収支${net >= 0 ? "+" : ""}${net}G / 対象スロット収支${tgtSlotNet >= 0 ? "+" : ""}${tgtSlotNet}G` +
-      ` | JP ${(res.r.jp * 100).toFixed(1)}% ハズレ ${(res.r.miss * 100).toFixed(1)}%`,
-    pityLine,
-    `  技量によりハズレを${(res.r.skillMissReduced * 100).toFixed(2)}%削減 / 運：当−${(res.r.luckDrainAtari * 100).toFixed(2)}%・小−${(res.r.luckDrainSmall * 100).toFixed(2)}%→上位 / 熟成でハズレ${(res.r.heatMissReduced * 100).toFixed(2)}%削減`,
-    `  ${heatLabel} ハズレ確率が${heatMissRed}%ダウン（熟成Lv${newHeat}）`,
+    formatDay8SlotSpinLogLine({
+      actorName: actor.name,
+      proxyTargetName:
+        proxyTargetIdx != null ? freshGs.players[proxyTargetIdx]?.name ?? null : null,
+      pullIndex: appliedPulls,
+      bet,
+      message: res.message,
+      net,
+      newMoney,
+      potPayout,
+    }),
   ];
-  if (potPayout > 0) {
-    logs.unshift(`🎰 プログレッシブポット ${potPayout}G を獲得！（ポットリセット）`);
-  } else if (ctx.potContribution > 0) {
-    logs.push(`  💰 プログレッシブポットへ +${ctx.potContribution}G（ベットの20%）`);
-  }
-  if (emotionLine) logs.push(`💬 ${actor.name}: 「${emotionLine}」`);
 
   const newPlayers = freshGs.players.map((pl, i) => {
     if (moneyIdx === actorIdx && i === actorIdx) {
@@ -1031,12 +1581,12 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
         ...pl,
         stats: { ...pl.stats, money: newMoney },
         slotNet: (pl.slotNet ?? 0) + net,
-        slotTurnsLeft: newLeft,
-        slotPullsThisSeat: newPullsSeat,
-        spinCount: newSpins,
+        slotTurnsLeft: appliedLeft,
+        slotPullsThisSeat: appliedPulls,
+        spinCount: appliedSpins,
         slotHeat: newHeat,
         slotPityCounter: pityAfter,
-        lastSpinResult: { ...res, net, spin: newSpins, potPayout, grossPayout },
+        lastSpinResult: { ...res, net, spin: appliedSpins, potPayout, grossPayout, visualReels },
       };
     }
     if (i === moneyIdx) {
@@ -1049,12 +1599,12 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
     if (i === actorIdx) {
       return {
         ...pl,
-        slotTurnsLeft: newLeft,
-        slotPullsThisSeat: newPullsSeat,
-        spinCount: newSpins,
+        slotTurnsLeft: appliedLeft,
+        slotPullsThisSeat: appliedPulls,
+        spinCount: appliedSpins,
         slotHeat: newHeat,
         slotPityCounter: pityAfter,
-        lastSpinResult: { ...res, net, spin: newSpins, potPayout, grossPayout },
+        lastSpinResult: { ...res, net, spin: appliedSpins, potPayout, grossPayout, visualReels },
       };
     }
     return pl;
@@ -1069,8 +1619,11 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
     lastPayout: net,
     slotResultSettledAt: Date.now(),
     activeBet: null,
-    targetResult: slotPaylineMiddlesToTargetIndices(visualReels, machine),
-    slotSpinSessionId: null,
+    targetResult: slotPaylineMiddlesToTargetIndices(visualReels, ctx.reelMachine ?? machine),
+    slotSpinSessionId:
+      spinPhase === "spinning"
+        ? freshGs.slotSpinSessionId ?? null
+        : createSlotSpinSessionId(),
     slotMirrorMachineKey: machine?.key ?? "standard",
     log: prependLogs(logs, freshGs.log),
   });
@@ -1079,6 +1632,147 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
 /** スロット結果反映直後の gs から、必要なら同一手番継続 or 次手番へ進める */
 export function advanceDay8AfterSlotSpinShow(gsAfterSpin) {
   return computeAdvanceDay8Turn(gsAfterSpin, gsAfterSpin.players, []);
+}
+
+/** 現在席のスロットバーストが終了し、手番を進めてよい状態か */
+export function isDay8SlotBurstFinishedOnGameState(gs, actorIdx = gs?.currentPlayerIdx) {
+  if (!gs || gs.subPhase !== "day8" || gs.gamePhase !== "playing") return false;
+  if (!Number.isInteger(actorIdx) || actorIdx !== gs.currentPlayerIdx) return false;
+  const p = gs.players?.[actorIdx];
+  if (!p || p.movePhase !== "arrived") return false;
+  const burst = Math.max(1, BAL.dice.slotsPerSugorokuTurn ?? 3);
+  const slotLeft = p.slotTurnsLeft ?? 0;
+  const pullsSeat = p.slotPullsThisSeat ?? 0;
+  const burstSeatDone = pullsSeat >= burst;
+  const seatSpunOut = slotLeft <= 0 && pullsSeat > 0;
+  if (!burstSeatDone && !seatSpunOut) return false;
+  const phase = gs.slotPhase ?? "idle";
+  if (phase === "spinning") return false;
+  if (shouldDeferDay8SlotTurnAdvanceForMajorWin(gs)) return false;
+  return phase === "idle" || phase === "completed";
+}
+
+/** 復旧パッチが null でも、バースト終了なら liveGs から手番を進める */
+export function resolveDay8SlotBurstAdvance(liveGs) {
+  if (!isDay8SlotBurstFinishedOnGameState(liveGs)) return null;
+  return advanceDay8AfterSlotSpinShow(liveGs);
+}
+
+/**
+ * 8日目移動確定（タクシー drive 完了等）：最新 liveGs に移動結果を載せて手番を1つ進める。
+ * @param {object} liveGs
+ * @param {{ actorId: string, newPlayers: object[], actionLogs: string[], gsWithDice?: object, arrived?: boolean, isMultiplayerRoom?: boolean }} commit
+ * @returns {object|null}
+ */
+export function applyDay8ActorMoveCommit(liveGs, commit) {
+  if (!liveGs || !commit?.actorId || !Array.isArray(commit.newPlayers)) return null;
+  const idx = liveGs.players?.findIndex((pl) => pl.id === commit.actorId);
+  if (idx < 0 || liveGs.currentPlayerIdx !== idx) return null;
+  const mergedPlayers = liveGs.players.map((pl, i) =>
+    i === idx ? { ...pl, ...commit.newPlayers[idx] } : pl,
+  );
+  const actionLogs = Array.isArray(commit.actionLogs) ? commit.actionLogs : [];
+  const withDice = {
+    ...liveGs,
+    players: mergedPlayers,
+    movementFx: null,
+    log: prependLogs(actionLogs, liveGs.log),
+    ...(commit.gsWithDice?.lastDiceRolls != null
+      ? { lastDiceRolls: commit.gsWithDice.lastDiceRolls }
+      : {}),
+  };
+  if (commit.arrived) {
+    return buildNextGsAfterGoalArrival(
+      withDice,
+      mergedPlayers,
+      [],
+      commit.isMultiplayerRoom === true,
+    );
+  }
+  return computeAdvanceDay8Turn(withDice, mergedPlayers, []);
+}
+
+/**
+ * タクシー＋マス効果スライドの中間地点（1区画目 drive 完了時）。
+ * @param {object} liveGs
+ * @param {{ actorId: string, newPlayers: object[], actionLogs: string[], gsWithDice?: object, tileSlide?: { landedDice: number } }} commit
+ * @returns {object|null}
+ */
+export function applyDay8TaxiIntermediateCommit(liveGs, commit) {
+  if (!liveGs || !commit?.tileSlide || !commit?.actorId) return null;
+  const idx = liveGs.players?.findIndex((pl) => pl.id === commit.actorId);
+  if (idx < 0 || liveGs.currentPlayerIdx !== idx) return null;
+  const landedDice = commit.tileSlide.landedDice;
+  const final = commit.newPlayers[idx];
+  if (!final) return null;
+  const mergedPlayers = liveGs.players.map((pl, i) =>
+    i === idx
+      ? {
+          ...pl,
+          ...final,
+          position: landedDice,
+          stats: final.stats ?? pl.stats,
+        }
+      : pl,
+  );
+  return {
+    ...liveGs,
+    players: mergedPlayers,
+    movementFx: null,
+    log: prependLogs(commit.actionLogs ?? [], liveGs.log),
+    ...(commit.gsWithDice?.lastDiceRolls != null
+      ? { lastDiceRolls: commit.gsWithDice.lastDiceRolls }
+      : {}),
+  };
+}
+
+/**
+ * リロード等でローカル確認が失われたときの 8日目スロット復旧。
+ * @returns {{ kind: "resetSync"|"advanceTurn", gs: object }|null}
+ */
+export function buildDay8SlotReloadRecoveryPatch(gs, opts = {}) {
+  if (!gs || gs.subPhase !== "day8" || gs.gamePhase !== "playing") return null;
+  const idx = Number.isInteger(opts.actorIdx) ? opts.actorIdx : gs.currentPlayerIdx;
+  if (idx !== gs.currentPlayerIdx) return null;
+  const p = gs.players?.[idx];
+  if (!p || p.movePhase !== "arrived") return null;
+
+  const phase = gs.slotPhase ?? "idle";
+  const burst = Math.max(1, BAL.dice.slotsPerSugorokuTurn ?? 3);
+  const slotLeft = p.slotTurnsLeft ?? 0;
+  const pullsSeat = p.slotPullsThisSeat ?? 0;
+  const canContinueBurst = slotLeft > 0 && pullsSeat < burst;
+  const burstSeatDone = pullsSeat >= burst;
+  const seatSpunOut = slotLeft <= 0 && pullsSeat > 0;
+
+  if (phase === "spinning") {
+    return { kind: "resetSync", gs: mergeDay8SlotIdleSync(gs) };
+  }
+
+  if (phase === "completed") {
+    if (canContinueBurst) {
+      return { kind: "resetSync", gs: mergeDay8SlotIdleSync(gs) };
+    }
+    if (shouldDeferDay8SlotTurnAdvanceForMajorWin(gs)) {
+      return {
+        kind: "deferAdvance",
+        retryAfterMs: day8SlotMajorWinAdvanceRemainingMs(gs),
+      };
+    }
+    return { kind: "advanceTurn", gs: advanceDay8AfterSlotSpinShow(gs) };
+  }
+
+  if (phase === "idle" && (burstSeatDone || seatSpunOut)) {
+    if (shouldDeferDay8SlotTurnAdvanceForMajorWin(gs)) {
+      return {
+        kind: "deferAdvance",
+        retryAfterMs: day8SlotMajorWinAdvanceRemainingMs(gs),
+      };
+    }
+    return { kind: "advanceTurn", gs: advanceDay8AfterSlotSpinShow(gs) };
+  }
+
+  return null;
 }
 
 export function rankLabel(money) {
@@ -1091,6 +1785,7 @@ export function rankLabel(money) {
 
 export function finalizeToResults(gs, playersOverride) {
   const players = playersOverride ?? gs.players;
+  let withHistory = finalizeDay8AssetHistory(gs, players);
   const moreLogs = [
     ...players.filter((p) => p.alive).map(
       (p) => `${p.name}: 最終資金 ${p.stats.money}G / ランク ${rankLabel(p.stats.money)}`,
@@ -1099,7 +1794,7 @@ export function finalizeToResults(gs, playersOverride) {
     "━━━ 最終結果 ───",
   ];
   const next = {
-    ...gs,
+    ...withHistory,
     ...SLOT_SYNC_DEFAULTS,
     players,
     gamePhase: "results",
@@ -1230,7 +1925,35 @@ export function generateSugorokuTileEffects() {
       tiles[pos] = { kind, value: rollValue(kind) };
     }
   }
+  if (SUGOROKU_VERIFY_DEATH_TEST_TRAP_FIRST_N > 0) {
+    const trapEnd = Math.min(SUGOROKU_VERIFY_DEATH_TEST_TRAP_FIRST_N, BOARD_GOAL - 1);
+    for (let pos = 1; pos <= trapEnd; pos++) {
+      tiles[pos] = { kind: TILE_EFFECT_KIND.DEBT_TRAP };
+    }
+  }
   return tiles;
+}
+
+/**
+ * 借金トラップ脱落前：移動結果だけ liveGs に載せる（手番進行は脱落処理側）。
+ */
+export function applyDay8LandingStateToLive(liveGs, commit) {
+  if (!liveGs || !commit?.actorId || !Array.isArray(commit.newPlayers)) return null;
+  const idx = liveGs.players?.findIndex((pl) => pl.id === commit.actorId);
+  if (idx < 0 || liveGs.currentPlayerIdx !== idx) return null;
+  const mergedPlayers = liveGs.players.map((pl, i) =>
+    i === idx ? { ...pl, ...commit.newPlayers[idx] } : pl,
+  );
+  const actionLogs = Array.isArray(commit.actionLogs) ? commit.actionLogs : [];
+  return {
+    ...liveGs,
+    players: mergedPlayers,
+    movementFx: null,
+    log: prependLogs(actionLogs, liveGs.log),
+    ...(commit.gsWithDice?.lastDiceRolls != null
+      ? { lastDiceRolls: commit.gsWithDice.lastDiceRolls }
+      : {}),
+  };
 }
 
 /** 盤効果リストが無い／長さ不正のときのみ生成してマージ */
@@ -1245,19 +1968,41 @@ export function enterDay8AfterFinalBattleCue(gs) {
   const p0 = gs.players[0];
   const head = `${p0.name}の移動ターン（T1 / ${BOARD_GOAL}マス先へ！）`;
   const banner = "━━━ 8日目！全員で交互に移動＆スロット ━━━";
+  const withDay7Snapshot = snapshotDailyEndAllPlayers(gs, LAST_DAILY_DAY, gs.players);
+  const day8Players = (withDay7Snapshot.players ?? gs.players ?? []).map((pl) => {
+    if (pl.alive === false) {
+      return { ...pl, roundHandoffDone: false, ghostActedThisRound: false };
+    }
+    return {
+      ...pl,
+      position: 0,
+      moveTurns: 0,
+      movePhase: "moving",
+      roundHandoffDone: false,
+      ghostActedThisRound: false,
+      pendingTaxiSteps: 0,
+      slotTurnsLeft: 0,
+      reservedSlotTurns: 0,
+      slotPullsGranted: 0,
+      slotPullsThisSeat: 0,
+      lastMoveEvent: "",
+    };
+  });
   const next = {
-    ...ensureSugorokuTileEffects(gs),
+    ...ensureSugorokuTileEffects(withDay7Snapshot),
     ...SLOT_SYNC_DEFAULTS,
     ...DAILY_SLOT_SYNC_DEFAULTS,
     ...DAILY_CUTIN_SYNC_DEFAULTS,
     gamePhase: "playing",
     subPhase: "day8",
+    currentPlayerIdx: 0,
+    players: day8Players,
     aidAvailable: Math.random() < BAL.dice.helpChance,
     taxiAvailable: Math.random() < BAL.dice.taxiChance,
     lastDiceRolls: [],
     recentPonEvent: null,
     showSpinResult: false,
-    displayReels: ["?", "?", "?"],
+    displayReels: defaultIdleDisplayReels("standard", (day8Players.length ?? 0) > 1),
     proxySlotTargetIdx: null,
   };
   delete next.finalBattleStartedAt;
@@ -1305,9 +2050,10 @@ export function initialGameState(playerSlots) {
     gameOverMsg: "",
     showSpinResult: false,
     lastDiceRolls: [],
-    displayReels: ["?", "?", "?"],
+    displayReels: defaultIdleDisplayReels("standard", players.length > 1),
     proxySlotTargetIdx: null,
     ...SLOT_SYNC_DEFAULTS,
+    assetHistory: createEmptyAssetHistory(players.map((p) => p.id)),
   };
 }
 
@@ -1317,7 +2063,14 @@ export function computeAdvanceDaily(gs, newPlayers, extraLogs) {
   let moreLogs = [];
   let patch = {};
 
+  const acting = newPlayers[gs.currentPlayerIdx];
+  let nextGs = gs;
+  if (acting?.id && typeof acting.stats?.money === "number") {
+    nextGs = recordDailyMoney(nextGs, acting.id, gs.currentDay, acting.stats.money);
+  }
+
   if (nextIdx >= n) {
+    nextGs = snapshotDailyEndAllPlayers(nextGs, gs.currentDay, newPlayers);
     const nextDay = gs.currentDay + 1;
     if (nextDay > LAST_DAILY_DAY) {
       const startedAt = Date.now();
@@ -1346,7 +2099,7 @@ export function computeAdvanceDaily(gs, newPlayers, extraLogs) {
   }
 
   return {
-    ...gs,
+    ...nextGs,
     ...patch,
     players: newPlayers,
     log: prependLogs([...extraLogs, ...moreLogs], gs.log),
@@ -1366,7 +2119,6 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
       ...SLOT_SYNC_DEFAULTS,
       players: newPlayers,
       showSpinResult: false,
-      displayReels: ["?", "?", "?"],
       log: prependLogs(extraLogs, gs.log),
     });
   }
@@ -1375,7 +2127,9 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
   let playersForOutgoing = newPlayers;
   if (stayP?.movePhase === "arrived" && stayP?.alive === false) {
     playersForOutgoing = newPlayers.map((pl, i) =>
-      i !== stayIdx ? pl : { ...pl, movePhase: "spectating", slotTurnsLeft: 0, slotPullsThisSeat: 0 },
+      i !== stayIdx
+        ? pl
+        : { ...pl, movePhase: "spectating", slotTurnsLeft: 0, slotPullsThisSeat: 0, ghostActedThisRound: true },
     );
   }
 
@@ -1384,31 +2138,61 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
   const extraMerged = [...extraLogs, ...rimiruLogs];
 
   /** スロット手番終了後、次の自分枠までこの手番用カウンタをリセット */
+  const outgoingTimelineKind = (stayP?.slotPullsThisSeat ?? 0) > 0 ? "slot" : "move";
   playersWithInterest = playersWithInterest.map((pl, i) =>
     i !== gs.currentPlayerIdx ? pl : { ...pl, slotPullsThisSeat: 0 },
   );
 
-  if (playersWithInterest.every((pl) => isDay8Done(pl, playersWithInterest))) {
-    const interim = {
+  if (playersWithInterest.every((pl) => isDay8GameFinished(pl, playersWithInterest))) {
+    const turn = resolveDay8HistoryTurn(playersWithInterest);
+    let interim = {
       ...gs,
       players: playersWithInterest,
       proxySlotTargetIdx: null,
       log: prependLogs(extraMerged, gs.log),
     };
+    if (turn != null) {
+      interim = snapshotDay8TurnEndAllPlayers(interim, turn, playersWithInterest, outgoingTimelineKind);
+    }
     return finalizeToResults(interim, playersWithInterest);
   }
 
   const n = playersWithInterest.length;
   let nextIdx = (gs.currentPlayerIdx + 1) % n;
   for (let i = 0; i < n; i++) {
+    if (nextIdx === stayIdx) {
+      nextIdx = (nextIdx + 1) % n;
+      continue;
+    }
     if (!isDay8Done(playersWithInterest[nextIdx], playersWithInterest)) break;
     nextIdx = (nextIdx + 1) % n;
   }
 
   let playersNext = playersWithInterest.map((pl, i) => {
     if (i !== nextIdx) return pl;
-    if (!pl.alive && hasSugorokuBoardTargets(playersWithInterest) && pl.movePhase === "spectating") {
-      return { ...pl, movePhase: "ghostPickTarget" };
+    if (
+      pl.alive === false &&
+      hasSugorokuBoardTargets(playersWithInterest) &&
+      !pl.ghostActedThisRound
+    ) {
+      if (pl.movePhase === "arrived" && (pl.slotTurnsLeft ?? 0) > 0) return pl;
+      return {
+        ...pl,
+        movePhase: "ghostPickTarget",
+        slotTurnsLeft: 0,
+        slotPullsThisSeat: 0,
+        slotPullsGranted: 0,
+        pendingTaxiSteps: 0,
+        skipTurns: 0,
+      };
+    }
+    if (pl.alive === false && pl.movePhase !== "spectating" && pl.movePhase !== "arrived") {
+      return {
+        ...pl,
+        movePhase: "spectating",
+        slotTurnsLeft: 0,
+        slotPullsThisSeat: 0,
+      };
     }
     return pl;
   });
@@ -1425,8 +2209,19 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
     nextLog = `${nextP.name}の移動ターン（T${nextP.moveTurns + 1} / ${nextP.position}/${BOARD_GOAL}マス）`;
   }
 
+  const turn = resolveDay8HistoryTurn(playersWithInterest);
+  let gsWithHistory = gs;
+  if (turn != null) {
+    gsWithHistory = snapshotDay8TurnEndAllPlayers(
+      gs,
+      turn,
+      playersWithInterest,
+      outgoingTimelineKind,
+    );
+  }
+
   return stripLegacySlotFirestoreFields({
-    ...gs,
+    ...gsWithHistory,
     ...SLOT_SYNC_DEFAULTS,
     players: playersNext,
     currentPlayerIdx: nextIdx,
@@ -1435,7 +2230,10 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
     taxiAvailable: Math.random() < BAL.dice.taxiChance,
     lastDiceRolls: [],
     showSpinResult: false,
-    displayReels: ["?", "?", "?"],
+    displayReels: defaultIdleDisplayReels(
+      gsWithHistory.slotMirrorMachineKey ?? "standard",
+      (playersWithInterest?.length ?? 0) > 1,
+    ),
     log: prependLogs([...extraMerged, nextLog], gs.log),
   });
 }
@@ -1550,7 +2348,7 @@ export function applySugorokuTileLandingChain(tiles, startPosIn, moverStatsIn, p
     }
     case TILE_EFFECT_KIND.DEBT_TRAP: {
       if ((stats.money ?? 0) < 0) {
-        pushFx(`  ☠ 借金トラップ発動！借金中で破産…`, "☠ GAME OVER");
+        pushFx(`  ☠ 借金トラップ発動！借金中で破産…`, "☠ 破産");
         return {
           finalPos: pos,
           stats,

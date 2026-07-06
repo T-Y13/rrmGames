@@ -1,9 +1,15 @@
-import { computeSugorokuHopDurationMs } from "../utils/gameLogic";
+import {
+  computeSugorokuHopDurationMs,
+  computeTaxiCongestedLegDurations,
+  computeTaxiDriveDurationMs,
+} from "../utils/gameLogic";
 import { TILE_EFFECT_KIND } from "../constants/gameBalance";
 
 export const MOVEMENT_FX_DICE_SHUFFLE_MS = 650;
 export const MOVEMENT_FX_DICE_HOLD_MS = 900;
 export const MOVEMENT_FX_DICE_MS = MOVEMENT_FX_DICE_SHUFFLE_MS + MOVEMENT_FX_DICE_HOLD_MS;
+/** 演出開始直後（fromPos 固定中）は orphan 修復で位置スナップしない */
+export const MOVEMENT_FX_ORPHAN_MIN_AGE_MS = 15000;
 export const MOVEMENT_FX_TILE_EXPLAIN_MS = 2400;
 /** お金増減マス：説明吹き出しを長めに */
 export const MOVEMENT_FX_TILE_EXPLAIN_MONEY_MS = 3400;
@@ -58,6 +64,10 @@ export async function runTileEffectPresentation(tileEffect, handlers = {}) {
  *   finalPos: number;
  *   stepDelta: number;
  *   diceRolls: number[];
+ *   diceRolls: number[];
+ *   followUp?: "taxi"|"pon"|null;
+ *   taxiVisual?: object|null;
+ *   ponVisual?: object|null;
  *   id?: number;
  * }} params
  */
@@ -69,6 +79,9 @@ export function buildMovementFx({
   stepDelta,
   diceRolls,
   tileEffect = null,
+  followUp = null,
+  taxiVisual = null,
+  ponVisual = null,
   id,
 }) {
   const tileSlide = finalPos !== landedPos;
@@ -83,6 +96,113 @@ export function buildMovementFx({
     tileSlide,
     tileEffect,
     diceRolls: Array.isArray(diceRolls) ? [...diceRolls] : [],
+    ...(followUp ? { followUp } : {}),
+    ...(taxiVisual ? { taxiVisual } : {}),
+    ...(ponVisual ? { ponVisual } : {}),
+  };
+}
+
+/**
+ * 観戦側タクシー演出用：手番側 beginTaxiVisualSequence と同じタイミングパラメータを Firestore に載せる。
+ */
+export function buildTaxiVisualPayload({
+  fromPos,
+  newPosFinal,
+  landedDice,
+  needsTileSlide,
+  congested,
+  diceRollStep,
+  tileEffectMeta = null,
+}) {
+  const fullDriveMs = computeTaxiDriveDurationMs(Math.abs(newPosFinal - fromPos));
+  if (congested) {
+    const { jamMid, firstLegMs, secondLegMs } = computeTaxiCongestedLegDurations(
+      fromPos,
+      newPosFinal,
+      diceRollStep,
+      fullDriveMs,
+    );
+    return {
+      congested: true,
+      fromPos,
+      driveEndPos: newPosFinal,
+      jamMidPos: jamMid,
+      firstLegMs,
+      secondLegMs,
+      fullDriveMs,
+      needsTileSlide: false,
+    };
+  }
+  if (needsTileSlide) {
+    const firstLegMs = computeTaxiDriveDurationMs(Math.abs(landedDice - fromPos));
+    return {
+      congested: false,
+      fromPos,
+      driveEndPos: landedDice,
+      jamMidPos: null,
+      firstLegMs,
+      secondLegMs: 0,
+      fullDriveMs,
+      needsTileSlide: true,
+      tileSlideFromPos: landedDice,
+      tileSlideToPos: newPosFinal,
+      tileEffectMeta,
+    };
+  }
+  const firstLegMs = computeTaxiDriveDurationMs(Math.abs(newPosFinal - fromPos));
+  return {
+    congested: false,
+    fromPos,
+    driveEndPos: newPosFinal,
+    jamMidPos: null,
+    firstLegMs,
+    secondLegMs: 0,
+    fullDriveMs,
+    needsTileSlide: false,
+  };
+}
+
+/** 観戦側：渋滞2ターン目（drive のみ・のろのろ） */
+export function buildTaxiTrafficWaitVisualPayload({
+  fromPos,
+  driveEndPos,
+  driveMs,
+  needsTileSlide,
+  tileSlideFromPos,
+  tileSlideToPos,
+  tileEffectMeta = null,
+}) {
+  return {
+    trafficWaitLeg: true,
+    fromPos,
+    driveEndPos,
+    driveMs,
+    needsTileSlide: !!needsTileSlide,
+    tileSlideFromPos: tileSlideFromPos ?? null,
+    tileSlideToPos: tileSlideToPos ?? null,
+    tileEffectMeta,
+  };
+}
+
+/** ダイス／ホップ演出を省略して即 followUp へ進む movementFx */
+export function isInstantMovementFx(fx) {
+  return fx?.followUp === "taxiTrafficWait";
+}
+
+/** 観戦側 PON 転倒カットイン用 */
+export function buildPonVisualPayload({
+  characterType,
+  stopPos,
+  needsTileSlide,
+  tileSlideFromPos,
+  tileSlideToPos,
+}) {
+  return {
+    characterType: characterType ?? "salaryman",
+    stopPos,
+    needsTileSlide: !!needsTileSlide,
+    tileSlideFromPos: tileSlideFromPos ?? null,
+    tileSlideToPos: tileSlideToPos ?? null,
   };
 }
 
@@ -148,6 +268,11 @@ export function buildOrphanedMovementFxPatch(gs) {
     typeof finalPos === "number" &&
     finalPos !== fx.fromPos
   ) {
+    const fxAgeMs =
+      typeof fx.id === "number" && Number.isFinite(fx.id) ? Date.now() - fx.id : Infinity;
+    if (fxAgeMs < MOVEMENT_FX_ORPHAN_MIN_AGE_MS) {
+      return null;
+    }
     const newPlayers = players.map((pl, i) =>
       i === idx ? { ...pl, position: finalPos } : pl,
     );

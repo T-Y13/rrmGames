@@ -1,5 +1,4 @@
 import { BAL, BOARD_GOAL, SLOT_COST, SLOT_MACHINES, CHARACTERS } from "../constants/gameBalance";
-import { buildDailyActionFx } from "./dailyActionFx";
 import {
   advanceDay8AfterSlotSpinShow,
   applyGoalLandingConfirm,
@@ -9,18 +8,32 @@ import {
   clampMoney,
   computeAdvanceDaily,
   computeAdvanceDay8Turn,
+  hasSugorokuBoardTargets,
+  isDay8SlotBurstFinishedOnGameState,
   isGhostPickTargetPhase,
   isSugorokuBoardPlaying,
   livingCostForPlayer,
   pickGhostSlotTarget,
   prependLogs,
   resolveDay8LandingWithTiles,
+  resolveDebtTrapTriggered,
   rollDie,
+  skipGhostTurnAllPlayersArrived,
+  skipGhostTurnNoPickableProxy,
   spinSlot,
+  slotMachineForReels,
   virtueIncomeMult,
   applyVirtueIncomeBoost,
+  shouldDeferDay8SlotTurnAdvanceForMajorWin,
 } from "../utils/gameLogic";
-import { isNetworkAutomated } from "./playerPresence";
+import { buildDailyActionFx } from "./dailyActionFx";
+import {
+  canContinueAsProxySlotTarget,
+  canSelectAsProxySlotTarget,
+  buildProxySlotSpinStats,
+  getProxySlotAllowedBets,
+} from "./slotProxyTarget";
+import { isTurnAutomatable } from "./playerPresence";
 
 const GHOST_SLOT_MACHINE_KEY = "standard";
 
@@ -29,7 +42,7 @@ function pickGhostProxyTargetIdx(gs) {
   const players = gs.players ?? [];
   for (let i = 0; i < players.length; i++) {
     if (i === idx) continue;
-    if (isSugorokuBoardPlaying(players[i])) return i;
+    if (isSugorokuBoardPlaying(players[i]) && canSelectAsProxySlotTarget(players[i])) return i;
   }
   return null;
 }
@@ -39,7 +52,7 @@ function isGhostProxyTargetValid(gs, proxyIdx) {
   const idx = gs.currentPlayerIdx;
   if (proxyIdx === idx) return false;
   const tgt = gs.players?.[proxyIdx];
-  return !!tgt && isSugorokuBoardPlaying(tgt);
+  return !!tgt && canContinueAsProxySlotTarget(tgt);
 }
 
 /** 無効な代理標的を差し替え、またはクリアして自身の金でスロット可能にする */
@@ -60,7 +73,7 @@ export function reassignGhostProxyTarget(gs) {
   }
 
   if (typeof gs.proxySlotTargetIdx === "number" && gs.proxySlotTargetIdx >= 0) {
-    const logs = [`🤖 ${actor.name}: 代理標的なし → 自身のၵ金でスロット`];
+    const logs = [`🤖 ${actor.name}: 代理標的なし → 自身の資金でスロット`];
     return {
       ...gs,
       proxySlotTargetIdx: null,
@@ -69,6 +82,58 @@ export function reassignGhostProxyTarget(gs) {
   }
 
   return null;
+}
+
+/** 代理不可・資金不足時：標的差し替え・代理解除・手番スキップ */
+export function resolveGhostSlotSpinBlocked(gs) {
+  const reassigned = reassignGhostProxyTarget(gs);
+  if (reassigned) return { type: "reassign", gameState: reassigned };
+
+  const idx = gs.currentPlayerIdx;
+  const actor = gs.players?.[idx];
+  if (!actor) return null;
+
+  if (typeof gs.proxySlotTargetIdx === "number" && gs.proxySlotTargetIdx >= 0) {
+    const cleared = {
+      ...gs,
+      proxySlotTargetIdx: null,
+      log: prependLogs([`🤖 ${actor.name}: 代理スロット不可 → 代理解除`], gs.log),
+    };
+    if ((actor.stats?.money ?? 0) >= SLOT_COST) {
+      return { type: "reassign", gameState: cleared };
+    }
+    return advanceGhostSlotTurnSkip(cleared);
+  }
+
+  if ((actor.stats?.money ?? 0) >= SLOT_COST) return null;
+  return advanceGhostSlotTurnSkip(gs);
+}
+
+function advanceGhostSlotTurnSkip(gs) {
+  const idx = gs.currentPlayerIdx;
+  const p = gs.players?.[idx];
+  if (!p) return null;
+  const logs = [`🤖 ${p.name}: スロット不可（資金不足）→手番スキップ`];
+  const newPlayers = gs.players.map((pl, i) =>
+    i === idx
+      ? { ...pl, movePhase: "spectating", slotTurnsLeft: 0, slotPullsThisSeat: 0, ghostActedThisRound: true }
+      : pl,
+  );
+  return {
+    type: "advance",
+    gameState: computeAdvanceDay8Turn({ ...gs, proxySlotTargetIdx: null, players: newPlayers }, newPlayers, logs),
+  };
+}
+
+function tryGhostSlotBurstAdvance(gs) {
+  const idx = gs.currentPlayerIdx;
+  const p = gs.players?.[idx];
+  if (!p || p.movePhase !== "arrived") return null;
+  const phase = gs.slotPhase ?? "idle";
+  if (phase === "spinning") return null;
+  if (!isDay8SlotBurstFinishedOnGameState(gs)) return null;
+  if (shouldDeferDay8SlotTurnAdvanceForMajorWin(gs)) return null;
+  return advanceDay8AfterSlotSpinShow(gs);
 }
 
 function prepareGhostSlotSpinStep(gs) {
@@ -86,7 +151,9 @@ function prepareGhostSlotSpinStep(gs) {
   }
 
   const ctx = buildGhostSlotSpinCtx(gs);
-  if (!ctx) return null;
+  if (!ctx) {
+    return resolveGhostSlotSpinBlocked(gs);
+  }
   return { type: "slotSpin", ctx };
 }
 
@@ -157,14 +224,6 @@ function runGhostDay8Dice(gs, day8RemainingTurns) {
       ponSplashDamage: false,
       skipTileEffects: true,
     });
-    if (rr.gameOverByDebt?.triggered) {
-      return {
-        ...gs,
-        gamePhase: "gameOver",
-        gameOverMsg: rr.gameOverByDebt.message,
-        log: prependLogs([`💀 GAME OVER: ${rr.gameOverByDebt.message}`], gs.log),
-      };
-    }
     const arrived = landed >= BOARD_GOAL;
     const timedOut = !arrived && newTurns >= BAL.dice.maxTurns;
     const slotReserved = arrived ? Math.max(0, BAL.dice.maxTurns - newTurns) : 0;
@@ -209,12 +268,8 @@ function runGhostDay8Dice(gs, day8RemainingTurns) {
   const newTurns = roundsUsedNow + 1;
   const rr = resolveDay8LandingWithTiles(gs, idx, landed, s, logs);
   if (rr.gameOverByDebt?.triggered) {
-    return {
-      ...gs,
-      gamePhase: "gameOver",
-      gameOverMsg: rr.gameOverByDebt.message,
-      log: prependLogs([`💀 GAME OVER: ${rr.gameOverByDebt.message}`], gs.log),
-    };
+    const death = resolveDebtTrapTriggered({ ...rr.gsWithTiles, players: rr.players }, idx);
+    return death?.gs ?? null;
   }
 
   const arrived = landed >= BOARD_GOAL;
@@ -281,17 +336,28 @@ function buildGhostSlotSpinCtx(gs) {
   if (!p || p.movePhase !== "arrived" || p.slotTurnsLeft <= 0) return null;
   if ((gs.slotPhase ?? "idle") !== "idle") return null;
 
-  const bet = SLOT_COST;
   const proxyIdx =
     typeof gs.proxySlotTargetIdx === "number" && gs.proxySlotTargetIdx >= 0 ? gs.proxySlotTargetIdx : null;
   const statsForSpin =
-    proxyIdx != null && gs.players[proxyIdx] ? gs.players[proxyIdx].stats : p.stats;
+    proxyIdx != null && gs.players[proxyIdx]
+      ? buildProxySlotSpinStats(p.stats, gs.players[proxyIdx].stats)
+      : p.stats;
+
+  let bet = SLOT_COST;
+  if (proxyIdx != null) {
+    const allowed = getProxySlotAllowedBets(statsForSpin.money ?? 0);
+    if (allowed.length === 0) return null;
+    bet = allowed.includes(SLOT_COST) ? SLOT_COST : allowed[allowed.length - 1];
+  }
+
   const heat = p.slotHeat ?? 0;
   const pityBefore = p.slotPityCounter ?? 0;
   const res = spinSlot(statsForSpin, bet, GHOST_SLOT_MACHINE_KEY, heat, p.characterType, {
     pityCounter: pityBefore,
+    potJackpotEnabled: gs.players.length > 1,
   });
   const machine = SLOT_MACHINES[GHOST_SLOT_MACHINE_KEY] ?? SLOT_MACHINES.standard;
+  const reelMachine = slotMachineForReels(machine, gs.players.length > 1);
   const newLeft = p.slotTurnsLeft - 1;
   const newPullsSeat = (p.slotPullsThisSeat ?? 0) + 1;
   return {
@@ -307,6 +373,7 @@ function buildGhostSlotSpinCtx(gs) {
     visualReels: res.reels,
     emotionLine: null,
     machine,
+    reelMachine,
     slotTurnsBefore: p.slotTurnsLeft,
   };
 }
@@ -325,18 +392,26 @@ export function finishGhostSlotBurst(resultGS) {
 }
 
 /**
- * ネットワークゴースト／自主退室プレイヤーの手番を1ステップ進める。
+ * ネットワークゴースト／自主退室／脱落切断プレイヤーの手番を1ステップ進める。
  * @returns {object|null} 次の gameState
  */
-export function runGhostAutomationStep(gs, { day8RemainingTurns = BAL.dice.maxTurns } = {}) {
+export function runGhostAutomationStep(
+  gs,
+  { day8RemainingTurns = BAL.dice.maxTurns, roomPlayers = null, now = Date.now() } = {},
+) {
   if (!gs?.players?.length) return null;
   const idx = gs.currentPlayerIdx;
   const p = gs.players[idx];
-  if (!p || !isNetworkAutomated(p)) return null;
+  if (!p || !isTurnAutomatable(p, roomPlayers, now)) return null;
 
   if (isGhostPickTargetPhase(p)) {
     const targetIdx = pickGhostProxyTargetIdx(gs);
-    if (targetIdx == null) return null;
+    if (targetIdx == null) {
+      if (!hasSugorokuBoardTargets(gs.players)) {
+        return skipGhostTurnAllPlayersArrived(gs);
+      }
+      return skipGhostTurnNoPickableProxy(gs);
+    }
     return pickGhostSlotTarget(gs, targetIdx);
   }
 
@@ -357,7 +432,12 @@ export function runGhostAutomationStep(gs, { day8RemainingTurns = BAL.dice.maxTu
       return runGhostDay8Dice(gs, day8RemainingTurns);
     }
     if (p.movePhase === "arrived") {
-      return prepareGhostSlotSpinStep(gs);
+      const advance = tryGhostSlotBurstAdvance(gs);
+      if (advance) return advance;
+      const prep = prepareGhostSlotSpinStep(gs);
+      if (!prep) return null;
+      if (prep.type === "slotSpin" || prep.type === "reassign" || prep.type === "advance") return prep;
+      return null;
     }
     if (p.movePhase === "missed") {
       return computeAdvanceDay8Turn(gs, gs.players, [`🤖 ${p.name} タイムアウト済み（自動スキップ）`]);

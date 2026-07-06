@@ -1,36 +1,148 @@
-import { describe, it, expect } from "vitest";
-import { computeProgressivePotDelta } from "../lib/progressivePot.js";
+import { describe, it, expect, vi } from "vitest";
+import {
+  POT_INIT_MIN,
+  POT_INIT_MAX,
+  POT_TURN_STACK_TOTAL,
+  computeProgressivePotDelta,
+  potFromTurnGrowthOnly,
+  potTurnIncrementPerRound,
+  rollInitialProgressivePot,
+  rollPotJackpotResetPool,
+  resolveTotalPotAfterRoomTracking,
+  readRoomTotalPot,
+} from "./progressivePot.js";
+import { BAL } from "../constants/gameBalance.js";
+
+describe("rollInitialProgressivePot", () => {
+  it("rolls within 15,000–20,000", () => {
+    const randomFn = vi.fn().mockReturnValue(0);
+    expect(rollInitialProgressivePot(randomFn)).toBe(15000);
+    expect(rollInitialProgressivePot(() => 0.9999)).toBe(20000);
+  });
+});
+
+describe("potFromTurnGrowthOnly", () => {
+  it("adds 15,000 total over 12 completed rounds (turn adds only)", () => {
+    expect(potFromTurnGrowthOnly(0)).toBe(0);
+    expect(potFromTurnGrowthOnly(1)).toBe(potTurnIncrementPerRound());
+    expect(potFromTurnGrowthOnly(12)).toBe(15000);
+    expect(potFromTurnGrowthOnly(15)).toBe(15000);
+    expect(potTurnIncrementPerRound() * 12).toBe(15000);
+  });
+});
 
 describe("computeProgressivePotDelta", () => {
-  it("adds 20% of bet to pot on non-jackpot spins", () => {
-    expect(computeProgressivePotDelta(100, 500, false)).toEqual({
-      totalPot: 200,
+  it("adds 30% of bet on top of current pot", () => {
+    expect(computeProgressivePotDelta(18000, 1000, false)).toEqual({
+      totalPot: 18300,
       potPayout: 0,
-      contribution: 100,
+      contribution: 300,
     });
   });
 
-  it("awards accumulated pot plus this spin contribution on jackpot and resets", () => {
-    expect(computeProgressivePotDelta(250, 1000, true)).toEqual({
-      totalPot: 0,
-      potPayout: 450,
-      contribution: 200,
-    });
+  it("pays pool plus this spin contribution on pot jackpot and resets randomly", () => {
+    const randomFn = vi.fn().mockReturnValue(0.5);
+    const result = computeProgressivePotDelta(22000, 1000, true, randomFn);
+    expect(result.potPayout).toBe(22300);
+    expect(result.contribution).toBe(300);
+    expect(result.totalPot).toBeGreaterThanOrEqual(POT_INIT_MIN);
+    expect(result.totalPot).toBeLessThanOrEqual(POT_INIT_MAX);
+  });
+});
+
+describe("resolveTotalPotAfterRoomTracking", () => {
+  it("sets random initial pot when entering day 8", () => {
+    const randomFn = vi.fn().mockReturnValue(0.25);
+    expect(
+      resolveTotalPotAfterRoomTracking({
+        prevRemaining: BAL.dice.maxTurns,
+        nextRemaining: BAL.dice.maxTurns,
+        prevGs: { gamePhase: "playing", subPhase: "daily" },
+        nextGs: { gamePhase: "playing", subPhase: "day8" },
+        prevTotalPot: 25000,
+        randomFn,
+      }),
+    ).toBe(16250);
   });
 
-  it("includes initial 1000G pot on first jackpot win", () => {
-    expect(computeProgressivePotDelta(1000, 100, true)).toEqual({
-      totalPot: 0,
-      potPayout: 1020,
-      contribution: 20,
-    });
+  it("adds turn increment on each completed round (stacks with prior bet growth)", () => {
+    const inc = potTurnIncrementPerRound();
+    const nextRemaining = BAL.dice.maxTurns - 1;
+    expect(
+      resolveTotalPotAfterRoomTracking({
+        prevRemaining: BAL.dice.maxTurns,
+        nextRemaining,
+        prevGs: { gamePhase: "playing", subPhase: "day8" },
+        nextGs: { gamePhase: "playing", subPhase: "day8" },
+        prevTotalPot: 17000,
+      }),
+    ).toBe(17000 + inc);
   });
 
-  it("starts from zero when room has no totalPot field", () => {
-    expect(computeProgressivePotDelta(undefined, 100, false)).toEqual({
-      totalPot: 20,
-      potPayout: 0,
-      contribution: 20,
+  it("does not add turn increment after 12 rounds", () => {
+    const nextRemaining = BAL.dice.maxTurns - 13;
+    expect(
+      resolveTotalPotAfterRoomTracking({
+        prevRemaining: BAL.dice.maxTurns - 12,
+        nextRemaining,
+        prevGs: { gamePhase: "playing", subPhase: "day8" },
+        nextGs: { gamePhase: "playing", subPhase: "day8" },
+        prevTotalPot: 35000,
+      }),
+    ).toBe(35000);
+  });
+});
+
+describe("both growth paths stack", () => {
+  it("initial random plus turn adds reach initial + 15k without bets", () => {
+    const randomFn = vi.fn().mockReturnValue(0);
+    let pot = resolveTotalPotAfterRoomTracking({
+      prevRemaining: BAL.dice.maxTurns,
+      nextRemaining: BAL.dice.maxTurns,
+      prevGs: { gamePhase: "playing", subPhase: "daily" },
+      nextGs: { gamePhase: "playing", subPhase: "day8" },
+      prevTotalPot: 0,
+      randomFn,
     });
+    expect(pot).toBe(15000);
+    for (let r = 1; r <= 12; r += 1) {
+      pot = resolveTotalPotAfterRoomTracking({
+        prevRemaining: BAL.dice.maxTurns - (r - 1),
+        nextRemaining: BAL.dice.maxTurns - r,
+        prevGs: { gamePhase: "playing", subPhase: "day8" },
+        nextGs: { gamePhase: "playing", subPhase: "day8" },
+        prevTotalPot: pot,
+      });
+    }
+    expect(pot).toBe(15000 + POT_TURN_STACK_TOTAL);
+  });
+
+  it("turn adds then bet adds exceed turn-only ceiling", () => {
+    const inc = potTurnIncrementPerRound();
+    let pot = 15000;
+    pot = resolveTotalPotAfterRoomTracking({
+      prevRemaining: BAL.dice.maxTurns,
+      nextRemaining: BAL.dice.maxTurns - 1,
+      prevGs: { gamePhase: "playing", subPhase: "day8" },
+      nextGs: { gamePhase: "playing", subPhase: "day8" },
+      prevTotalPot: pot,
+    });
+    expect(pot).toBe(15000 + inc);
+    const afterSpin = computeProgressivePotDelta(pot, 1000, false);
+    expect(afterSpin.totalPot).toBe(pot + 300);
+    expect(afterSpin.totalPot).toBeGreaterThan(potFromTurnGrowthOnly(1));
+  });
+});
+
+describe("readRoomTotalPot", () => {
+  it("defaults to POT_INIT_MIN when missing", () => {
+    expect(readRoomTotalPot({})).toBe(POT_INIT_MIN);
+  });
+});
+
+describe("rollPotJackpotResetPool", () => {
+  it("uses same range as initial pot", () => {
+    expect(rollPotJackpotResetPool(() => 0)).toBe(POT_INIT_MIN);
+    expect(rollPotJackpotResetPool(() => 0.9999)).toBe(POT_INIT_MAX);
   });
 });

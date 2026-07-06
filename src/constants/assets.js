@@ -132,3 +132,6 @@ export function getStandeeCascade(characterType, pose = "normal") {
 export function getTaxiStandeeCascade() {
   return [...TAXI_STANDEE_CASCADE];
 }
+
+/** すごろく：脱落プレイヤーの墓標 */
+export const TOMB_BOARD_IMAGE = "/images/tomb.png";

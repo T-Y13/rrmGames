@@ -6,19 +6,34 @@ import SlotReelCanvasView from "./SlotReelCanvasView";
 import { BAL, SLOT_BETS, SLOT_COST, SLOT_MACHINES } from "../constants/gameBalance";
 import SlotProxyAccountability from "./SlotProxyAccountability";
 import JackpotCelebration from "./JackpotCelebration";
-import { isLocalPlayerProxyTarget } from "../lib/slotProxyTarget";
+import {
+  PROXY_SLOT_RULES_LINES,
+  buildProxySlotSpinStats,
+  canProxySlotBetAt,
+  computeProxySlotMaxBet,
+  getProxySlotAllowedBets,
+  isLocalPlayerProxyTarget,
+} from "../lib/slotProxyTarget";
 import {
   advanceDay8AfterSlotSpinShow,
   applyDay8SlotSpinToFreshGameState,
+  buildDay8SlotReloadRecoveryPatch,
+  isDay8SlotBurstFinishedOnGameState,
   calcSlotRates,
   computeAdvanceDay8Turn,
+  day8SlotMajorWinCelebrationHoldMs,
   getSlotReachAnimationState,
+  getSlotTierReelSymbols,
+  mergeDay8SlotIdleSync,
+  pickDisplayReelsFromGameState,
   pickWrongSymbol,
   randomStripTriple,
   rankLabel,
   rollReachCutInDisplay,
   spinSlot,
+  slotMachineForReels,
   slotPaylineMiddlesToTargetIndices,
+  SLOT_TIER_LABELS,
   stripLegacySlotFirestoreFields,
   stripTripleForMiddleColumn,
   rand,
@@ -80,12 +95,16 @@ export default function SlotMachine({
   isMyTurn,
   writeGS,
   commitPendingGameState,
+  commitDay8SlotLivePatch,
+  commitDay8SlotSkipAdvance,
+  syncDay8SlotIdleFromLive,
   commitGameStateTransaction,
   commitDay8SlotSpin,
   soundRef,
   roomId,
   interactionLocked = false,
   myId,
+  spectatorMode = false,
 }) {
   const [isSpinning, setIsSpinning] = useState(false);
   const [localReels, setLocalReels] = useState(["?", "?", "?"]);
@@ -111,6 +130,7 @@ export default function SlotMachine({
   const [showPayout, setShowPayout] = useState(false);
   const [showJackpotCelebration, setShowJackpotCelebration] = useState(false);
   const [jackpotCelebrationPayout, setJackpotCelebrationPayout] = useState(0);
+  const [jackpotCelebrationVariant, setJackpotCelebrationVariant] = useState("jackpot");
   const [reelsCanvasSettled, setReelsCanvasSettled] = useState(true);
   const [postSpinPending, setPostSpinPending] = useState(false);
 
@@ -126,6 +146,9 @@ export default function SlotMachine({
   const spinTimersRef = useRef([]);
   /** スピン確定絵柄：Firestore 反映前の古い displayReels で上書きしない */
   const spinDisplayLockRef = useRef(null);
+  const slotReloadRecoveryKeyRef = useRef(null);
+  const slotReloadRecoveryBusyRef = useRef(false);
+  const slotMajorWinDeferTimerRef = useRef(null);
 
   const clearSpinTimers = useCallback(() => {
     for (const id of spinTimersRef.current) {
@@ -157,12 +180,22 @@ export default function SlotMachine({
 
   const commitPendingAdvance = useCallback(
     async (pending, opts = {}) => {
-      if (!pending) return;
-      const markOpts = { markDay8TurnComplete: opts.markDay8TurnComplete ?? true };
-      if (roomId) await commitPendingGameState(pending, markOpts);
-      else await writeGS(pending, markOpts);
+      const actorId =
+        opts.turnCompletePlayerId ??
+        pending?.players?.[pending?.currentPlayerIdx]?.id ??
+        gs?.players?.[gs?.currentPlayerIdx]?.id ??
+        null;
+      const markOpts = {
+        markDay8TurnComplete: opts.markDay8TurnComplete ?? true,
+        turnCompletePlayerId: actorId,
+      };
+      if (roomId && typeof commitDay8SlotLivePatch === "function") {
+        return commitDay8SlotLivePatch("advanceTurn", markOpts);
+      }
+      if (!pending) return false;
+      return writeGS(pending, markOpts);
     },
-    [roomId, commitPendingGameState, writeGS],
+    [roomId, commitDay8SlotLivePatch, writeGS, gs],
   );
 
   const finalizePostSpinResult = useCallback(
@@ -170,7 +203,6 @@ export default function SlotMachine({
       if (!postSpinResultRef.current) return;
       postSpinResultRef.current = null;
       clearPostSpinFlushTimer();
-      setPostSpinPending(false);
 
       const actor = resultGS.players?.[resultGS.currentPlayerIdx];
       const burst = Math.max(1, BAL.dice.slotsPerSugorokuTurn ?? 3);
@@ -183,27 +215,43 @@ export default function SlotMachine({
           clearTimeout(slotPostResultGraceTimerRef.current);
           slotPostResultGraceTimerRef.current = null;
         }
-        void writeGS(
-          stripLegacySlotFirestoreFields({
-            ...resultGS,
-            ...SLOT_SYNC_DEFAULTS,
-            showSpinResult: false,
-          }),
-        );
+        const lastTier = actor?.lastSpinResult?.tier;
+        const isMajorWin = lastTier === "potJackpot" || lastTier === "jackpot";
+        const syncIdle = () => {
+          if (roomId && typeof syncDay8SlotIdleFromLive === "function") {
+            void syncDay8SlotIdleFromLive(resultGS);
+          } else {
+            void writeGS(mergeDay8SlotIdleSync(resultGS));
+          }
+        };
+        if (isMajorWin) {
+          slotPostResultGraceTimerRef.current = setTimeout(() => {
+            slotPostResultGraceTimerRef.current = null;
+            setPostSpinPending(false);
+            syncIdle();
+          }, SLOT_JACKPOT_CELEBRATION_MS + 150);
+        } else {
+          setPostSpinPending(false);
+          syncIdle();
+        }
         return;
       }
 
       if (slotPostResultGraceTimerRef.current) {
         clearTimeout(slotPostResultGraceTimerRef.current);
       }
+      const lastTier = actor?.lastSpinResult?.tier;
+      const isMajorWin = lastTier === "potJackpot" || lastTier === "jackpot";
+      const graceMs = isMajorWin ? day8SlotMajorWinCelebrationHoldMs() : SLOT_RESULT_END_BURST_GRACE_MS;
       slotPostResultGraceTimerRef.current = setTimeout(() => {
         slotPostResultGraceTimerRef.current = null;
+        setPostSpinPending(false);
         pendingGSRef.current = advanceDay8AfterSlotSpinShow(resultGS);
         setAwaitingConfirm(true);
         setConfirmCountdown(5);
-      }, SLOT_RESULT_END_BURST_GRACE_MS);
+      }, graceMs);
     },
-    [clearPostSpinFlushTimer, writeGS],
+    [clearPostSpinFlushTimer, writeGS, roomId, syncDay8SlotIdleFromLive],
   );
 
   const schedulePostSpinResult = useCallback(
@@ -226,6 +274,15 @@ export default function SlotMachine({
   const targetGs =
     proxySlotTargetIdx != null && gs?.players?.[proxySlotTargetIdx] ? gs.players[proxySlotTargetIdx] : null;
   const moneyGs = targetGs ?? cpGs;
+  const isProxyPull = proxySlotTargetIdx != null && targetGs != null;
+  const proxyMaxBet = isProxyPull ? computeProxySlotMaxBet(moneyGs.stats?.money ?? 0) : null;
+  const betsForUi = isProxyPull
+    ? getProxySlotAllowedBets(moneyGs.stats?.money ?? 0)
+    : SLOT_BETS;
+  const slotRateStats =
+    isProxyPull && cpGs?.stats && moneyGs?.stats
+      ? buildProxySlotSpinStats(cpGs.stats, moneyGs.stats)
+      : cpGs?.stats;
 
   const displayReelsKey = gs?.displayReels?.join?.(",") ?? "";
 
@@ -234,6 +291,10 @@ export default function SlotMachine({
       if (slotPostResultGraceTimerRef.current) {
         clearTimeout(slotPostResultGraceTimerRef.current);
         slotPostResultGraceTimerRef.current = null;
+      }
+      if (slotMajorWinDeferTimerRef.current) {
+        clearTimeout(slotMajorWinDeferTimerRef.current);
+        slotMajorWinDeferTimerRef.current = null;
       }
       clearPostSpinFlushTimer();
       clearSpinTimers();
@@ -250,11 +311,13 @@ export default function SlotMachine({
     setShowWinEffect(tier);
     setCharReaction("win");
     setTimeout(() => soundRef.current?.playWin?.(tier), 80);
-    if (tier === "jackpot") {
-      setJackpotCelebrationPayout(payout ?? 0);
+    if (tier === "jackpot" || tier === "potJackpot") {
+      const gross = payout ?? 0;
+      setJackpotCelebrationVariant(tier === "potJackpot" ? "pot" : "jackpot");
+      setJackpotCelebrationPayout(gross);
       setShowJackpotCelebration(true);
     }
-    const clearMs = tier === "jackpot" ? SLOT_JACKPOT_WIN_FX_CLEAR_MS : 4000;
+    const clearMs = tier === "jackpot" || tier === "potJackpot" ? SLOT_JACKPOT_WIN_FX_CLEAR_MS : 4000;
     const clearFx = setTimeout(() => setShowWinEffect(null), clearMs);
     return () => clearTimeout(clearFx);
   }, [reelsCanvasSettled, soundRef]);
@@ -281,8 +344,8 @@ export default function SlotMachine({
     if (!cpIsSlot || isSpinning) return;
     if (postSpinPending || showPayout || showWinEffect) return;
 
-    const dr = gs?.displayReels;
-    if (!Array.isArray(dr) || dr.length !== 3) return;
+    const dr = pickDisplayReelsFromGameState(gs);
+    if (!dr) return;
 
     if (spinDisplayLockRef.current) {
       const lockedKey = spinDisplayLockRef.current.join(",");
@@ -292,7 +355,10 @@ export default function SlotMachine({
     }
 
     const machineKey = gs?.slotMirrorMachineKey ?? selectedMachineKey;
-    const m = SLOT_MACHINES[machineKey] ?? SLOT_MACHINES.standard;
+    const m = slotMachineForReels(
+      SLOT_MACHINES[machineKey] ?? SLOT_MACHINES.standard,
+      (gs?.players?.length ?? 0) > 1,
+    );
     setReelColumns(dr.map((mid, ci) => stripTripleForMiddleColumn(mid, m, ci)));
   }, [
     cpIsSlot,
@@ -307,7 +373,108 @@ export default function SlotMachine({
   ]);
 
   useEffect(() => {
-    if (!awaitingConfirm) return;
+    if (!spectatorMode) return;
+    const mk = gs?.slotMirrorMachineKey ?? "standard";
+    setSelectedMachineKey(mk);
+  }, [spectatorMode, gs?.slotMirrorMachineKey]);
+
+  /** リロードで確認 UI が消えたとき、Firestore の slotPhase から手番を復旧 */
+  useEffect(() => {
+    if (spectatorMode || !isMyTurn || !gs || interactionLocked) return;
+    if (!cpIsSlot || isSpinning || awaitingConfirm || postSpinPending) return;
+    if (showJackpotCelebration || showPayout || showWinEffect) return;
+
+    const recovery = buildDay8SlotReloadRecoveryPatch(gs);
+    const burstFinished = isDay8SlotBurstFinishedOnGameState(gs);
+    if (!recovery && !burstFinished) return;
+
+    const phase = gs.slotPhase ?? "idle";
+    const pullsSeat = cpGs?.slotPullsThisSeat ?? 0;
+    const slotLeft = cpGs?.slotTurnsLeft ?? 0;
+    const recoveryKey = recovery
+      ? `${recovery.kind}|${phase}|${slotLeft}|${pullsSeat}|${gs.slotResultSettledAt ?? ""}`
+      : `forceAdvance|${phase}|${slotLeft}|${pullsSeat}|${gs.slotResultSettledAt ?? ""}`;
+    if (slotReloadRecoveryKeyRef.current === recoveryKey) return;
+    if (slotReloadRecoveryBusyRef.current) return;
+    slotReloadRecoveryKeyRef.current = recoveryKey;
+    slotReloadRecoveryBusyRef.current = true;
+
+    const finishRecovery = (ok = true) => {
+      slotReloadRecoveryBusyRef.current = false;
+      if (!ok) slotReloadRecoveryKeyRef.current = null;
+    };
+
+    if (recovery?.kind === "deferAdvance") {
+      const waitMs = Math.max(0, recovery.retryAfterMs ?? 0);
+      const deferKey = `defer|${gs.slotResultSettledAt ?? ""}|${waitMs}`;
+      if (slotMajorWinDeferTimerRef.current) {
+        finishRecovery();
+        return;
+      }
+      slotReloadRecoveryKeyRef.current = deferKey;
+      slotMajorWinDeferTimerRef.current = setTimeout(() => {
+        slotMajorWinDeferTimerRef.current = null;
+        slotReloadRecoveryKeyRef.current = null;
+        finishRecovery();
+        void commitDay8SlotLivePatch("advanceTurn", {
+          markDay8TurnComplete: true,
+          turnCompletePlayerId: cpGs?.id ?? null,
+        }).then((ok) => {
+          if (!ok) slotReloadRecoveryKeyRef.current = null;
+        });
+      }, waitMs);
+      return;
+    }
+
+    const actorId = cpGs?.id ?? gs?.players?.[gs?.currentPlayerIdx]?.id ?? null;
+    if (recovery?.kind === "advanceTurn" || (!recovery && burstFinished)) {
+      if (roomId && typeof commitDay8SlotLivePatch === "function") {
+        void commitDay8SlotLivePatch("advanceTurn", {
+          markDay8TurnComplete: true,
+          turnCompletePlayerId: actorId,
+        }).then((ok) => finishRecovery(ok));
+      } else {
+        void commitPendingAdvance(recovery.gs, {
+          markDay8TurnComplete: true,
+          turnCompletePlayerId: actorId,
+        }).then((ok) => finishRecovery(ok));
+      }
+      return;
+    }
+    if (!recovery) {
+      finishRecovery(false);
+      return;
+    }
+    if (roomId && typeof commitDay8SlotLivePatch === "function") {
+      void commitDay8SlotLivePatch("resetSync", { markDay8TurnComplete: false }).finally(() =>
+        finishRecovery(true),
+      );
+    } else {
+      void writeGS(recovery.gs).finally(() => finishRecovery(true));
+    }
+  }, [
+    spectatorMode,
+    isMyTurn,
+    gs,
+    cpIsSlot,
+    cpGs?.slotPullsThisSeat,
+    cpGs?.slotTurnsLeft,
+    cpGs?.id,
+    isSpinning,
+    awaitingConfirm,
+    postSpinPending,
+    interactionLocked,
+    commitPendingAdvance,
+    commitDay8SlotLivePatch,
+    roomId,
+    writeGS,
+    showJackpotCelebration,
+    showPayout,
+    showWinEffect,
+  ]);
+
+  useEffect(() => {
+    if (spectatorMode || !awaitingConfirm) return;
     if (confirmCountdown <= 0) {
       const pending = pendingGSRef.current;
       pendingGSRef.current = null;
@@ -318,10 +485,10 @@ export default function SlotMachine({
     }
     const t = setTimeout(() => setConfirmCountdown((c) => c - 1), 1000);
     return () => clearTimeout(t);
-  }, [awaitingConfirm, confirmCountdown, commitPendingAdvance]);
+  }, [spectatorMode, awaitingConfirm, confirmCountdown, commitPendingAdvance]);
 
   const handleConfirm = async () => {
-    if (interactionLocked) return;
+    if (spectatorMode || interactionLocked) return;
     if (slotPostResultGraceTimerRef.current) return;
     const pending = pendingGSRef.current;
     pendingGSRef.current = null;
@@ -335,6 +502,13 @@ export default function SlotMachine({
     if (!gs || !isMyTurn || isSpinning || interactionLocked) return;
     const phase = gs?.slotPhase ?? "idle";
     if (phase !== "idle" && phase !== "completed") return;
+    if (roomId && typeof commitDay8SlotSkipAdvance === "function") {
+      await commitDay8SlotSkipAdvance({
+        markDay8TurnComplete: true,
+        turnCompletePlayerId: p?.id ?? null,
+      });
+      return;
+    }
     const idx = gs.currentPlayerIdx;
     const p = gs.players[idx];
     const pxy = typeof gs.proxySlotTargetIdx === "number" ? gs.proxySlotTargetIdx : null;
@@ -360,20 +534,29 @@ export default function SlotMachine({
     const p = gs.players[gs.currentPlayerIdx];
     if (p.slotTurnsLeft <= 0) return;
     const machine = SLOT_MACHINES[selectedMachineKey] ?? SLOT_MACHINES.standard;
+    const potJackpotEnabled = (gs?.players?.length ?? 0) > 1;
+    const reelMachine = slotMachineForReels(machine, potJackpotEnabled);
 
     const proxyIdx =
       typeof gs.proxySlotTargetIdx === "number" && gs.proxySlotTargetIdx >= 0 ? gs.proxySlotTargetIdx : null;
     const statsForSpin =
-      proxyIdx != null && gs.players[proxyIdx] ? gs.players[proxyIdx].stats : p.stats;
+      proxyIdx != null && gs.players[proxyIdx]
+        ? buildProxySlotSpinStats(p.stats, gs.players[proxyIdx].stats)
+        : p.stats;
+
+    if (proxyIdx != null && !canProxySlotBetAt(statsForSpin.money, bet)) return;
 
     const heat = p.slotHeat ?? 0;
     const pityBefore = p.slotPityCounter ?? 0;
     const slotTurnsBefore = p.slotTurnsLeft;
-    const res = spinSlot(statsForSpin, bet, selectedMachineKey, heat, p.characterType, { pityCounter: pityBefore });
+    const res = spinSlot(statsForSpin, bet, selectedMachineKey, heat, p.characterType, {
+      pityCounter: pityBefore,
+      potJackpotEnabled,
+    });
 
     let visualReels = [...res.reels];
     if (res.tier === "miss") {
-      const sym = machine.symbols;
+      const sym = reelMachine.symbols;
       const nm = BAL.slot.nearMissReachChance;
       const sp = BAL.slot.slipSymbolChance;
       const u = Math.random();
@@ -394,7 +577,7 @@ export default function SlotMachine({
     const lkEx = Math.max(0, statsForSpin.luck - BAL.slot.luckBaseline);
     const skEx = Math.max(0, statsForSpin.skill - BAL.slot.skillBaseline);
     const slipEligible = res.tier !== "miss" && (lkEx >= 10 || skEx >= 10);
-    const finalStrips = visualReels.map((mid, ci) => stripTripleForMiddleColumn(mid, machine, ci));
+    const finalStrips = visualReels.map((mid, ci) => stripTripleForMiddleColumn(mid, reelMachine, ci));
 
     const t0 = SLOT_SYNC_T0;
     const t1 = SLOT_SYNC_T1;
@@ -414,7 +597,7 @@ export default function SlotMachine({
 
     spinDisplayLockRef.current = null;
     if (roomId) {
-      const targetResult = slotPaylineMiddlesToTargetIndices(visualReels, machine);
+      const targetResult = slotPaylineMiddlesToTargetIndices(visualReels, reelMachine);
       const slotSpinSessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
       const spinningOk = await writeGS(
         stripLegacySlotFirestoreFields({
@@ -473,13 +656,13 @@ export default function SlotMachine({
     shuffleIntervalRef.current = setInterval(() => {
       if (performance.now() < spinFreezeCutinUntilRef.current) return;
       const stopped = stoppedReelsRef.current;
-      setReelColumns((prev) => prev.map((col, i) => (stopped[i] ? col : randomStripTriple(machine))));
+      setReelColumns((prev) => prev.map((col, i) => (stopped[i] ? col : randomStripTriple(reelMachine))));
     }, 80);
 
     const finalizeColumn = (idx, targetStrip, allowSlip) => {
       const doSlip = allowSlip && slipEligible && Math.random() < 0.5;
       if (doSlip) {
-        const wm = pickWrongSymbol(targetStrip[1], machine);
+        const wm = pickWrongSymbol(targetStrip[1], reelMachine);
         const faux = [targetStrip[0], wm, targetStrip[2]];
         stoppedReelsRef.current[idx] = true;
         setReelColumns((prev) => {
@@ -612,12 +795,16 @@ export default function SlotMachine({
         visualReels,
         emotionLine,
         machine,
+        reelMachine,
         slotTurnsBefore,
       };
 
       let resultGS = null;
       if (usePotTx) {
         resultGS = await commitDay8SlotSpin(ctx);
+        if (!resultGS && res.tier === "potJackpot") {
+          resultGS = await commitDay8SlotSpin(ctx);
+        }
       } else if (useMoneyTx) {
         resultGS = await commitGameStateTransaction((g0) => applyDay8SlotSpinToFreshGameState(g0, ctx));
       } else {
@@ -636,13 +823,13 @@ export default function SlotMachine({
 
       if (!resultGS) {
         if (roomId) {
-          await writeGS(
-            stripLegacySlotFirestoreFields({
-              ...gs,
-              ...SLOT_SYNC_DEFAULTS,
-              showSpinResult: false,
-            }),
-          );
+          if (typeof syncDay8SlotIdleFromLive === "function") {
+            await syncDay8SlotIdleFromLive();
+          } else if (typeof commitDay8SlotLivePatch === "function") {
+            await commitDay8SlotLivePatch("resetSync", { markDay8TurnComplete: false });
+          } else {
+            await writeGS(mergeDay8SlotIdleSync(gs));
+          }
         }
         setIsSpinning(false);
         return;
@@ -669,11 +856,15 @@ export default function SlotMachine({
   );
 
   const publicAssetBase = (import.meta.env.BASE_URL || "/").replace(/\/?$/, "/");
+  const spectatorBtn =
+    "bg-slate-700/95 text-slate-100 border border-slate-500/55 shadow-none hover:bg-slate-700/95 disabled:opacity-100 disabled:cursor-not-allowed";
+  const visibleMachineKey = spectatorMode ? (gs?.slotMirrorMachineKey ?? "standard") : selectedMachineKey;
 
   return (
     <>
       <JackpotCelebration
         show={showJackpotCelebration}
+        variant={jackpotCelebrationVariant}
         actorName={cpGs?.name?.trim() || ""}
         payout={jackpotCelebrationPayout}
         durationMs={SLOT_JACKPOT_CELEBRATION_MS}
@@ -692,23 +883,43 @@ export default function SlotMachine({
           <button
             type="button"
             onClick={() => {
+              if (spectatorMode) return;
               const next = !isMuted;
               setIsMuted(next);
               soundRef.current?.setMuted(next);
             }}
-            title={isMuted ? "ミュート解除" : "ミュート"}
-            className={`flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors ${isMuted ? "border-slate-600 bg-slate-800 text-slate-400 hover:border-slate-500" : "border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20"}`}
+            disabled={spectatorMode}
+            title={spectatorMode ? "他プレイヤーの画面です" : isMuted ? "ミュート解除" : "ミュート"}
+            className={
+              spectatorMode
+                ? `flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-semibold ${spectatorBtn}`
+                : `flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors ${isMuted ? "border-slate-600 bg-slate-800 text-slate-400 hover:border-slate-500" : "border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20"}`
+            }
           >
             {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
             {isMuted ? "OFF" : "ON"}
           </button>
         </div>
       {cpGs.slotTurnsLeft > 0 || awaitingConfirm || postSpinPending ? (
-        <div className="space-y-4">
+        <div className={`space-y-4${spectatorMode ? " relative min-h-[360px]" : ""}`}>
+          {spectatorMode && (
+            <div
+              className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
+              aria-live="polite"
+              aria-label={`${cpGs.name}が操作中`}
+            >
+              <div className="mx-4 rounded-2xl border border-violet-400/55 bg-slate-950/95 px-8 py-4 text-center shadow-[0_8px_32px_rgba(0,0,0,0.45)]">
+                <p className="text-lg font-bold tracking-wide text-violet-100 sm:text-xl">
+                  {cpGs.name} が操作中
+                </p>
+              </div>
+            </div>
+          )}
           {(() => {
-            const activeMachine = SLOT_MACHINES[selectedMachineKey] ?? SLOT_MACHINES.standard;
+            const activeMachine = SLOT_MACHINES[visibleMachineKey] ?? SLOT_MACHINES.standard;
             const heat = cpGs.slotHeat ?? 0;
-            const r = calcSlotRates(moneyGs.stats, activeMachine, heat, cpGs.characterType);
+            const potJackpotEnabled = (gs?.players?.length ?? 0) > 1;
+            const r = calcSlotRates(slotRateStats, activeMachine, heat, cpGs.characterType, { potJackpotEnabled });
             const missRed = (r.heatMissReduced * 100).toFixed(1);
             const isBurning = heat >= 10;
             const isWarm = heat >= 6;
@@ -716,16 +927,26 @@ export default function SlotMachine({
             const heatLabel = isBurning ? "🔥 BURNING!!" : isWarm ? "🌡️ 熱い！" : heat >= 3 ? "🌀 温まってきた" : "❄️ 冷";
             const heatPct = Math.min(100, (heat / 15) * 100);
             const heatBarColor = isBurning ? "bg-red-500" : isWarm ? "bg-orange-500" : heat >= 3 ? "bg-yellow-500" : "bg-slate-600";
+            const tierSy = getSlotTierReelSymbols(activeMachine);
+            const symClass = "font-bold text-sm leading-none";
             return (
               <div className="rounded-lg bg-slate-800/50 p-3 text-xs space-y-2">
-                {isMyTurn && !awaitingConfirm && (
+                {((isMyTurn && !awaitingConfirm) || spectatorMode) && (
                   <div className="flex gap-2 flex-wrap pb-1 border-b border-slate-700">
                     {Object.values(SLOT_MACHINES).map((m) => (
                       <button
                         key={m.key}
                         type="button"
-                        onClick={() => setSelectedMachineKey(m.key)}
-                        className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors border ${selectedMachineKey === m.key ? `${m.border} ${m.color}` : "border-slate-700 text-slate-400 hover:border-slate-500"}`}
+                        disabled={spectatorMode}
+                        onClick={() => {
+                          if (spectatorMode) return;
+                          setSelectedMachineKey(m.key);
+                        }}
+                        className={
+                          spectatorMode
+                            ? `flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold border ${visibleMachineKey === m.key ? `${spectatorBtn} ring-1 ring-slate-400/70` : `${spectatorBtn} opacity-75`}`
+                            : `flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors border ${selectedMachineKey === m.key ? `${m.border} ${m.color}` : "border-slate-700 text-slate-400 hover:border-slate-500"}`
+                        }
                       >
                         {m.emoji} {m.label}
                       </button>
@@ -749,8 +970,22 @@ export default function SlotMachine({
                   <div className="flex justify-between text-slate-500" style={{ fontSize: "10px" }}>
                     <span>熟成でハズレから {missRed}% を上位4役へ配分（内訳は右）</span>
                     <span>
-                      JP+{(heat * 0.1).toFixed(1)}% / 大当+{(heat * 0.3).toFixed(1)}% / 中当+{(heat * 0.5).toFixed(1)}% / 当+
-                      {(heat * 0.6).toFixed(1)}%
+                      <span className={`${symClass} text-yellow-300`} title={SLOT_TIER_LABELS.jackpot}>
+                        {tierSy.jackpot}
+                      </span>
+                      +{(heat * 0.1).toFixed(1)}% /{" "}
+                      <span className={symClass} title={SLOT_TIER_LABELS.big}>
+                        {tierSy.big}
+                      </span>
+                      +{(heat * 0.3).toFixed(1)}% /{" "}
+                      <span className={symClass} title={SLOT_TIER_LABELS.mid}>
+                        {tierSy.mid}
+                      </span>
+                      +{(heat * 0.5).toFixed(1)}% /{" "}
+                      <span className={symClass} title={SLOT_TIER_LABELS.atari}>
+                        {tierSy.atari}
+                      </span>
+                      +{(heat * 0.6).toFixed(1)}%
                     </span>
                   </div>
                 </div>
@@ -758,6 +993,16 @@ export default function SlotMachine({
                 <p className="text-slate-300">
                   現資金（{proxySlotTargetIdx != null ? `${targetGs?.name ?? "標的"}の所持` : "自分"}）{" "}
                   <span className="font-bold text-white text-base">{moneyGs.stats.money}</span>G
+                  {isProxyPull && proxyMaxBet != null && (
+                    <span className="ml-2 font-semibold text-violet-300">
+                      このスピン最大 {proxyMaxBet}G（所持の30%・切捨て）
+                    </span>
+                  )}
+                  {isProxyPull && (
+                    <span className="ml-2 font-semibold text-violet-300/90">
+                      運・技量は操作者の半分で反映
+                    </span>
+                  )}
                   {cpGs.spinCount > 0 && (
                     <span className={`ml-2 font-semibold ${cpGs.slotNet >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
                       スロット収支: {cpGs.slotNet >= 0 ? "+" : ""}
@@ -765,9 +1010,20 @@ export default function SlotMachine({
                     </span>
                   )}
                 </p>
+                {isProxyPull && (
+                  <div className="rounded-lg border border-violet-500/35 bg-violet-950/25 px-3 py-2 text-[11px] text-slate-300 space-y-0.5 leading-relaxed">
+                    <p className="font-semibold text-violet-200/95">代理スロット</p>
+                    <ul className="list-disc list-inside">
+                      {PROXY_SLOT_RULES_LINES.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 {(() => {
-                  const lk = Math.max(0, moneyGs.stats.luck - BAL.slot.luckBaseline);
-                  const skEx = Math.max(0, moneyGs.stats.skill - BAL.slot.skillBaseline);
+                  const lk = Math.max(0, (slotRateStats?.luck ?? 0) - BAL.slot.luckBaseline);
+                  const skEx = Math.max(0, (slotRateStats?.skill ?? 0) - BAL.slot.skillBaseline);
                   const skBlocks = skEx >= BAL.slot.skillBlockSize ? Math.floor(skEx / BAL.slot.skillBlockSize) : 0;
                   const hasLuck = lk > 0;
                   const hasSkill = skBlocks > 0;
@@ -791,14 +1047,47 @@ export default function SlotMachine({
                     </div>
                   ) : null;
                 })()}
-                <p className="text-slate-500" style={{ fontSize: "10px" }}>
-                  [{activeMachine.emoji}
-                  {activeMachine.label}] JP <span className="text-yellow-400 font-semibold">{(r.jp * 100).toFixed(2)}%</span>
-                  {"  /  "}大当 <span className="text-amber-400 font-semibold">{(r.big * 100).toFixed(2)}%</span>
-                  {"  /  "}中当 <span className="text-emerald-400 font-semibold">{(r.mid * 100).toFixed(2)}%</span>
-                  {"  /  "}当 <span className="text-cyan-400 font-semibold">{(r.atari * 100).toFixed(2)}%</span>
-                  {"  /  "}小当 <span className="text-slate-300 font-semibold">{(r.small * 100).toFixed(2)}%</span>
-                  {"  /  "}ハズレ <span className="text-rose-400 font-semibold">{(r.miss * 100).toFixed(1)}%</span>
+                <p className="text-slate-500 flex flex-wrap items-center gap-x-1 gap-y-0.5" style={{ fontSize: "10px" }}>
+                  <span>
+                    [{activeMachine.emoji}
+                    {activeMachine.label}]
+                  </span>
+                  {potJackpotEnabled && (
+                    <>
+                      <span className={`${symClass} text-lime-300`} title={SLOT_TIER_LABELS.potJackpot}>
+                        {tierSy.potJackpot}
+                      </span>
+                      <span className="text-lime-400 font-semibold">{(r.potJp * 100).toFixed(2)}%</span>
+                      <span className="text-slate-600">/</span>
+                    </>
+                  )}
+                  <span className={`${symClass} text-yellow-300`} title={SLOT_TIER_LABELS.jackpot}>
+                    {tierSy.jackpot}
+                  </span>
+                  <span className="text-yellow-400 font-semibold">{(r.jp * 100).toFixed(2)}%</span>
+                  <span className="text-slate-600">/</span>
+                  <span className={symClass} title={SLOT_TIER_LABELS.big}>
+                    {tierSy.big}
+                  </span>
+                  <span className="text-amber-400 font-semibold">{(r.big * 100).toFixed(2)}%</span>
+                  <span className="text-slate-600">/</span>
+                  <span className={symClass} title={SLOT_TIER_LABELS.mid}>
+                    {tierSy.mid}
+                  </span>
+                  <span className="text-emerald-400 font-semibold">{(r.mid * 100).toFixed(2)}%</span>
+                  <span className="text-slate-600">/</span>
+                  <span className={symClass} title={SLOT_TIER_LABELS.atari}>
+                    {tierSy.atari}
+                  </span>
+                  <span className="text-cyan-400 font-semibold">{(r.atari * 100).toFixed(2)}%</span>
+                  <span className="text-slate-600">/</span>
+                  <span className={symClass} title={SLOT_TIER_LABELS.small}>
+                    {tierSy.small}
+                  </span>
+                  <span className="text-slate-300 font-semibold">{(r.small * 100).toFixed(2)}%</span>
+                  <span className="text-slate-600">/</span>
+                  <span>ハズレ</span>
+                  <span className="text-rose-400 font-semibold">{(r.miss * 100).toFixed(1)}%</span>
                 </p>
                 <p className="text-slate-500 border-t border-slate-700/80 pt-1.5 mt-1" style={{ fontSize: "10px" }}>
                   再配分内訳：技量でハズレ <span className="text-sky-400 font-semibold">−{(r.skillMissReduced * 100).toFixed(2)}%</span>
@@ -823,8 +1112,8 @@ export default function SlotMachine({
                     : charReaction === "miss"
                       ? "anim-char-sad"
                       : "";
-            const lkEx = Math.max(0, moneyGs.stats.luck - BAL.slot.luckBaseline);
-            const skEx = Math.max(0, moneyGs.stats.skill - BAL.slot.skillBaseline);
+            const lkEx = Math.max(0, (slotRateStats?.luck ?? 0) - BAL.slot.luckBaseline);
+            const skEx = Math.max(0, (slotRateStats?.skill ?? 0) - BAL.slot.skillBaseline);
             const luckTier = lkEx >= 50 ? 3 : lkEx >= 30 ? 2 : lkEx >= 10 ? 1 : 0;
             const skillTier = skEx >= 30 ? 2 : skEx >= 10 ? 1 : 0;
             const comboHigh = luckTier >= 1 && skillTier >= 1;
@@ -851,9 +1140,11 @@ export default function SlotMachine({
               (paylineWinFx ||
                 (gs?.slotPhase === "completed" && displayReelsMatch && (gs?.lastPayout ?? 0) > 0));
             const columnSpinning = [0, 1, 2].map((i) => isSpinning && !stoppedReelsRef.current[i]);
-            const activeMachine = SLOT_MACHINES[selectedMachineKey] ?? SLOT_MACHINES.standard;
+            const activeMachine = SLOT_MACHINES[visibleMachineKey] ?? SLOT_MACHINES.standard;
+            const reelMachineView = slotMachineForReels(activeMachine, (gs?.players?.length ?? 0) > 1);
             const showPayoutNow = reelsCanvasSettled && showPayout && payoutAmount > 0;
             const showWinFxNow = reelsCanvasSettled && showWinEffect && showWinEffect !== "miss";
+            const isMajorWinFx = showWinEffect === "jackpot" || showWinEffect === "potJackpot";
             const slotSpinning = isSpinning || (gs?.slotPhase ?? "idle") === "spinning";
             const isVictim = slotSpinning && isLocalPlayerProxyTarget(gs, myId);
             const winBox = {
@@ -864,22 +1155,22 @@ export default function SlotMachine({
             };
             return (
               <div
-                className={`relative rounded-xl border border-amber-400/30 bg-slate-950/60 p-4 isolate overflow-visible ${outerClass} ${showWinFxNow && showWinEffect === "jackpot" ? "anim-jp-rainbow" : ""} ${isVictim ? "anim-slot-victim-frame" : ""}`}
+                className={`relative rounded-xl border border-amber-400/30 bg-slate-950/60 p-4 isolate overflow-visible ${outerClass} ${showWinFxNow && isMajorWinFx ? "anim-jp-rainbow" : ""} ${isVictim ? "anim-slot-victim-frame" : ""}`}
               >
                 {showWinFxNow && (
                   <div className="absolute inset-0 z-[25] pointer-events-none overflow-hidden rounded-xl">
-                    {Array.from({ length: showWinEffect === "jackpot" ? 28 : showWinEffect === "big" ? 16 : 8 }, (_, i) => (
+                    {Array.from({ length: isMajorWinFx ? 28 : showWinEffect === "big" ? 16 : 8 }, (_, i) => (
                       <span
                         key={i}
                         style={{
                           position: "absolute",
                           left: `${(i * 97 + 11) % 100}%`,
                           top: "-30px",
-                          fontSize: showWinEffect === "jackpot" ? "1.6rem" : "1.2rem",
+                          fontSize: isMajorWinFx ? "1.6rem" : "1.2rem",
                           animation: `coinDrop ${1.4 + ((i * 0.11) % 1.2)}s ${((i * 0.07) % 1.1)}s ease-in forwards`,
                         }}
                       >
-                        {showWinEffect === "jackpot" ? ["🪙", "⭐", "💎", "✨"][i % 4] : "🪙"}
+                        {isMajorWinFx ? (showWinEffect === "potJackpot" ? ["💰", "🏆", "✨", "🪙"][i % 4] : ["🪙", "⭐", "💎", "✨"][i % 4]) : "🪙"}
                       </span>
                     ))}
                   </div>
@@ -939,7 +1230,7 @@ export default function SlotMachine({
                           bouncingCol={bouncingReel}
                           paylineWinFx={paylineWinPulse}
                           reachCol={isReach ? 2 : -1}
-                          machine={activeMachine}
+                          machine={reelMachineView}
                           isSpinFrozenRef={spinFreezeCutinUntilRef}
                           spinSessionActive={slotSpinActive}
                           onReelsSettledChange={setReelsCanvasSettled}
@@ -1013,8 +1304,12 @@ export default function SlotMachine({
                         type="button"
                         title="SPIN（100G・筐体）"
                         aria-label="スロットを回す（100G）"
-                        disabled={!canSpin}
-                        className="absolute z-[20] cursor-pointer rounded-full border-0 bg-transparent p-0 opacity-40 transition-opacity hover:opacity-70 active:translate-y-0.5 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+                        disabled={spectatorMode || !canSpin}
+                        className={
+                          spectatorMode
+                            ? "absolute z-[20] cursor-not-allowed rounded-full border-0 bg-transparent p-0 opacity-25"
+                            : "absolute z-[20] cursor-pointer rounded-full border-0 bg-transparent p-0 opacity-40 transition-opacity hover:opacity-70 active:translate-y-0.5 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+                        }
                         style={{
                           top: "var(--slot-spin-top)",
                           left: "var(--slot-spin-left)",
@@ -1040,7 +1335,15 @@ export default function SlotMachine({
                     className="relative z-[26] mt-2 text-center text-lg font-black text-amber-300 animate-pulse"
                     style={{ textShadow: "0 0 20px #fbbf24, 0 0 40px #f59e0b" }}
                   >
-                    🎰 777 JACKPOT!! 🎰
+                    🎰 超大当たり!! 🎰
+                  </p>
+                )}
+                {showWinFxNow && showWinEffect === "potJackpot" && (
+                  <p
+                    className="relative z-[26] mt-2 text-center text-lg font-black text-lime-300 animate-pulse"
+                    style={{ textShadow: "0 0 20px #84cc16, 0 0 40px #65a30d" }}
+                  >
+                    🏆 POT JACKPOT!! 🏆
                   </p>
                 )}
               </div>
@@ -1059,8 +1362,12 @@ export default function SlotMachine({
               <button
                 type="button"
                 onClick={handleConfirm}
-                disabled={interactionLocked}
-                className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-6 py-2.5 font-bold text-slate-950 hover:bg-cyan-400 animate-pulse"
+                disabled={spectatorMode || interactionLocked}
+                className={
+                  spectatorMode
+                    ? `inline-flex items-center gap-2 rounded-xl px-6 py-2.5 font-bold ${spectatorBtn}`
+                    : "inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-6 py-2.5 font-bold text-slate-950 hover:bg-cyan-400 animate-pulse"
+                }
               >
                 <ChevronRight size={18} />
                 確認（{confirmCountdown}秒で自動進行）
@@ -1068,9 +1375,11 @@ export default function SlotMachine({
             ) : (
               <>
                 {SLOT_BETS.map((bet) => {
-                  const disabled = !canSpin;
-                  const colors =
-                    bet === 100
+                  const overProxyCap = isProxyPull && !betsForUi.includes(bet);
+                  const disabled = spectatorMode || !canSpin || overProxyCap;
+                  const colors = spectatorMode
+                    ? spectatorBtn
+                    : bet === 100
                       ? "bg-cyan-600 hover:bg-cyan-500"
                       : bet === 300
                         ? "bg-violet-600 hover:bg-violet-500"
@@ -1083,7 +1392,12 @@ export default function SlotMachine({
                       type="button"
                       onClick={() => handleSpin(bet)}
                       disabled={disabled}
-                      className={`inline-flex items-center gap-1.5 rounded-xl ${colors} px-4 py-2.5 font-semibold text-white transition-colors disabled:opacity-40`}
+                      title={
+                        overProxyCap && proxyMaxBet != null
+                          ? `最大掛け金${proxyMaxBet}Gを超えるため不可`
+                          : undefined
+                      }
+                      className={`inline-flex items-center gap-1.5 rounded-xl ${colors} px-4 py-2.5 font-semibold text-white transition-colors ${spectatorMode ? "" : "disabled:opacity-40"}`}
                     >
                       <Dice5 size={16} />
                       {isSpinning ? (
@@ -1091,17 +1405,36 @@ export default function SlotMachine({
                       ) : (
                         <span className="flex flex-col items-start leading-tight">
                           <span>{bet}G</span>
-                          {moneyGs.stats.money < bet && <span className="text-[9px] font-normal opacity-80">←借金プレイ</span>}
+                          {overProxyCap && (
+                            <span className="text-[9px] font-normal opacity-80">上限超過</span>
+                          )}
+                          {!isProxyPull && moneyGs.stats.money < bet && (
+                            <span className="text-[9px] font-normal opacity-80">←借金プレイ</span>
+                          )}
                         </span>
                       )}
                     </button>
                   );
                 })}
+                {isProxyPull && betsForUi.length === 0 && (
+                  <p className="text-xs text-rose-300/90 w-full">
+                    標的の所持金が少なすぎてスピンできません（30%上限で100G未満）。
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={skipSlot}
-                  disabled={isSpinning || interactionLocked || (gs?.slotPhase ?? "idle") !== "idle"}
-                  className="inline-flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600 transition-colors disabled:opacity-40"
+                  disabled={
+                    spectatorMode ||
+                    isSpinning ||
+                    interactionLocked ||
+                    !["idle", "completed"].includes(gs?.slotPhase ?? "idle")
+                  }
+                  className={
+                    spectatorMode
+                      ? `inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm ${spectatorBtn}`
+                      : "inline-flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600 transition-colors disabled:opacity-40"
+                  }
                 >
                   <ChevronRight size={16} />
                   終了・次へ
@@ -1112,14 +1445,31 @@ export default function SlotMachine({
         </div>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className={`space-y-3${spectatorMode ? " relative min-h-[120px]" : ""}`}>
+          {spectatorMode && (
+            <div
+              className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
+              aria-live="polite"
+              aria-label={`${cpGs.name}が操作中`}
+            >
+              <div className="mx-4 rounded-2xl border border-violet-400/55 bg-slate-950/95 px-8 py-4 text-center shadow-[0_8px_32px_rgba(0,0,0,0.45)]">
+                <p className="text-lg font-bold tracking-wide text-violet-100 sm:text-xl">
+                  {cpGs.name} が操作中
+                </p>
+              </div>
+            </div>
+          )}
           <p className="text-sm text-slate-400">スロット回数を全て使いました。</p>
           {awaitingConfirm && (
             <button
               type="button"
               onClick={handleConfirm}
-              disabled={interactionLocked || !!slotPostResultGraceTimerRef.current}
-              className="inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-6 py-2.5 font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-40"
+              disabled={spectatorMode || interactionLocked || !!slotPostResultGraceTimerRef.current}
+              className={
+                spectatorMode
+                  ? `inline-flex items-center gap-2 rounded-xl px-6 py-2.5 font-bold ${spectatorBtn}`
+                  : "inline-flex items-center gap-2 rounded-xl bg-cyan-500 px-6 py-2.5 font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-40"
+              }
             >
               <ChevronRight size={18} />
               確認して進む（{confirmCountdown}秒）

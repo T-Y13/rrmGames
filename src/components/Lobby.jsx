@@ -66,10 +66,6 @@ export default function Lobby({
 
   onSoloPlay,
 
-  multiOpen,
-
-  onToggleMultiOpen,
-
   multiAction,
 
   onSetMultiAction,
@@ -105,8 +101,6 @@ export default function Lobby({
 }) {
 
   const multiplayerLocked = PRERELEASE_SOLO_ONLY;
-
-  const multiplayerPanelOpen = multiOpen && !multiplayerLocked;
 
   const hasInvites = pendingInvites.length > 0;
 
@@ -213,237 +207,111 @@ export default function Lobby({
 
 
 
-        <div className="relative">
-
-          <button
-
-            type="button"
-
-            disabled={multiplayerLocked}
-
-            aria-disabled={multiplayerLocked}
-
-            tabIndex={multiplayerLocked ? -1 : 0}
-
-            title={multiplayerLocked ? "マルチプレイは開発中です" : undefined}
-
+        <div className="relative space-y-0">
+          <div
             className={[
-
-              "w-full rounded-2xl py-5 font-bold text-xl shadow-lg flex items-center justify-center gap-3 transition-all",
-
+              "w-full rounded-t-2xl py-5 font-bold text-xl shadow-lg flex items-center justify-center gap-3",
               multiplayerLocked
-
-                ? "pointer-events-none cursor-not-allowed border border-slate-700/90 bg-slate-900/60 text-slate-500 grayscale opacity-[0.52]"
-
-                : multiOpen
-
-                  ? "bg-cyan-500 text-slate-950 shadow-cyan-900/30"
-
-                  : "bg-slate-800 hover:bg-slate-700 text-white",
-
+                ? "rounded-2xl border border-slate-700/90 bg-slate-900/60 text-slate-500 grayscale opacity-[0.52]"
+                : "bg-cyan-500 text-slate-950 shadow-cyan-900/30",
             ].join(" ")}
-
-            {...(multiplayerLocked
-
-              ? {}
-
-              : { onClick: onToggleMultiOpen })}
-
           >
-
             <span className="text-2xl grayscale">👥</span>
-
             <span className="opacity-90">みんなで遊ぶ</span>
-
-            {!multiplayerLocked && <span className="text-base opacity-60 ml-1">{multiOpen ? "▲" : "▼"}</span>}
-
-          </button>
-
-          {multiplayerLocked && (
-
-            <div
-
-              className="pointer-events-none absolute -top-3 left-1/2 z-10 flex -translate-x-1/2 flex-wrap items-center justify-center gap-0 px-2"
-
-              aria-hidden="true"
-
-            >
-
-              <span className="inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-slate-950/92 px-2.5 py-1 shadow-[0_8px_28px_rgba(0,0,0,0.45)] ring-1 ring-cyan-500/15 backdrop-blur-sm">
-
-                <span className="rounded-full bg-gradient-to-r from-amber-400 to-amber-300 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.14em] text-amber-950 shadow-sm">
-
-                  Coming Soon
-
-                </span>
-
-                <span className="pr-1 text-[10px] font-bold tracking-wide text-cyan-100/95">
-
-                  準備中
-
-                </span>
-
-              </span>
-
-            </div>
-
-          )}
-
-        </div>
-
-
-
-        {multiplayerPanelOpen && (
-
-          <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4 space-y-3">
-
-            <button
-
-              type="button"
-
-              onClick={() => onSetMultiAction((a) => (a === "create" ? null : "create"))}
-
-              className={`w-full rounded-xl py-3.5 font-semibold transition-all flex flex-col items-center gap-0.5 ${multiAction === "create" ? "bg-cyan-600 text-white" : "bg-slate-800 hover:bg-slate-700 text-slate-200"}`}
-
-            >
-
-              <span className="text-base font-bold">🏠 新しいルームを作成</span>
-
-              <span className="text-xs opacity-60">{multiAction === "create" ? "▲ 閉じる" : "ホストとしてルームを立てる ▼"}</span>
-
-            </button>
-
-            {multiAction === "create" && (
-
-              <div className="rounded-xl bg-slate-800 border border-slate-700 p-3 space-y-3">
-
-                <div className="grid grid-cols-2 gap-2">
-
-                  <button
-
-                    type="button"
-
-                    onClick={() => onSetPrivateRoom(false)}
-
-                    className={`rounded-xl py-2.5 text-sm font-semibold transition-all ${!isPrivateRoom ? "bg-cyan-500 text-slate-950 ring-2 ring-cyan-400/60" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
-
-                  >
-
-                    🌐 公開ルーム
-
-                  </button>
-
-                  <button
-
-                    type="button"
-
-                    onClick={() => onSetPrivateRoom(true)}
-
-                    className={`rounded-xl py-2.5 text-sm font-semibold transition-all ${isPrivateRoom ? "bg-rose-500 text-white ring-2 ring-rose-400/60" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
-
-                  >
-
-                    🔒 招待制
-
-                  </button>
-
-                </div>
-
-                <p className="text-xs text-slate-400 text-center">
-
-                  {isPrivateRoom ? "招待したIDのみ参加可" : "ルームIDを知っていれば誰でも参加可"}
-
-                </p>
-
-                <button
-
-                  type="button"
-
-                  {...bindPrimaryAction(onCreateRoom, loading)}
-
-                  disabled={loading}
-
-                  className="w-full rounded-xl bg-cyan-500 hover:bg-cyan-400 py-2.5 font-bold text-slate-950 transition-colors disabled:opacity-50"
-
-                >
-
-                  {loading ? "作成中…" : "ルームを作成"}
-
-                </button>
-
-              </div>
-
-            )}
-
-
-
-            <button
-
-              type="button"
-
-              onClick={() => onSetMultiAction((a) => (a === "join" ? null : "join"))}
-
-              className={`w-full rounded-xl py-3.5 font-semibold transition-all flex flex-col items-center gap-0.5 ${multiAction === "join" ? "bg-cyan-600 text-white" : "bg-slate-800 hover:bg-slate-700 text-slate-200"}`}
-
-            >
-
-              <span className="text-base font-bold">🔑 ルームIDで参加</span>
-
-              <span className="text-xs opacity-60">{multiAction === "join" ? "▲ 閉じる" : "6桁のルーム番号で入室 ▼"}</span>
-
-            </button>
-
-            {multiAction === "join" && (
-
-              <div className="rounded-xl bg-slate-800 border border-slate-700 p-3 space-y-2">
-
-                <div className="flex gap-2">
-
-                  <input
-
-                    value={joinInput}
-
-                    onChange={(e) => onJoinInputChange(e.target.value.toUpperCase())}
-
-                    maxLength={8}
-
-                    onKeyDown={(e) => e.key === "Enter" && onJoinRoom()}
-
-                    className="flex-1 rounded-lg border border-slate-700 bg-slate-700 px-3 py-2 text-sm text-center font-mono tracking-widest focus:border-cyan-500 focus:outline-none"
-
-                    placeholder="ルームID"
-
-                    autoFocus
-
-                  />
-
-                  <button
-
-                    type="button"
-
-                    onClick={onJoinRoom}
-
-                    disabled={loading}
-
-                    className="rounded-xl bg-slate-600 hover:bg-slate-500 px-5 py-2 font-medium transition-colors disabled:opacity-50"
-
-                  >
-
-                    参加
-
-                  </button>
-
-                </div>
-
-              </div>
-
-            )}
-
-
-
           </div>
 
-        )}
+          {multiplayerLocked && (
+            <div
+              className="pointer-events-none absolute -top-3 left-1/2 z-10 flex -translate-x-1/2 flex-wrap items-center justify-center gap-0 px-2"
+              aria-hidden="true"
+            >
+              <span className="inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-slate-950/92 px-2.5 py-1 shadow-[0_8px_28px_rgba(0,0,0,0.45)] ring-1 ring-cyan-500/15 backdrop-blur-sm">
+                <span className="rounded-full bg-gradient-to-r from-amber-400 to-amber-300 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.14em] text-amber-950 shadow-sm">
+                  Coming Soon
+                </span>
+                <span className="pr-1 text-[10px] font-bold tracking-wide text-cyan-100/95">
+                  準備中
+                </span>
+              </span>
+            </div>
+          )}
+
+          {!multiplayerLocked && (
+          <div className="rounded-b-2xl border border-t-0 border-slate-700 bg-slate-900 p-4 space-y-3">
+            <button
+              type="button"
+              onClick={() => onSetMultiAction((a) => (a === "create" ? null : "create"))}
+              className={`w-full rounded-xl py-3.5 font-semibold transition-all flex flex-col items-center gap-0.5 ${multiAction === "create" ? "bg-cyan-600 text-white" : "bg-slate-800 hover:bg-slate-700 text-slate-200"}`}
+            >
+              <span className="text-base font-bold">🏠 新しいルームを作成</span>
+              <span className="text-xs opacity-60">{multiAction === "create" ? "▲ 閉じる" : "ホストとしてルームを立てる ▼"}</span>
+            </button>
+            {multiAction === "create" && (
+              <div className="rounded-xl bg-slate-800 border border-slate-700 p-3 space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onSetPrivateRoom(false)}
+                    className={`rounded-xl py-2.5 text-sm font-semibold transition-all ${!isPrivateRoom ? "bg-cyan-500 text-slate-950 ring-2 ring-cyan-400/60" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+                  >
+                    🌐 公開ルーム
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSetPrivateRoom(true)}
+                    className={`rounded-xl py-2.5 text-sm font-semibold transition-all ${isPrivateRoom ? "bg-rose-500 text-white ring-2 ring-rose-400/60" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+                  >
+                    🔒 招待制
+                  </button>
+                </div>
+                <p className="text-xs text-slate-400 text-center">
+                  {isPrivateRoom ? "招待したIDのみ参加可" : "ルームIDを知っていれば誰でも参加可"}
+                </p>
+                <button
+                  type="button"
+                  {...bindPrimaryAction(onCreateRoom, loading)}
+                  disabled={loading}
+                  className="w-full rounded-xl bg-cyan-500 hover:bg-cyan-400 py-2.5 font-bold text-slate-950 transition-colors disabled:opacity-50"
+                >
+                  {loading ? "作成中…" : "ルームを作成"}
+                </button>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => onSetMultiAction((a) => (a === "join" ? null : "join"))}
+              className={`w-full rounded-xl py-3.5 font-semibold transition-all flex flex-col items-center gap-0.5 ${multiAction === "join" ? "bg-cyan-600 text-white" : "bg-slate-800 hover:bg-slate-700 text-slate-200"}`}
+            >
+              <span className="text-base font-bold">🔑 ルームIDで参加</span>
+              <span className="text-xs opacity-60">{multiAction === "join" ? "▲ 閉じる" : "6桁のルーム番号で入室 ▼"}</span>
+            </button>
+            {multiAction === "join" && (
+              <div className="rounded-xl bg-slate-800 border border-slate-700 p-3 space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    value={joinInput}
+                    onChange={(e) => onJoinInputChange(e.target.value.toUpperCase())}
+                    maxLength={8}
+                    onKeyDown={(e) => e.key === "Enter" && onJoinRoom()}
+                    className="flex-1 rounded-lg border border-slate-700 bg-slate-700 px-3 py-2 text-sm text-center font-mono tracking-widest focus:border-cyan-500 focus:outline-none"
+                    placeholder="ルームID"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={onJoinRoom}
+                    disabled={loading}
+                    className="rounded-xl bg-slate-600 hover:bg-slate-500 px-5 py-2 font-medium transition-colors disabled:opacity-50"
+                  >
+                    参加
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          )}
+        </div>
 
 
 

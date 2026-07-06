@@ -31,12 +31,12 @@ function dayTitle(day) {
 }
 
 /** 明示的な「N日目」が無いが 8日目フェーズの行 */
-function isDay8ContextEntry(entry) {
+export function isDay8ContextEntry(entry) {
   const parsed = parseLogEntry(entry);
   if (parsed?.t === "dailyBlock") return false;
   if (!entry || typeof entry !== "string") return false;
   if (extractExplicitDayFromEntry(entry) != null) return false;
-  return /T\d+:|のスロットターン|の移動ターン|スロット開始|ゴール到着|ゴール済|代理スロット|👻|渋滞|タクシー|🎲|🚗|タイムアップ|タイムアウト|全員がゴール|Spectating|すごろく|8日目終了/.test(
+  return /T\d+:|のスロットターン|の移動ターン|スロット開始|\d回目\s+\d+G\s*→|スロット\d+回|ゴール到着|ゴール済|代理スロット|👻|渋滞|タクシー|🎲|🚗|タイムアップ|タイムアウト|全員がゴール|Spectating|すごろく|8日目終了|プログレッシブポット|POT JP|ポット全額/.test(
     entry,
   );
 }

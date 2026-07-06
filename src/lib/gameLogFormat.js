@@ -26,6 +26,7 @@ export const LOG_PREFIX = "⌁";
  * @property {StructuredLogLine[]} actionLines
  * @property {StructuredLogLine[]} statusLines
  * @property {StructuredLogLine[]} [extras]
+ * @property {number} [endMoney] 行動完了後の所持金（結果グラフ用）
  */
 
 /**

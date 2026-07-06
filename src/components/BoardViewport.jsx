@@ -8,8 +8,10 @@ import BoardCalloutBubble from "./BoardCalloutBubble";
 import PieceNearbyStack from "./PieceNearbyStack";
 import { sugorokuPlayerName } from "../lib/sugorokuPlayerName";
 import { TILE_EFFECT_KIND } from "../constants/gameBalance";
-import { squareDeco, easeInOutCubic, computeTaxiDriveDurationMs, computeSugorokuMsPerStep, SUGOROKU_MS_PER_STEP_NORMAL } from "../utils/gameLogic";
+import { squareDeco, easeInOutCubic, computeTaxiDriveDurationMs, computeSugorokuMsPerStep, SUGOROKU_MS_PER_STEP_NORMAL, getBoardTombDisplayPosition } from "../utils/gameLogic";
+import { BOARD_DEATH_FADE_MS } from "../lib/boardDeathPresentation";
 import { publicAssetUrl } from "../lib/publicAssetUrl";
+import { BoardDeathFadePiece, BoardTombMarker } from "./BoardTombMarker";
 
 /**
  * マス上の駒を taxi.png に差し替えるフェーズ（idle＝taxiPhase が null）。
@@ -198,7 +200,8 @@ export default function BoardViewport({
   movementFxFloatDelta = null,
   movementFxLabelActive = false,
   movementFxFloatLabelMode = "steps",
-  taxiPhase,
+  taxiPhase: taxiPhaseIn,
+  taxiActorPlayerId = null,
   pieceHopping,
   currentPlayer,
   visualTheme = "default",
@@ -224,10 +227,21 @@ export default function BoardViewport({
   localDiceItems = null,
   localDiceShowTotal = false,
   localDiceTotal = 0,
+  /** ローカル演出：人助けダイアログ後のフェードなど（Firestore 反映前） */
+  boardDeathPresentation = null,
+  /** フェード済み ID — 同期後の二重フェードを防ぐ */
+  deathFadeHandledIds = [],
 }) {
   const AHEAD = 6;
   const hopCompleteEnabled = reportHopAnimationComplete && !isObserver;
   const nightShrine = visualTheme === "nightShrine";
+  /** 手番が先に進んだあと、操作者以外の盤面にタクシー演出が載らないよう抑制 */
+  const taxiPhase =
+    taxiPhaseIn != null &&
+    taxiActorPlayerId != null &&
+    currentPlayer?.id !== taxiActorPlayerId
+      ? null
+      : taxiPhaseIn;
 
   const [smoothPos, setSmoothPos] = useState(viewPos);
   const [boardMotion, setBoardMotion] = useState({
@@ -235,6 +249,9 @@ export default function BoardViewport({
     msPerStep: 360,
     fast: false,
   });
+  const [deathFadePieces, setDeathFadePieces] = useState([]);
+  const prevAliveRef = useRef(new Map());
+  const deathFadeTimersRef = useRef([]);
 
   const laneViewportRef = useRef(null);
   const [viewportH, setViewportH] = useState(480);
@@ -294,6 +311,53 @@ export default function BoardViewport({
     const id = requestAnimationFrame(() => setCameraEaseSuppressed(false));
     return () => cancelAnimationFrame(id);
   }, [cameraEaseSuppressed]);
+
+  useEffect(() => {
+    return () => {
+      deathFadeTimersRef.current.forEach((t) => clearTimeout(t));
+      deathFadeTimersRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    const handled = new Set(deathFadeHandledIds);
+    const newFades = [];
+    players.forEach((p) => {
+      if (!p?.id) return;
+      const wasAlive = prevAliveRef.current.get(p.id);
+      const isAlive = p.alive !== false;
+      if (wasAlive === true && !isAlive) {
+        if (handled.has(p.id)) {
+          prevAliveRef.current.set(p.id, false);
+          return;
+        }
+        const pos = getBoardTombDisplayPosition(p, boardGoal);
+        if (pos != null) {
+          newFades.push({
+            id: p.id,
+            name: p.name,
+            characterType: p.characterType,
+            position: pos,
+          });
+        }
+      }
+      prevAliveRef.current.set(p.id, isAlive);
+    });
+    if (!newFades.length) return;
+    setDeathFadePieces((prev) => {
+      const ids = new Set(prev.map((x) => x.id));
+      return [...prev, ...newFades.filter((x) => !ids.has(x.id))];
+    });
+    newFades.forEach((d) => {
+      const t = setTimeout(() => {
+        setDeathFadePieces((prev) => prev.filter((x) => x.id !== d.id));
+      }, BOARD_DEATH_FADE_MS);
+      deathFadeTimersRef.current.push(t);
+    });
+  }, [players, boardGoal, deathFadeHandledIds]);
+
+  const isLocalDeathFade = (playerId) =>
+    boardDeathPresentation?.playerId === playerId && boardDeathPresentation?.phase === "fade";
 
   /** 手番交代と viewPos 更新を同フレームで同期（前プレイヤーの表示位置からの巻き戻しアニメを防ぐ） */
   useLayoutEffect(() => {
@@ -517,10 +581,23 @@ export default function BoardViewport({
 
   const otherByPos = {};
   players.forEach((p) => {
-    if (p.alive && p.id !== currentPlayer?.id) {
+    if (p.alive !== false && p.id !== currentPlayer?.id && !isLocalDeathFade(p.id)) {
       if (!otherByPos[p.position]) otherByPos[p.position] = [];
       otherByPos[p.position].push(p);
     }
+  });
+
+  const deathFadeIds = new Set(deathFadePieces.map((d) => d.id));
+  if (boardDeathPresentation?.phase === "fade" && boardDeathPresentation?.playerId) {
+    deathFadeIds.add(boardDeathPresentation.playerId);
+  }
+  const tombsByPos = {};
+  players.forEach((p) => {
+    if (deathFadeIds.has(p.id)) return;
+    const pos = getBoardTombDisplayPosition(p, boardGoal);
+    if (pos == null) return;
+    if (!tombsByPos[pos]) tombsByPos[pos] = [];
+    tombsByPos[pos].push(p);
   });
 
   const iconPx = Math.round(tileW * 0.48);
@@ -679,6 +756,22 @@ export default function BoardViewport({
             const passed = pos < displayTileIndex;
             const isGoal = pos >= boardGoal;
             const othersHere = otherByPos[pos] ?? [];
+            const tombsHere = tombsByPos[pos] ?? [];
+            const fadingHere = deathFadePieces.filter((d) => d.position === pos);
+            const pres = boardDeathPresentation;
+            const forcedFadeHere =
+              pres?.phase === "fade" && Math.floor(Number(pres.position)) === pos
+                ? [
+                    {
+                      id: pres.playerId,
+                      name: pres.name,
+                      characterType: pres.characterType,
+                      position: pos,
+                    },
+                  ]
+                : [];
+            const activeFades = [...fadingHere, ...forcedFadeHere];
+            const showDeathMarkers = tombsHere.length > 0 || activeFades.length > 0;
             const tileFx = Array.isArray(tileEffects) ? tileEffects[pos] : null;
             const showTileFx =
               tileFx &&
@@ -794,6 +887,7 @@ export default function BoardViewport({
                       )}
                       {isCurrent &&
                         currentPlayer &&
+                        !isLocalDeathFade(currentPlayer.id) &&
                         !hideCurrentPieceDuringTurnSwitchPan &&
                         (!taxiHideOnTilePiece || showPlayerPieceAsTaxi || showTaxiBoardingVisual) && (
                         <div
@@ -946,6 +1040,33 @@ export default function BoardViewport({
                       )}
                     </div>
                   ) : null}
+
+                  {showDeathMarkers && (
+                    <div
+                      className="pointer-events-none absolute left-1/2 bottom-full z-[18] flex flex-row items-end justify-center gap-1"
+                      style={{
+                        transform: `translate(-50%, ${Math.max(10, Math.round(tileW * 0.52))}px)`,
+                      }}
+                    >
+                      {activeFades.map((d) => (
+                        <BoardDeathFadePiece
+                          key={`death-fade-${d.id}`}
+                          characterType={d.characterType}
+                          name={d.name}
+                          nameFillColor={playerNameColor(players, d.id)}
+                          tileW={tileW}
+                        />
+                      ))}
+                      {tombsHere.map((p) => (
+                        <BoardTombMarker
+                          key={`tomb-${p.id}`}
+                          name={p.name}
+                          nameFillColor={playerNameColor(players, p.id)}
+                          tileW={tileW}
+                        />
+                      ))}
+                    </div>
+                  )}
 
                   <div
                     className={`relative z-0 flex items-center justify-center overflow-visible rounded-xl border-[3px] ${passedTone}

@@ -8,6 +8,9 @@ export default function SoundSettingsControl({
   bgmVolume,
   onSeVolumeChange,
   onBgmVolumeChange,
+  onReturnToLobby,
+  returnToLobbyLabel = "タイトル画面へ",
+  returnToLobbyHint = "",
   className = "",
   defaultOpen = false,
 }) {
@@ -69,6 +72,24 @@ export default function SoundSettingsControl({
               className="w-full accent-violet-500"
             />
           </label>
+          {typeof onReturnToLobby === "function" && (
+            <>
+              <div className="my-3 border-t border-slate-700/80" aria-hidden />
+              <button
+                type="button"
+                onClick={() => {
+                  setPanelOpen(false);
+                  onReturnToLobby();
+                }}
+                className="w-full rounded-lg border border-slate-600 bg-slate-800/80 px-3 py-2 text-sm font-semibold text-slate-200 hover:border-cyan-500/45 hover:bg-slate-700/90 hover:text-cyan-100 transition-colors"
+              >
+                {returnToLobbyLabel}
+              </button>
+              {returnToLobbyHint ? (
+                <p className="mt-1.5 text-[10px] leading-snug text-slate-500">{returnToLobbyHint}</p>
+              ) : null}
+            </>
+          )}
         </div>
       )}
     </div>

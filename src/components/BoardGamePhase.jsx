@@ -2,9 +2,10 @@ import React from "react";
 import { ArrowRight, Coins, HandCoins } from "lucide-react";
 import { BAL, BOARD_GOAL } from "../constants/gameBalance";
 import { TaxiStandeeImage } from "./CharacterPieces";
-import { virtueMinRoll } from "../utils/gameLogic";
+import { virtueMinRoll, sugorokuLuckyDiceChancePct } from "../utils/gameLogic";
 import { sugorokuPlayerName } from "../lib/sugorokuPlayerName";
 import BoardViewport from "./BoardViewport";
+import BoardHelpDeathDialog from "./BoardHelpDeathDialog";
 
 const BOARD_FRAME_STYLE = {
   height: "min(720px, 80vh)",
@@ -35,6 +36,7 @@ export default function BoardGamePhase({
   showDiceTotal,
   displayDice,
   taxiPhase,
+  taxiActorPlayerId = null,
   taxiDriveCongested = false,
   /** タクシー drive：Firestore 反映前の到着マス（カメラ補間終点） */
   taxiDriveEndPos = null,
@@ -57,6 +59,9 @@ export default function BoardGamePhase({
   onGoalLandingConfirm,
   /** ローカル利用者が goalLanding のとき（currentPlayerIdx が別でも GOAL 確認を出す） */
   goalLandingSelf = null,
+  boardDeathPresentation = null,
+  deathFadeHandledIds = [],
+  onBoardHelpDeathConfirm,
 }) {
   if (!cpGs) return null;
 
@@ -97,6 +102,10 @@ export default function BoardGamePhase({
 
   return (
     <>
+      <BoardHelpDeathDialog
+        open={boardDeathPresentation?.phase === "helpDialog"}
+        onConfirm={onBoardHelpDeathConfirm}
+      />
       {goalSelf && gs.subPhase === "day8" && (
         <div className="space-y-4">
           <div className="rounded-2xl border-2 border-amber-400/60 bg-gradient-to-br from-amber-500/20 to-yellow-900/30 p-5 text-center space-y-3">
@@ -154,6 +163,7 @@ export default function BoardGamePhase({
               boardGoal={BOARD_GOAL}
               isDiceRolling={isDiceRolling}
               taxiPhase={taxiPhase}
+              taxiActorPlayerId={taxiActorPlayerId}
               taxiDriveCongested={taxiDriveCongested}
               taxiDriveEndPos={taxiDriveEndPos}
               taxiDriveSegmentMs={taxiDriveSegmentMs}
@@ -176,6 +186,8 @@ export default function BoardGamePhase({
               localDiceItems={localDiceOverlay?.items ?? null}
               localDiceShowTotal={localDiceOverlay?.showTotal ?? false}
               localDiceTotal={localDiceOverlay?.total ?? 0}
+              boardDeathPresentation={boardDeathPresentation}
+              deathFadeHandledIds={deathFadeHandledIds}
             />
           </div>
 
@@ -185,7 +197,12 @@ export default function BoardGamePhase({
                 <span>
                   最低出目: {virtueMinRoll(cpGs.stats.virtue)}（善行{cpGs.stats.virtue}）
                 </span>
-                <span>{cpGs.stats.luck >= 80 ? "アドバンテージ🎲🎲" : "通常🎲"}</span>
+                <span>
+                  {(() => {
+                    const luckyPct = sugorokuLuckyDiceChancePct(cpGs.stats.luck);
+                    return luckyPct > 0 ? `ラッキーダイス${luckyPct}%🎲🎲` : "通常🎲";
+                  })()}
+                </span>
                 {cpGs.stats.pon >= BAL.pon.fireThreshold && (
                   <span className={cpGs.stats.pon >= BAL.pon.deathThreshold ? "text-rose-300" : "text-orange-300"}>
                     PON{cpGs.stats.pon} ⚡転倒リスク
@@ -257,6 +274,7 @@ export default function BoardGamePhase({
                     </div>
                   </div>
                 )}
+
                 {gs.aidAvailable && (
                   <button
                     type="button"
