@@ -79,4 +79,20 @@ describe("parseLogIntoDailyTiles daily blocks", () => {
       true,
     );
   });
+
+  it("keeps newest day-8 entries at the top of the day tile", () => {
+    const banner = "━━━ 8日目！全員で交互に移動＆スロット ━━━";
+    const oldMove = "ギャンブラー34 T1: 🎲 ダイスの出目: 5";
+    const midSlot = "ギャンブラー34 2回目 1000G → 🍒 小当たり";
+    const newestSlot = "ギャンブラー34 3回目 1000G → ハズレ…";
+    const log = [newestSlot, midSlot, oldMove, banner];
+    const players = [{ id: "g", name: "ギャンブラー34" }];
+    const tiles = parseLogIntoDailyTiles(log, players);
+    const day8 = tiles.find((t) => t.day === 8);
+    expect(day8).toBeTruthy();
+    const flat = day8.sections.flatMap((s) => s.entries);
+    expect(flat[0]).toBe(newestSlot);
+    expect(flat[1]).toBe(midSlot);
+    expect(flat[flat.length - 1]).toBe(banner);
+  });
 });

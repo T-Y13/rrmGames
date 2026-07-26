@@ -240,6 +240,23 @@ service cloud.firestore {
         && after.completedPlayers == before.completedPlayers;
     }
 
+    /** 日常フェーズ外に残った stale カットイン同期をルームメンバーが idle に戻せる */
+    function dailyCutinStaleClearValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      return uid() in before.playerIds
+        && (before.status == 'playing' || before.status == 'FINAL_BATTLE')
+        && dailyCutinFieldsShapeValid(after)
+        && (after.dailyCutinPhase ?? 'idle') == 'idle'
+        && affected.hasOnly(['dailyCutinPhase', 'dailyCutinSessionId', 'dailyCutinPayload'])
+        && after.gameState == before.gameState
+        && after.status == before.status
+        && after.hostId == before.hostId
+        && after.playerIds == before.playerIds
+        && after.playerSlots == before.playerSlots;
+    }
+
     function playGameStatePatchValid() {
       let before = resource.data;
       let after = request.resource.data;
@@ -678,6 +695,7 @@ service cloud.firestore {
               || ghostAutomationLeaseValid()
               || ghostAutomationTurnValid()
               || dailyCutinRoomBroadcastValid()
+              || dailyCutinStaleClearValid()
             )
           )
         );

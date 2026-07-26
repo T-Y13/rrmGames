@@ -22,10 +22,6 @@ import {
   stripTripleForMiddleColumn,
 } from "../utils/gameLogic";
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function idleReelColumnsForMachine(machine) {
   const mid = machine?.symbols?.[0] ?? "🎰";
   return [0, 1, 2].map((ci) => stripTripleForMiddleColumn(mid, machine, ci));
@@ -69,14 +65,17 @@ export default function DailySlotTrainingModal({
   const [charReaction, setCharReaction] = useState("idle");
   const [cabinetRecoil, setCabinetRecoil] = useState(false);
   const [sessionDone, setSessionDone] = useState(false);
+  const [completedSpins, setCompletedSpins] = useState(0);
   const [committing, setCommitting] = useState(false);
   const [outcomeBanner, setOutcomeBanner] = useState(null);
 
   const shuffleIntervalRef = useRef(null);
   const stoppedReelsRef = useRef([false, false, false]);
-  const ranRef = useRef(false);
   /** スピン完了後、次へ押下時に onFinished へ渡す */
   const pendingResultsRef = useRef(null);
+  const spinResultsRef = useRef([]);
+  const workingStatsRef = useRef(null);
+  const spinInFlightRef = useRef(false);
   const pityCounterRef = useRef(0);
   const syncSessionIdRef = useRef(null);
   const lastSpectatorSpinKeyRef = useRef(null);
@@ -113,10 +112,11 @@ export default function DailySlotTrainingModal({
 
     if (wasOpen) return;
 
-    ranRef.current = false;
+    spinInFlightRef.current = false;
     setCommitting(false);
     setIsSpinning(false);
     setSpinRoundIdx(0);
+    setCompletedSpins(0);
     setSessionDone(false);
     setOutcomeBanner(null);
     setShowWinEffect(null);
@@ -132,6 +132,8 @@ export default function DailySlotTrainingModal({
     }
     setAuraStats(statsForSpin ?? null);
     pendingResultsRef.current = null;
+    spinResultsRef.current = [];
+    workingStatsRef.current = null;
     pityCounterRef.current = initialSlotPityCounter ?? 0;
 
     const patch = syncBroadcastRef.current?.patch;
@@ -161,6 +163,7 @@ export default function DailySlotTrainingModal({
     setCommitting(false);
     setIsSpinning(false);
     setSpinRoundIdx(0);
+    setCompletedSpins(0);
     setSessionDone(false);
     setOutcomeBanner(null);
     setShowWinEffect(null);
@@ -326,119 +329,114 @@ export default function DailySlotTrainingModal({
     [machine, machineKey, soundRef],
   );
 
-  const handleRunTraining = async () => {
-    if (!open || !statsForSpin || isSpinning || sessionDone || ranRef.current) return;
-    ranRef.current = true;
+  const handleRunSingleSpin = async () => {
+    if (!open || !statsForSpin || isSpinning || sessionDone || spinInFlightRef.current) return;
+    const round = spinResultsRef.current.length;
+    if (round >= spins) return;
 
-    const results = [];
-    let working = { ...statsForSpin };
-    let lastDisplayReels = null;
+    spinInFlightRef.current = true;
+    const roundNum = round + 1;
+    setSpinRoundIdx(roundNum);
 
     try {
-      for (let round = 0; round < spins; round++) {
-        setSpinRoundIdx(round + 1);
-        setAuraStats({ ...working });
+      const working = workingStatsRef.current ?? { ...statsForSpin };
+      setAuraStats({ ...working });
 
-        const res = spinSlot(working, bet, machineKey, 0, characterType, {
-          pityCounter: pityCounterRef.current,
+      const res = spinSlot(working, bet, machineKey, 0, characterType, {
+        pityCounter: pityCounterRef.current,
+      });
+      pityCounterRef.current = res.pityCounterAfter ?? 0;
+
+      const visualPlan = buildDailySlotSpinVisualPlan(res, machineKey);
+      const roundLabel = `第 ${roundNum} / ${spins} 回`;
+
+      if (syncBroadcast?.patch && syncSessionIdRef.current) {
+        await syncBroadcast.patch({
+          dailySlotPhase: "spinning",
+          dailySlotSessionId: syncSessionIdRef.current,
+          dailySlotRound: roundNum,
+          dailySlotRoundTotal: spins,
+          dailySlotVisualReels: visualPlan.visualReels,
+          dailySlotTargetResult: slotPaylineMiddlesToTargetIndices(visualPlan.visualReels, machine),
+          dailySlotIsReach: visualPlan.reachPossible,
+          dailySlotTier: null,
+          dailySlotOutcome: null,
+          dailySlotSessionSummary: null,
         });
-        pityCounterRef.current = res.pityCounterAfter ?? 0;
-        results.push(res);
+      }
 
-        const visualPlan = buildDailySlotSpinVisualPlan(res, machineKey);
-        const roundNum = round + 1;
-        const roundLabel = `第 ${roundNum} / ${spins} 回`;
+      await playSpinAnimationRound(working, res, roundLabel, visualPlan);
+
+      const net = res.payout - res.bet;
+      const won = res.tier !== "miss";
+      const displayReels = visualPlan.visualReels ?? res.reels;
+      if (syncBroadcast?.patch && syncSessionIdRef.current) {
+        await syncBroadcast.patch({
+          dailySlotPhase: "roundResult",
+          dailySlotSessionId: syncSessionIdRef.current,
+          dailySlotRound: roundNum,
+          dailySlotRoundTotal: spins,
+          dailySlotVisualReels: displayReels,
+          dailySlotTargetResult: slotPaylineMiddlesToTargetIndices(displayReels, machine),
+          dailySlotIsReach: false,
+          dailySlotTier: won ? res.tier : null,
+          dailySlotOutcome: {
+            won,
+            title: `${roundLabel}　${won ? "当たり！" : "ハズレ"}`,
+            detail: `${res.message ?? ""}／収支 ${net >= 0 ? "+" : ""}${net}G`,
+          },
+        });
+      }
+
+      const skAdj =
+        BAL.dailySlot.skillGainEverySpin +
+        (res?.tier && res.tier !== "miss" ? BAL.dailySlot.skillGainOnRole : 0);
+      workingStatsRef.current = {
+        ...working,
+        money: clampMoney(working.money - res.bet + res.payout),
+        skill: clamp(working.skill + skAdj),
+      };
+
+      const results = [...spinResultsRef.current, res];
+      spinResultsRef.current = results;
+      setCompletedSpins(results.length);
+
+      if (results.length >= spins) {
+        const totalNet = results.reduce((a, r) => a + (r.payout - r.bet), 0);
+        const winCount = results.filter((r) => r.tier !== "miss").length;
+        const sessionSummary = {
+          won: totalNet > 0,
+          title: totalNet >= 0 ? `合計プラス収支 ${totalNet}G！` : `合計収支 ${totalNet}G`,
+          detail:
+            `${winCount} / ${results.length} 回役成立（スピンごと技量 +${BAL.dailySlot.skillGainEverySpin}／役ごと追加 +${BAL.dailySlot.skillGainOnRole}）・次へでターン終了`,
+        };
+        setOutcomeBanner(sessionSummary);
 
         if (syncBroadcast?.patch && syncSessionIdRef.current) {
           await syncBroadcast.patch({
-            dailySlotPhase: "spinning",
-            dailySlotSessionId: syncSessionIdRef.current,
-            dailySlotRound: roundNum,
-            dailySlotRoundTotal: spins,
-            dailySlotVisualReels: visualPlan.visualReels,
-            dailySlotTargetResult: slotPaylineMiddlesToTargetIndices(visualPlan.visualReels, machine),
-            dailySlotIsReach: visualPlan.reachPossible,
-            dailySlotTier: null,
-            dailySlotOutcome: null,
-            dailySlotSessionSummary: null,
-          });
-        }
-
-        await playSpinAnimationRound(working, res, roundLabel, visualPlan);
-
-        const net = res.payout - res.bet;
-        const won = res.tier !== "miss";
-        const displayReels = visualPlan.visualReels ?? res.reels;
-        lastDisplayReels = displayReels;
-        if (syncBroadcast?.patch && syncSessionIdRef.current) {
-          await syncBroadcast.patch({
-            dailySlotPhase: "roundResult",
-            dailySlotSessionId: syncSessionIdRef.current,
-            dailySlotRound: roundNum,
+            dailySlotPhase: "sessionDone",
+            dailySlotSessionSummary: sessionSummary,
+            dailySlotRound: spins,
             dailySlotRoundTotal: spins,
             dailySlotVisualReels: displayReels,
             dailySlotTargetResult: slotPaylineMiddlesToTargetIndices(displayReels, machine),
             dailySlotIsReach: false,
-            dailySlotTier: won ? res.tier : null,
-            dailySlotOutcome: {
-              won,
-              title: `${roundLabel}　${won ? "当たり！" : "ハズレ"}`,
-              detail: `${res.message ?? ""}／収支 ${net >= 0 ? "+" : ""}${net}G`,
-            },
+            dailySlotTier: res?.tier !== "miss" ? res.tier : null,
           });
         }
 
-        await sleep(round < spins - 1 ? 1100 : 0);
-
-        const skAdj =
-          BAL.dailySlot.skillGainEverySpin +
-          (res?.tier && res.tier !== "miss" ? BAL.dailySlot.skillGainOnRole : 0);
-        working = {
-          ...working,
-          money: clampMoney(working.money - res.bet + res.payout),
-          skill: clamp(working.skill + skAdj),
-        };
+        pendingResultsRef.current = results;
+        setSessionDone(true);
       }
-
-      const totalNet = results.reduce((a, r) => a + (r.payout - r.bet), 0);
-      const winCount = results.filter((r) => r.tier !== "miss").length;
-      const sessionSummary = {
-        won: totalNet > 0,
-        title: totalNet >= 0 ? `合計プラス収支 ${totalNet}G！` : `合計収支 ${totalNet}G`,
-        detail:
-          `${winCount} / ${results.length} 回役成立（スピンごと技量 +${BAL.dailySlot.skillGainEverySpin}／役ごと追加 +${BAL.dailySlot.skillGainOnRole}）・次へでターン終了`,
-      };
-      setOutcomeBanner(sessionSummary);
-
-      if (syncBroadcast?.patch && syncSessionIdRef.current) {
-        const lastRes = results[results.length - 1];
-        await syncBroadcast.patch({
-          dailySlotPhase: "sessionDone",
-          dailySlotSessionSummary: sessionSummary,
-          dailySlotRound: spins,
-          dailySlotRoundTotal: spins,
-          ...(Array.isArray(lastDisplayReels) && lastDisplayReels.length === 3
-            ? {
-                dailySlotVisualReels: lastDisplayReels,
-                dailySlotTargetResult: slotPaylineMiddlesToTargetIndices(lastDisplayReels, machine),
-                dailySlotIsReach: false,
-                dailySlotTier: lastRes?.tier !== "miss" ? lastRes.tier : null,
-              }
-            : {}),
-        });
-      }
-
-      pendingResultsRef.current = results;
-      setSessionDone(true);
     } catch (e) {
       console.error(e);
-      ranRef.current = false;
       setSessionDone(false);
       setCommitting(false);
-      setSpinRoundIdx(0);
       pendingResultsRef.current = null;
       setOutcomeBanner(null);
       void clearSyncBroadcast();
+    } finally {
+      spinInFlightRef.current = false;
     }
   };
 
@@ -682,6 +680,8 @@ export default function DailySlotTrainingModal({
     height: "var(--slot-window-height)",
   };
 
+  const nextSpinNum = completedSpins + 1;
+
   const mainSpinLabel = committing
     ? "締め処理中…"
     : sessionDone
@@ -690,10 +690,12 @@ export default function DailySlotTrainingModal({
         ? spinRoundIdx > 0
           ? `回転中… (${spinRoundIdx}/${spins})`
           : "回転中…"
-        : `資金から${bet}G×${spins}回スピン（計${totalBet}G・各回収支適用）`;
+        : completedSpins > 0
+          ? `${nextSpinNum}回目をスピン（${bet}G）`
+          : `1回目をスピン（${bet}G・計${totalBet}G）`;
 
   const closeDisabled =
-    spectatorMode || committing || sessionDone || isSpinning || spinRoundIdx > 0;
+    spectatorMode || committing || sessionDone || isSpinning || completedSpins > 0;
 
   const handleRequestClose = () => {
     if (spectatorMode || closeDisabled) return;
@@ -858,7 +860,7 @@ export default function DailySlotTrainingModal({
                       width: "var(--slot-spin-w)",
                       height: "var(--slot-spin-h)",
                     }}
-                    onClick={() => void handleRunTraining()}
+                    onClick={() => void handleRunSingleSpin()}
                   />
                 </div>
               </div>
@@ -887,7 +889,7 @@ export default function DailySlotTrainingModal({
             aria-label={spectatorMode ? "他プレイヤーのスロット進行中" : committing ? "締め処理中" : sessionDone ? "次のプレイヤーへ（ターン終了）" : "スロット練習を開始"}
             disabled={spectatorMode || isSpinning || committing}
             onClick={() =>
-              sessionDone ? void handleAdvanceToNextTurn() : void handleRunTraining()
+              sessionDone ? void handleAdvanceToNextTurn() : void handleRunSingleSpin()
             }
             className={
               spectatorMode
@@ -900,7 +902,7 @@ export default function DailySlotTrainingModal({
           </button>
           {!spectatorMode && (
           <p className="text-[10px] text-slate-500 text-center">
-            開始後は自動で連続回転します。「次へ」で結果を送信し、翌手番（または翌日開始）まで進みます。回転〜結果確認まで閉じることはできません。
+            1回目・2回目はそれぞれボタンで開始。「次へ」で結果を送信しターン終了。スピン開始後〜全回終了までは閉じられません。
           </p>
           )}
         </div>

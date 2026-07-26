@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { BOARD_GOAL, FINAL_BATTLE_SPLASH_MS } from "../constants/gameBalance";
 import { toEpochMsMaybe } from "../utils/gameLogic";
-import BoardViewport from "./BoardViewport";
+import { BOARD_VIEWPORT_FRAME_SIZE_CLASS } from "../constants/gameAnimationsCss";
 
 /** 「決戦の日」簡易表示 + 決戦マップ */
 export default function FinalBattleStage({ gameState, soundRef }) {
@@ -103,7 +103,7 @@ export default function FinalBattleStage({ gameState, soundRef }) {
               <p className="text-xs text-indigo-200/65">参道には霧。青く冷たい火屑だけが漂う——</p>
             </div>
           )}
-          <div className="h-[min(720px,80vh)] min-h-[min(560px,72vh)] overflow-hidden rounded-2xl border border-indigo-800/65 shadow-[0_0_72px_rgba(79,70,229,0.2)] bg-black/40 mx-auto max-w-4xl">
+          <div className={`${BOARD_VIEWPORT_FRAME_SIZE_CLASS} overflow-hidden rounded-2xl border border-indigo-800/65 shadow-[0_0_72px_rgba(79,70,229,0.2)] bg-black/40 mx-auto max-w-4xl`}>
             <BoardViewport
               players={players}
               viewPos={viewPos}

@@ -1,9 +1,11 @@
 import { BAL, BOARD_GOAL, SLOT_COST, SLOT_MACHINES, CHARACTERS } from "../constants/gameBalance";
 import {
   advanceDay8AfterSlotSpinShow,
+  applyGoalArrivalToPlayer,
   applyGoalLandingConfirm,
   applyRimiruDailyEnd,
   applyVirtueWave,
+  beginDay8SlotSeatForPlayer,
   clamp,
   clampMoney,
   computeAdvanceDaily,
@@ -226,22 +228,14 @@ function runGhostDay8Dice(gs, day8RemainingTurns) {
     });
     const arrived = landed >= BOARD_GOAL;
     const timedOut = !arrived && newTurns >= BAL.dice.maxTurns;
-    const slotReserved = arrived ? Math.max(0, BAL.dice.maxTurns - newTurns) : 0;
     let newPlayers = rr.players.map((pl, i) => {
       if (i !== idx) return pl;
       const base = { ...pl, moveTurns: newTurns, pendingTaxiSteps: 0, lastMoveEvent: logs[0] };
       if (arrived) {
-        return {
-          ...base,
-          movePhase: "goalLanding",
-          reservedSlotTurns: slotReserved,
-          slotTurnsLeft: 0,
-          slotPullsGranted: 0,
-          slotPullsThisSeat: 0,
-        };
+        return applyGoalArrivalToPlayer(base, false).player;
       }
       if (timedOut) {
-        return { ...base, movePhase: "missed", slotTurnsLeft: 0, reservedSlotTurns: 0 };
+        return { ...base, movePhase: "missed", slotTurnsLeft: 0 };
       }
       return { ...base, movePhase: "moving" };
     });
@@ -274,7 +268,6 @@ function runGhostDay8Dice(gs, day8RemainingTurns) {
 
   const arrived = landed >= BOARD_GOAL;
   const timedOut = !arrived && newTurns >= BAL.dice.maxTurns;
-  const slotReserved = arrived ? Math.max(0, BAL.dice.maxTurns - newTurns) : 0;
 
   let newPlayers = applyVirtueWave(p, virtueBefore, rr.players[idx].stats.virtue, rr.players, logs).map(
     (pl, i) => {
@@ -286,17 +279,10 @@ function runGhostDay8Dice(gs, day8RemainingTurns) {
         pendingTaxiSteps: 0,
       };
       if (arrived) {
-        return {
-          ...base,
-          movePhase: "goalLanding",
-          reservedSlotTurns: slotReserved,
-          slotTurnsLeft: 0,
-          slotPullsGranted: 0,
-          slotPullsThisSeat: 0,
-        };
+        return applyGoalArrivalToPlayer(base, false).player;
       }
       if (timedOut) {
-        return { ...base, movePhase: "missed", slotTurnsLeft: 0, reservedSlotTurns: 0 };
+        return { ...base, movePhase: "missed", slotTurnsLeft: 0 };
       }
       return { ...base, movePhase: "moving" };
     },
@@ -311,22 +297,10 @@ function runGhostBeginSlot(gs) {
   const idx = gs.currentPlayerIdx;
   const p = gs.players[idx];
   if (!p || p.movePhase !== "waitingSlot") return null;
-  const r = p.reservedSlotTurns ?? 0;
-  if (r <= 0) return applyGoalLandingConfirm(gs, p.id);
-  const pulls = Math.max(0, r * BAL.dice.slotsPerSugorokuTurn);
-  const logs = [`🤖 ${p.name}: スロット自動開始（${r}ターンブン・計${pulls}回）`];
-  const newPlayers = gs.players.map((pl, i) =>
-    i !== idx
-      ? pl
-      : {
-          ...pl,
-          movePhase: "arrived",
-          slotTurnsLeft: pulls,
-          reservedSlotTurns: 0,
-          slotPullsGranted: pulls,
-          slotPullsThisSeat: 0,
-        },
-  );
+  const began = beginDay8SlotSeatForPlayer(p);
+  if (!began) return null;
+  const logs = [`🤖 ${p.name}: スロット自動開始`];
+  const newPlayers = gs.players.map((pl, i) => (i !== idx ? pl : began));
   return { ...gs, players: newPlayers, log: prependLogs(logs, gs.log) };
 }
 

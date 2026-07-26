@@ -2,15 +2,16 @@ import { publicAssetUrl } from "../lib/publicAssetUrl";
 import { WORK_CUTIN_IMAGE } from "../constants/branding";
 
 /** 日常「仕事」の画像カットイン（親が一定時間後にオフにする） */
-export default function WorkCutin({ gold, stat, characterType }) {
+export default function WorkCutin({ gold, stat, characterType, onDismiss }) {
   const isRirimu = characterType === "vtuber" || characterType === "ririm";
   const src = publicAssetUrl(isRirimu ? "/images/work_ririmu.png" : WORK_CUTIN_IMAGE);
 
   return (
     <div
       className="fixed inset-0 z-[210] flex cursor-default items-center justify-center overflow-hidden bg-slate-950 pointer-events-auto"
-      aria-hidden
-      role="presentation"
+      aria-hidden={!onDismiss}
+      role={onDismiss ? "dialog" : "presentation"}
+      aria-modal={onDismiss ? "true" : undefined}
     >
       <div className="relative z-[2] flex flex-col items-center justify-center px-5">
         <div className="rounded-2xl border-2 border-amber-400 bg-slate-900 p-4 sm:p-5">
@@ -31,6 +32,15 @@ export default function WorkCutin({ gold, stat, characterType }) {
             </p>
           ) : null}
         </div>
+        {onDismiss ? (
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="mt-6 rounded-xl border border-slate-600 bg-slate-800/90 px-6 py-2.5 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-500 hover:bg-slate-700/90"
+          >
+            閉じる
+          </button>
+        ) : null}
       </div>
     </div>
   );

@@ -98,7 +98,7 @@ export const BAL = {
      * false: 従来どおり taxiAvailable が true のターンだけ表示（出現率は上の taxiChance で調整）。
      */
     taxiMenuAlwaysVisible: true,
-    taxiCost: 450,
+    taxiCost: 600,
     taxiMoveMin: 12,
     taxiMoveMax: 18,
     taxiBaseTurns: 1,
@@ -219,7 +219,7 @@ export const CHARACTERS = {
     ponMultiplier: 1.0,
     /** 仕事の資金（ベース＋査定ボーナス）に掛ける倍率 */
     workRewardMultiplier: 0.65,
-    /** PON発火時の資金ペナ（仕事・神社・デイリースロット側）。配信発火は変更しない */
+    /** PON発火時の資金ペナ（仕事のみ）。配信発火は変更しない */
     ponFireMoneyPenaltyMultiplier: 0.5,
     dailyLivingCost: 300,
     startingMoney: 800,

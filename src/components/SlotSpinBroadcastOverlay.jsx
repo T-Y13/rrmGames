@@ -5,6 +5,7 @@ import SlotReelCanvasView from "./SlotReelCanvasView";
 import { SLOT_MACHINES } from "../constants/gameBalance";
 import SlotProxyAccountability, { useProxyVictimSting } from "./SlotProxyAccountability";
 import JackpotCelebration from "./JackpotCelebration";
+import SlotPayoutAmountLabel from "./SlotPayoutAmountLabel";
 import {
   randomStripTriple,
   SLOT_JACKPOT_CELEBRATION_MS,
@@ -630,26 +631,16 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef, myId }) {
             >
               {showPayoutNow && (
                 <div
-                  className="pointer-events-none absolute top-1/2 z-[42] flex -translate-y-1/2 items-center pl-2 sm:pl-3"
+                  className="pointer-events-none absolute top-1/2 z-[42] hidden -translate-y-1/2 items-center pl-3 md:flex"
                   style={{ left: "100%" }}
                 >
-                  <span
-                    role="presentation"
-                    className="anim-slot-payout-popup font-black tabular-nums leading-none tracking-tight text-[#ffe566]"
-                    style={{
-                      fontSize: "clamp(2rem, min(12vw, 4rem), 4rem)",
-                      WebkitTextStroke: "2px rgba(120,53,15,0.85)",
-                      paintOrder: "stroke fill",
-                      textShadow:
-                        "0 0 2px #000, 0 2px 0 #854d0e, 0 4px 12px rgba(0,0,0,0.75), 0 0 28px rgba(250,204,21,0.75), 0 0 48px rgba(234,179,8,0.45)",
-                    }}
+                  <SlotPayoutAmountLabel
+                    amount={payoutAmount}
                     onAnimationEnd={() => {
                       setShowPayout(false);
                       setPayoutAmount(0);
                     }}
-                  >
-                    +{payoutAmount}G
-                  </span>
+                  />
                 </div>
               )}
 
@@ -670,6 +661,22 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef, myId }) {
                     className="h-full w-full"
                   />
                 </div>
+
+                {showPayoutNow && (
+                  <div
+                    className="pointer-events-none absolute z-[15] flex items-center justify-center md:hidden"
+                    style={winBox}
+                  >
+                    <SlotPayoutAmountLabel
+                      amount={payoutAmount}
+                      compact
+                      onAnimationEnd={() => {
+                        setShowPayout(false);
+                        setPayoutAmount(0);
+                      }}
+                    />
+                  </div>
+                )}
 
                 <div className="slot-cabinet-img-wrap relative z-[10] mx-auto w-full max-w-full pointer-events-none">
                   <img
@@ -729,10 +736,6 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef, myId }) {
             </p>
           )}
         </div>
-
-        <p className="mt-2 text-center text-[10px] text-slate-500 sm:text-xs">
-          絵柄は手番側で事前に確定済み。リーチ（カットインなし）は約{(SLOT_SYNC_T2_REACH_NOCUTIN / 1000).toFixed(1)}秒、リーチ（カットインあり）は約{(SLOT_SYNC_T2_REACH_CUTIN / 1000).toFixed(1)}秒、通常は約{(SLOT_SYNC_T2_NOREACH / 1000).toFixed(1)}秒で全リール停止します。
-        </p>
       </div>
     </div>
 

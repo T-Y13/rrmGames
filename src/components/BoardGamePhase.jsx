@@ -6,13 +6,11 @@ import { virtueMinRoll, sugorokuLuckyDiceChancePct } from "../utils/gameLogic";
 import { sugorokuPlayerName } from "../lib/sugorokuPlayerName";
 import BoardViewport from "./BoardViewport";
 import BoardHelpDeathDialog from "./BoardHelpDeathDialog";
+import Day8ItemBar from "./Day8ItemBar";
+import ProgressivePotDisplay from "./ProgressivePotDisplay";
+import { BOARD_VIEWPORT_FRAME_SIZE_CLASS } from "../constants/gameAnimationsCss";
 
-const BOARD_FRAME_STYLE = {
-  height: "min(720px, 80vh)",
-  minHeight: "min(560px, 72vh)",
-  overflow: "hidden",
-  borderRadius: "12px",
-};
+const BOARD_FRAME_CLASS = `${BOARD_VIEWPORT_FRAME_SIZE_CLASS} overflow-hidden rounded-xl`;
 
 /** 8日目：ゴール確認・スロット開始待ち・すごろく移動・ダイスUI */
 export default function BoardGamePhase({
@@ -56,12 +54,15 @@ export default function BoardGamePhase({
   tileEffectLines = null,
   tileEffectKind = null,
   onMoveAction,
+  onUseDay8Item,
   onGoalLandingConfirm,
   /** ローカル利用者が goalLanding のとき（currentPlayerIdx が別でも GOAL 確認を出す） */
   goalLandingSelf = null,
   boardDeathPresentation = null,
   deathFadeHandledIds = [],
   onBoardHelpDeathConfirm,
+  totalPot = 0,
+  showProgressivePot = false,
 }) {
   if (!cpGs) return null;
 
@@ -80,6 +81,7 @@ export default function BoardGamePhase({
   /** メニューにタクシーを出すか（常時フラグ or 各ターンの taxiAvailable） */
   const showTaxiInMenu = BAL.dice.taxiMenuAlwaysVisible || gs.taxiAvailable;
   const isObserver = !isMyTurn;
+  const goalMetersLeft = Math.max(0, BOARD_GOAL - cpGs.position);
 
   const localDiceOverlay = (() => {
     if (isTaxiTrafficWaitTurn || movementFxDiceActive || movementFxRunning) return null;
@@ -113,7 +115,7 @@ export default function BoardGamePhase({
             <p className="text-lg font-bold text-amber-100">{sugorokuPlayerName(goalSelf.name)}</p>
             <h2 className="text-2xl font-black text-amber-200 tracking-wide">GOAL!</h2>
           </div>
-          <div style={BOARD_FRAME_STYLE}>
+          <div className={BOARD_FRAME_CLASS}>
             <BoardViewport
               players={gs.players}
               viewPos={goalSelfViewPos}
@@ -146,17 +148,24 @@ export default function BoardGamePhase({
             <h2 className="font-semibold text-sm text-slate-300 shrink-0">
               {sugorokuPlayerName(cpGs.name)} — T{cpGs.moveTurns + 1}
             </h2>
-            <div className="flex-1 flex flex-col items-center">
-              <span className="text-[10px] text-yellow-400/60 font-medium tracking-widest uppercase">GOAL</span>
-              <div className="flex items-baseline gap-1">
-                <span className="text-2xl font-black text-yellow-300 tabular-nums leading-none">{Math.max(0, BOARD_GOAL - cpGs.position)}</span>
-                <span className="text-xs text-yellow-400/70">マス先</span>
+            <div className="flex-1 flex flex-col items-center gap-1 min-w-0">
+              {showProgressivePot && (
+                <ProgressivePotDisplay variant="inline" totalPot={totalPot} visible />
+              )}
+              <div className="flex items-baseline gap-1 justify-center flex-wrap">
+                <span className="text-[10px] text-yellow-400/60 font-medium tracking-widest uppercase shrink-0">
+                  GOAL
+                </span>
+                <span className="text-2xl font-black text-yellow-300 tabular-nums leading-none">
+                  {goalMetersLeft}
+                </span>
+                <span className="text-xs text-yellow-400/70 shrink-0">マス先</span>
               </div>
             </div>
             <span className="text-xs text-slate-500 shrink-0">残{Math.max(0, BAL.dice.maxTurns - cpGs.moveTurns)}T</span>
           </div>
 
-          <div style={BOARD_FRAME_STYLE}>
+          <div className={BOARD_FRAME_CLASS}>
             <BoardViewport
               players={gs.players}
               viewPos={sugorokuViewPos}
@@ -307,6 +316,13 @@ export default function BoardGamePhase({
                   : ` 出現 ${(BAL.dice.taxiChance * 100).toFixed(0)}%`}
               </p>
               )}
+              <Day8ItemBar
+                player={cpGs}
+                gs={gs}
+                isMyTurn={isMyTurn}
+                interactionLocked={interactionLocked || isDiceRolling || !!taxiPhase || cpGs.skipTurns > 0}
+                onUseItem={onUseDay8Item}
+              />
             </>
           )}
         </>

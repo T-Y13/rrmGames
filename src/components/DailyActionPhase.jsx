@@ -112,7 +112,7 @@ export default function DailyActionPhase({
         </div>
       </div>
 
-      <div className={`flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between${spectatorMode ? " relative min-h-[280px]" : ""}`}>
+      <div className={`relative flex flex-row items-start gap-2 md:justify-between${spectatorMode ? " min-h-[280px]" : ""}`}>
         {spectatorMode && (
           <div
             className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center"
@@ -126,7 +126,7 @@ export default function DailyActionPhase({
             </div>
           </div>
         )}
-        <div className="flex flex-col gap-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
           <button
             type="button"
             onClick={() => onDailyAction("work")}
@@ -191,12 +191,12 @@ export default function DailyActionPhase({
             神社（-{BAL.shrine.cost}G / 運+{BAL.shrine.luckGain}）
           </button>
         </div>
-        <div className="hidden sm:flex min-w-[220px] items-center justify-center self-stretch">
+        <div className="pointer-events-none flex w-[min(30vw,7.25rem)] shrink-0 items-end justify-end self-stretch md:min-w-[220px] md:items-center md:justify-center">
           <SugorokuBoardPiece
             characterType={cpGs.characterType}
             pose="normal"
-            imgClassName="h-[330px] w-[210px] object-contain object-center opacity-100 -translate-x-40"
-            spanClassName="text-8xl leading-none opacity-100"
+            imgClassName="h-[min(50vw,12.5rem)] w-full max-w-[7.25rem] object-contain object-bottom opacity-100 md:h-[330px] md:w-[210px] md:max-w-none md:object-center md:-translate-x-40"
+            spanClassName="text-6xl leading-none opacity-100 md:text-8xl"
             imgStyle={auraImgStyle}
             spanStyle={auraSpanStyle}
           />

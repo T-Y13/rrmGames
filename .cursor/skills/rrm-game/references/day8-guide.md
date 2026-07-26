@@ -2,6 +2,9 @@
 
 8日目は **盤面移動（すごろく）** と **スロット** が交互に進むフェーズ。マルチでは Firestore 同期・観戦ミラー・ゴースト自動操作が絡む。
 
+**全体ルール** → [game-rules.md](game-rules.md)（**実装でルールが変わったら両方更新** — [SKILL.md](../SKILL.md)）  
+**8日目実装詳細** → 本ファイル
+
 ## フェーズ構造
 
 ```
@@ -16,20 +19,127 @@ subPhase: day8
 | `moving` | ダイス・進む・タイル効果 |
 | `goalLanding` | ゴール着地確認 |
 | `waitingSlot` | スロット手番待ち（**ログ行は出さない**） |
-| `arrived` | スロット実行（最大3スピン/バースト） |
+| `arrived` | スロット実行（**1席 = 最大3スピン**） |
 
-**スロット:** `BAL.dice.slotsPerSugorokuTurn === 3` — 1移動ターンあたり3スピンのバースト。
+**スロット:** `BAL.dice.slotsPerSugorokuTurn === 3` — **3スピン完了で1席（バースト）終了**。  
+❌ 誤: 「1ターン付与 → 3スピン」　✅ 正: 「3スピンしたら1席完了」
+
+---
+
+## 8日目ラウンドとスロット（設計の正本・2026-07）
+
+エージェント／将来の自分向け。**ここが公式の考え方**。実装変更時はこの節とテストを先に読む。
+
+### 2種類の「ターン」
+
+| 名前 | フィールド | 意味 |
+|------|------------|------|
+| **ラウンド** | `room.remainingTurns`（15→0）, `moveTurns` | 8日目全体の **15ラウンド**。UI「移動手番 9/15」「残りラウンド 6」 |
+| **スロット1席** | `slotPullsThisSeat`（0→3）, `slotTurnsLeft` | **3スピンで1席完了**。同一プレイヤーが burst 中は手番が回らない |
+
+### スロットのルール（ユーザー合意）
+
+- **1手番 = 1スロット枠**。自分の手番が来たとき **都度** スピン付与（bank しない）。
+- 基本 **3スピン/手番**（`slotsPerSugorokuTurn`）。将来アイテムは `day8SlotGrantSizeForHandoff()` で加算。
+- ゴール時に **スピン数を逆算・一括計算しない**（`reservedSlotTurns` 廃止）。
+- **15T目（最終移動ターン）でゴール** → 移動で手番消費、次手番なし → **スロットなし**。
+- JP 当選 → POT リセット → **同じ手番の残スピン内**で続行。
+- **借金でもスピン可能**。
+- **8日目は必ず15ラウンド**（`remainingTurns` 0 まで）。
+
+### ゴールとスロット（手番ごと付与）
+
+```
+【ゴール時】
+  盤上を離れる（moving → goalLanding / waitingSlot）
+  スピン bank なし
+
+【自分の手番（ゴール済み）】
+  beginDay8SlotSeatForPlayer()
+    → slotTurnsLeft = day8SlotGrantSizeForHandoff()（今は3）
+  → arrived（スピン実行）
+  → 0になったら releaseDay8PlayerToWaitingSlotAfterBurst()
+    → waitingSlot（次の自分手番まで待機）
+```
+
+**早くゴール = 残りラウンド分だけ「自分手番」が増える** → 結果的にスロット多め。  
+「9Tゴール = 18スピン付与」のような **事前計算・bank 表現は使わない**。
+
+### スロット席の開始・終了
+
+```
+waitingSlot
+  → beginDay8SlotSeatForPlayer()   // この手番分だけ付与
+  → arrived
+  → スピン消化
+  → releaseDay8PlayerToWaitingSlotAfterBurst() → waitingSlot
+```
+
+**実装箇所**
+
+| 処理 | ファイル |
+|------|----------|
+| `beginDay8SlotSeatForPlayer` | `gameLogic.js` |
+| `day8SlotGrantSizeForHandoff` | `gameLogic.js`（アイテム加算用フック） |
+| `releaseDay8PlayerToWaitingSlotAfterBurst` | `gameLogic.js` |
+| 手動スロット開始 | `App.jsx` `handleBeginSlotPhase` |
+| ゴースト自動開始 | `ghostPlayerAutomation.js` `runGhostBeginSlot` |
+| バースト後 waitingSlot 復帰 | `computeAdvanceDay8Turn` |
+
+### ゲーム終了条件
+
+| 経路 | 条件 | 正否 |
+|------|------|------|
+| **唯一の正規経路** | `remainingTurns === 0` → `resolveDay8RoundExhaustion` → `finalizeToResults` | ✅ |
+| ~~早期終了~~ | ~~全員 `isDay8GameFinished` → 即 `finalizeToResults`~~ | ❌ **削除済（バグ）** |
+
+`isDay8GameFinished`: 最終移動ターンゴール（`isDay8FinalMoveGoal`）のみ true。それ以外のゴール済みは false（手番ごとにスロット継続）。
+
+### フィールド名の注意
+
+| フィールド | 実態 |
+|------------|------|
+| `slotTurnsLeft` | **この手番の残スピン数**（手番開始時に付与、持ち越さない） |
+| `slotPullsThisSeat` | 手番内プル数（0→3 で burst 完了） |
+| ~~`reservedSlotTurns`~~ | **廃止**（2026-07 手番ごと付与へ移行） |
+
+### 結果画面・資産グラフ
+
+| データ源 | 用途 |
+|----------|------|
+| `assetHistory.daily` | 1〜7日目 **日次終了時** |
+| `assetHistory.day8` | 8日目 **各ラウンド終了時**（`snapshotDay8TurnEndAllPlayers`） |
+| ~~`day8Timeline`~~ | グラフでは **使わない**（移動/スロット細分化用。重複プロットの原因だった） |
+
+**グラフ生成:** `src/utils/assetHistoryFromGameState.js` → `AssetHistoryChart.jsx`
+
+- X軸: 数値 `order`（0=Start, 1〜7=日次, 8〜22=8-1〜8-15）で **等間隔**
+- 8日目: **1ラウンド1点**（プレイヤーごとの所持金）。総資産合算線は **不要**（個人の所持金のみ）
+- 15ラウンド修正後は `day8` バケットに 1〜15 が記録される想定
+
+### 2026-07 に直したバグ（再発防止）
+
+| ID | 症状 | 原因 | 修正 |
+|----|------|------|------|
+| A | ゴール後1席で全スピン消化 | `reserved × 3` 一括付与 | **手番ごと付与**（`reservedSlotTurns` 廃止） |
+| B | 11Tなどで results、グラフが 8-12 以降横ばい | `computeAdvanceDay8Turn` が全員完了で早期 `finalizeToResults` | その分岐 **削除**。`remainingTurns===0` のみ終了 |
+| C | グラフが同ターン2点・軸が崩れる | `day8Timeline` をグラフに使用 | `daily` / `day8` のみ。タイムラインは記録のみ |
+| D | `isDay8GameFinished` が早すぎる | `arrived` + `slotTurnsLeft<=0` だけで完了 | 最終ターンゴールのみ完了扱い |
+
+**テスト:** `gameLogic.test.js`（`day8 slot seat helpers`）, `assetHistoryFromGameState.test.js`, `day8RoundTracking.test.js`
 
 ## 主要ファイル
 
 | 用途 | ファイル |
 |------|----------|
 | 盤面・移動 UI | `BoardGamePhase.jsx`, `BoardViewport.jsx`, `BoardTile.jsx` |
+| **SP すごろくレイアウト定数** | `constants/sugorokuMobileLayout.js` |
 | 移動演出 | `sugorokuMovementFx.js`, `useSugorokuMovementFx.js` |
 | スロット本体 | `SlotMachine.jsx`, `SlotReelCanvasView.jsx` |
 | 観戦ミラー | `Day8SlotSpectatorMirror.jsx` |
 | ラウンド管理 | `day8RoundTracking.js` |
 | 純粋ロジック | `gameLogic.js`（`computeAdvanceDay8Turn` 等） |
+| 資産グラフ | `assetHistoryFromGameState.js`, `AssetHistoryChart.jsx`, `lib/playerAssetHistory.js` |
 | アイテム | 下記「8日目アイテム」 |
 
 ## スロット同期タイミング
@@ -129,4 +239,6 @@ Day8ItemBar.jsx            行動ボタン直下 UI
 
 ## 関連テスト
 
-`gameLogic.test.js`, `day8Items.test.js`, `day8RoundTracking.test.js`, `day8SlotReloadRecovery.test.js`, `slotPotJackpot.test.js`, `sugorokuMovementFx*.test.js`
+`gameLogic.test.js`, `day8Items.test.js`, `day8RoundTracking.test.js`, `day8SlotReloadRecovery.test.js`, `slotPotJackpot.test.js`, `sugorokuMovementFx*.test.js`, `assetHistoryFromGameState.test.js`
+
+**8日目ラウンド／スロット／グラフの設計正本** → 本ファイル上部「8日目ラウンドとスロット（設計の正本・2026-07）」

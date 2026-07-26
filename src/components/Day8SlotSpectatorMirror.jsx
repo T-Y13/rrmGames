@@ -3,7 +3,14 @@ import SlotContainer from "./SlotContainer";
 import SlotSpinBroadcastOverlay from "./SlotSpinBroadcastOverlay";
 
 /** 8日目スロット：手番以外のクライアント向けミラー（操作者 UI は変更なし） */
-export default function Day8SlotSpectatorMirror({ gs, cpGs, soundRef, myId }) {
+export default function Day8SlotSpectatorMirror({
+  gs,
+  cpGs,
+  soundRef,
+  myId,
+  totalPot = 0,
+  showProgressivePot = false,
+}) {
   if (!cpGs || !gs) return null;
 
   const slotPhase = gs?.slotPhase ?? "idle";
@@ -35,6 +42,8 @@ export default function Day8SlotSpectatorMirror({ gs, cpGs, soundRef, myId }) {
           roomId={null}
           interactionLocked
           myId={myId}
+          totalPot={totalPot}
+          showProgressivePot={showProgressivePot}
         />
       </div>
       <SlotSpinBroadcastOverlay gs={gs} soundRef={soundRef} myId={myId} />

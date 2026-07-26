@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { SLOT_JACKPOT_CELEBRATION_MS } from "../utils/gameLogic";
+import { SLOT_JACKPOT_CELEBRATION_MS, SLOT_TIER_LABELS } from "../utils/gameLogic";
 
 const PARTICLE_ICONS = ["🪙", "⭐", "💎", "✨", "🎰", "💰"];
 const PARTICLE_COUNT = 26;
@@ -21,7 +21,7 @@ function buildParticles(seed) {
 }
 
 /**
- * フルスクリーン・ジャックポット祝砲。マルチ同期表示用（SlotSpinBroadcastOverlay / SlotMachine）。
+ * フルスクリーン・超大当たり／POT JP 祝砲（SlotSpinBroadcastOverlay / SlotMachine）。
  */
 export default function JackpotCelebration({
   show = false,
@@ -144,7 +144,7 @@ export default function JackpotCelebration({
               }}
               transition={{ duration: 0.9, repeat: Infinity }}
             >
-              {isPot ? "Pot Jackpot" : "Jackpot"}
+              {isPot ? SLOT_TIER_LABELS.potJackpot : SLOT_TIER_LABELS.jackpot}
             </motion.div>
 
             <motion.h1

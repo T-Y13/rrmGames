@@ -48,7 +48,7 @@ function applyFinalPlayerMoneyToDay8(players, day8ByTurn) {
   return out;
 }
 
-/** gameState.assetHistory のみから日次・8日目スナップショットを読む */
+/** gameState.assetHistory の日次・8日目ターン記録のみを読む（タイムラインは使わない） */
 function collectAssetSnapshotsFromStored(gameState) {
   const players = Array.isArray(gameState?.players) ? gameState.players : [];
   const hist = normalizeAssetHistory(gameState);
@@ -69,59 +69,56 @@ function collectAssetSnapshotsFromStored(gameState) {
     }
   }
 
-  return {
-    dayEndSnapshots,
-    day8ByTurn,
-    day8Timeline: hist.day8Timeline ?? [],
-  };
+  return { dayEndSnapshots, day8ByTurn };
 }
 
-function buildDay8TimelineRows(timeline, players, playerKeys, day7End, lastValues) {
-  /** @type {Array<Record<string, string|number>>} */
-  const rows = [];
-  for (const entry of timeline) {
-    const row = { time: `8-${entry.seq}`, order: LAST_DAILY_DAY + entry.seq };
-    for (let i = 0; i < players.length; i++) {
-      const p = players[i];
-      const val = entry.money?.[p.id];
-      if (typeof val === "number") row[playerKeys[i]] = val;
-      else if (typeof day7End[p.id] === "number") row[playerKeys[i]] = day7End[p.id];
+function buildDay8TurnMoneyRow(turn, players, playerKeys, day7End, day8ByTurn) {
+  const row = { time: `8-${turn}`, order: LAST_DAILY_DAY + turn };
+  for (let i = 0; i < players.length; i++) {
+    const p = players[i];
+    const turnMap = day8ByTurn[p.id] ?? {};
+    let val = turnMap[turn];
+    if (typeof val !== "number") {
+      const priorTurns = Object.keys(turnMap)
+        .map(Number)
+        .filter((t) => t <= turn)
+        .sort((a, b) => b - a);
+      val = priorTurns.length > 0 ? turnMap[priorTurns[0]] : undefined;
     }
-    rows.push(forwardFillRow(row, playerKeys, lastValues));
+    if (typeof val !== "number" && typeof day7End[p.id] === "number") {
+      val = day7End[p.id];
+    }
+    if (typeof val === "number") row[playerKeys[i]] = val;
   }
-  return rows;
+  return row;
 }
 
-function buildDay8TurnRows(players, playerKeys, day7End, day8ByTurn, lastValues) {
+/** 8日目 T1–15：ターン終了時の記録のみ（1ターン1点） */
+function buildDay8Rows(players, playerKeys, day7End, day8ByTurn, lastValues) {
   /** @type {Array<Record<string, string|number>>} */
   const rows = [];
   for (let turn = 1; turn <= DAY8_MAX_TURNS; turn++) {
-    const row = { time: `8/${turn}`, order: LAST_DAILY_DAY + turn };
-    for (let i = 0; i < players.length; i++) {
-      const p = players[i];
-      const turnMap = day8ByTurn[p.id] ?? {};
-      let val = turnMap[turn];
-      if (typeof val !== "number") {
-        const priorTurns = Object.keys(turnMap)
-          .map(Number)
-          .filter((t) => t <= turn)
-          .sort((a, b) => b - a);
-        val = priorTurns.length > 0 ? turnMap[priorTurns[0]] : undefined;
-      }
-      if (typeof val !== "number" && typeof day7End[p.id] === "number") {
-        val = day7End[p.id];
-      }
-      if (typeof val === "number") row[playerKeys[i]] = val;
-    }
-    rows.push(forwardFillRow(row, playerKeys, lastValues));
+    rows.push(
+      forwardFillRow(
+        buildDay8TurnMoneyRow(turn, players, playerKeys, day7End, day8ByTurn),
+        playerKeys,
+        lastValues,
+      ),
+    );
   }
   return rows;
 }
 
-function buildChartFromSnapshots(gameState, dayEndSnapshots, day8ByTurn, day8Timeline = []) {
+function buildChartFromSnapshots(gameState, dayEndSnapshots, day8ByTurn) {
   const players = Array.isArray(gameState?.players) ? gameState.players : [];
   if (players.length === 0) {
-    return { chartData: [], playerSeries: [], day8TransitionKey: "8T1", yDomain: [0, 1000] };
+    return {
+      chartData: [],
+      playerSeries: [],
+      day8TransitionOrder: LAST_DAILY_DAY + 1,
+      xDomain: [0, LAST_DAILY_DAY + DAY8_MAX_TURNS],
+      yDomain: [0, 1000],
+    };
   }
 
   const playerKeys = players.map((p, i) => seriesKeyForPlayer(p, i));
@@ -142,7 +139,7 @@ function buildChartFromSnapshots(gameState, dayEndSnapshots, day8ByTurn, day8Tim
     startRow[playerKeys[i]] = startMoney;
     lastValues[playerKeys[i]] = startMoney;
   }
-  chartData.push(startRow);
+  chartData.push(forwardFillRow(startRow, playerKeys, lastValues));
 
   for (let day = 1; day <= LAST_DAILY_DAY; day++) {
     const row = { time: `${day}日`, order: day };
@@ -155,12 +152,7 @@ function buildChartFromSnapshots(gameState, dayEndSnapshots, day8ByTurn, day8Tim
   }
 
   const day7End = dayEndSnapshots[LAST_DAILY_DAY] ?? {};
-  const timeline = Array.isArray(day8Timeline) ? day8Timeline : [];
-  const day8Rows =
-    timeline.length > 0
-      ? buildDay8TimelineRows(timeline, players, playerKeys, day7End, lastValues)
-      : buildDay8TurnRows(players, playerKeys, day7End, day8ByTurn, lastValues);
-  chartData.push(...day8Rows);
+  chartData.push(...buildDay8Rows(players, playerKeys, day7End, day8ByTurn, lastValues));
 
   const allValues = chartData.flatMap((row) =>
     playerKeys.map((k) => row[k]).filter((v) => typeof v === "number"),
@@ -173,28 +165,52 @@ function buildChartFromSnapshots(gameState, dayEndSnapshots, day8ByTurn, day8Tim
   return {
     chartData,
     playerSeries,
-    day8TransitionKey: timeline.length > 0 ? "8-1" : "8/1",
+    day8TransitionOrder: LAST_DAILY_DAY + 1,
+    xDomain: [0, LAST_DAILY_DAY + DAY8_MAX_TURNS],
     yDomain,
   };
 }
 
+/** 数値 order → 軸ラベル（等間隔 X 軸用） */
+export function formatAssetHistoryOrderLabel(order) {
+  const n = Number(order);
+  if (!Number.isFinite(n)) return "";
+  if (n === 0) return "Start";
+  if (n >= 1 && n <= LAST_DAILY_DAY && Number.isInteger(n)) return `${n}日`;
+  const day8Order = n - LAST_DAILY_DAY;
+  if (day8Order >= 1 && day8Order <= DAY8_MAX_TURNS) {
+    const turn = Math.min(DAY8_MAX_TURNS, Math.max(1, Math.round(day8Order)));
+    return `8-${turn}`;
+  }
+  return "";
+}
+
+/** 等間隔で表示する X 軸目盛り（order 値） */
+export function buildAssetHistoryXAxisOrderTicks() {
+  const ticks = [0];
+  for (let day = 1; day <= LAST_DAILY_DAY; day++) ticks.push(day);
+  for (let turn = 1; turn <= DAY8_MAX_TURNS; turn++) ticks.push(LAST_DAILY_DAY + turn);
+  return ticks;
+}
+
 /**
  * gameState から Recharts 用の資産推移データを生成。
- * gameState.assetHistory のみを参照（log は使わない）。
+ * gameState.assetHistory の daily / day8 のみを参照（log・day8Timeline は使わない）。
  */
 export function buildAssetHistoryChartData(gameState) {
   const players = Array.isArray(gameState?.players) ? gameState.players : [];
   if (players.length === 0) {
-    return { chartData: [], playerSeries: [], day8TransitionKey: "8T1", yDomain: [0, 1000] };
+    return {
+      chartData: [],
+      playerSeries: [],
+      day8TransitionOrder: LAST_DAILY_DAY + 1,
+      xDomain: [0, LAST_DAILY_DAY + DAY8_MAX_TURNS],
+      yDomain: [0, 1000],
+    };
   }
 
   const fromStored = collectAssetSnapshotsFromStored(gameState);
   const day8ByTurn = applyFinalPlayerMoneyToDay8(players, fromStored.day8ByTurn);
 
-  return buildChartFromSnapshots(
-    gameState,
-    fromStored.dayEndSnapshots,
-    day8ByTurn,
-    fromStored.day8Timeline,
-  );
+  return buildChartFromSnapshots(gameState, fromStored.dayEndSnapshots, day8ByTurn);
 }

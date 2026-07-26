@@ -65,6 +65,8 @@ export async function runTileEffectPresentation(tileEffect, handlers = {}) {
  *   stepDelta: number;
  *   diceRolls: number[];
  *   diceRolls: number[];
+ *   tileEffect?: object|null;
+ *   preMoveEffect?: object|null;
  *   followUp?: "taxi"|"pon"|null;
  *   taxiVisual?: object|null;
  *   ponVisual?: object|null;
@@ -79,6 +81,7 @@ export function buildMovementFx({
   stepDelta,
   diceRolls,
   tileEffect = null,
+  preMoveEffect = null,
   followUp = null,
   taxiVisual = null,
   ponVisual = null,
@@ -95,6 +98,7 @@ export function buildMovementFx({
     tileStepDelta: tileSlide ? finalPos - landedPos : 0,
     tileSlide,
     tileEffect,
+    preMoveEffect,
     diceRolls: Array.isArray(diceRolls) ? [...diceRolls] : [],
     ...(followUp ? { followUp } : {}),
     ...(taxiVisual ? { taxiVisual } : {}),
@@ -330,6 +334,16 @@ export async function runMovementFxSequence(fx, handlers = {}) {
 
   onPhase?.("dice");
   await delay(MOVEMENT_FX_DICE_MS);
+
+  if (
+    fx.preMoveEffect &&
+    ((fx.preMoveEffect.titles?.length ?? 0) > 0 || (fx.preMoveEffect.moneyDelta ?? 0) !== 0)
+  ) {
+    onPhase?.("preMoveExplain");
+    await runTileEffectPresentation(fx.preMoveEffect, {
+      onExplain: onTileExplain,
+    });
+  }
 
   const firstTarget = landedPos;
   onPhase?.("move");

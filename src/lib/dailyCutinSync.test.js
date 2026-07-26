@@ -5,6 +5,7 @@ import {
   buildDailyCutinSessionId,
   dailyCutinPhaseDurationMs,
   dailyCutinSpectatorStatusLabel,
+  isDailyCutinBroadcastStale,
   readDailyCutinBroadcast,
 } from "./dailyCutinSync";
 
@@ -64,5 +65,26 @@ describe("dailyCutinSync", () => {
       sessionId: "",
       payload: null,
     });
+  });
+
+  it("ignores cutin broadcast outside daily subPhase", () => {
+    const room = {
+      dailyCutinPhase: DAILY_CUTIN_PHASE.work,
+      dailyCutinSessionId: "123-work",
+      dailyCutinPayload: { gold: 100 },
+    };
+    const gs = { subPhase: "day8" };
+    expect(readDailyCutinBroadcast(room, gs).phase).toBe("idle");
+  });
+
+  it("detects stale cutin sessions by timestamp prefix", () => {
+    const oldSid = `${Date.now() - 120000}-abc`;
+    expect(
+      isDailyCutinBroadcastStale({ phase: DAILY_CUTIN_PHASE.work, sessionId: oldSid }, 45000),
+    ).toBe(true);
+    const freshSid = `${Date.now()}-abc`;
+    expect(
+      isDailyCutinBroadcastStale({ phase: DAILY_CUTIN_PHASE.work, sessionId: freshSid }, 45000),
+    ).toBe(false);
   });
 });

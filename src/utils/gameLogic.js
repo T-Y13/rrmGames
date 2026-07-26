@@ -18,6 +18,12 @@ import {
 } from "../lib/gameLogFormat";
 import { DAILY_CUTIN_SYNC_DEFAULTS } from "../lib/dailyCutinSync";
 import { canSelectAsProxySlotTarget, canContinueAsProxySlotTarget, canProxySlotBetAt, computeProxySlotMaxBet } from "../lib/slotProxyTarget";
+import { applyDay8SlotPayoutBonus } from "../lib/day8ItemEffects";
+import {
+  formatDay8StartGrantLog,
+  grantDay8StartInventoryToPlayers,
+  resetDay8ItemSeatForPlayer,
+} from "../lib/day8Items";
 import {
   createEmptyAssetHistory,
   finalizeDay8AssetHistory,
@@ -26,6 +32,52 @@ import {
   snapshotDay8TurnEndAllPlayers,
   resolveDay8HistoryTurn,
 } from "../lib/playerAssetHistory";
+
+/** 8日目スロット：1手番あたりの基本スピン数（将来アイテムで加算） */
+export function day8SlotBurstSize() {
+  return Math.max(1, BAL.dice.slotsPerSugorokuTurn ?? 3);
+}
+
+/** この手番に付与するスピン数（アイテム等は将来ここに足す） */
+export function day8SlotGrantSizeForHandoff(player) {
+  void player;
+  return day8SlotBurstSize();
+}
+
+/** 最終移動ターン（15T目）でゴール — 次手番がないためスロットなし */
+export function isDay8FinalMoveGoal(player) {
+  return (Number(player?.moveTurns) || 0) >= BAL.dice.maxTurns;
+}
+
+/**
+ * waitingSlot → arrived：この手番分のスピンだけ付与（bank なし）。
+ * @returns {object|null}
+ */
+export function beginDay8SlotSeatForPlayer(player) {
+  if (player?.movePhase !== "waitingSlot") return null;
+  if (isDay8FinalMoveGoal(player)) return null;
+  const grant = day8SlotGrantSizeForHandoff(player);
+  return {
+    ...player,
+    movePhase: "arrived",
+    slotTurnsLeft: grant,
+    slotPullsGranted: grant,
+    slotPullsThisSeat: 0,
+  };
+}
+
+/** バースト終了後 waitingSlot へ（次の自分手番まで待機） */
+export function releaseDay8PlayerToWaitingSlotAfterBurst(player) {
+  if (player?.movePhase !== "arrived") return player;
+  if ((player.slotTurnsLeft ?? 0) > 0) return player;
+  if (isDay8FinalMoveGoal(player)) return player;
+  return {
+    ...player,
+    movePhase: "waitingSlot",
+    slotPullsThisSeat: 0,
+    slotPullsGranted: 0,
+  };
+}
 
 /** Firestore が Timestamp で返した場合にも ms で比較する */
 export function toEpochMsMaybe(v) {
@@ -991,6 +1043,9 @@ export function makePlayer(name, id, characterType, initialStats = null) {
       debtStreakDay8: 0,
       /** タクシー渋滞: 前半移動済み・残マスは次自分ターンで消化 */
       pendingTaxiSteps: 0,
+      day8Inventory: {},
+      day8ItemUsedThisSeat: false,
+      day8SeatEffects: [],
     };
   }
 
@@ -1028,6 +1083,9 @@ export function makePlayer(name, id, characterType, initialStats = null) {
     debtStreakDaily: 0,
     debtStreakDay8: 0,
     pendingTaxiSteps: 0,
+    day8Inventory: {},
+    day8ItemUsedThisSeat: false,
+    day8SeatEffects: [],
   };
 }
 
@@ -1109,11 +1167,7 @@ export function isDay8Done(p, allPlayers) {
 
   if (p.movePhase === "moving") return false;
   if (p.movePhase === "goalLanding") return false;
-  if (p.movePhase === "waitingSlot") {
-    const r = p.reservedSlotTurns ?? 0;
-    if (r <= 0) return true;
-    return false;
-  }
+  if (p.movePhase === "waitingSlot") return false;
   if (p.movePhase === "missed") return true;
   if (p.movePhase === "arrived") return p.slotTurnsLeft <= 0;
   return true;
@@ -1136,9 +1190,12 @@ export function isDay8GameFinished(p, allPlayers) {
 
   if (p.movePhase === "moving") return false;
   if (p.movePhase === "goalLanding") return false;
-  if (p.movePhase === "waitingSlot") return (p.reservedSlotTurns ?? 0) <= 0;
+  if (p.movePhase === "waitingSlot") return false;
   if (p.movePhase === "missed") return true;
-  if (p.movePhase === "arrived") return (p.slotTurnsLeft ?? 0) <= 0;
+  if (p.movePhase === "arrived") {
+    if ((p.slotTurnsLeft ?? 0) > 0) return false;
+    return isDay8FinalMoveGoal(p);
+  }
   return true;
 }
 
@@ -1148,51 +1205,50 @@ export function isGhostPickTargetPhase(p) {
 }
 
 /**
- * ゴール到着時の movePhase 決定。マルチでは goalLanding を省略して waitingSlot / arrived へ。
+ * ゴール到着時の movePhase 決定。スロットは bank せず次手番で都度付与。
+ * 最終移動ターン（15T）ゴールはスロットなし。
  * @returns {{ player: object, extraLogs: string[] }}
  */
-export function applyGoalArrivalToPlayer(base, slotReserved, autoConfirmMulti = false) {
-  const r = slotReserved ?? 0;
+export function applyGoalArrivalToPlayer(base, autoConfirmMulti = false) {
   const name = base?.name ?? "プレイヤー";
+  const finalGoal = isDay8FinalMoveGoal(base);
+  const goalCompletePlayer = {
+    ...base,
+    movePhase: "arrived",
+    slotTurnsLeft: 0,
+    slotPullsGranted: 0,
+    slotPullsThisSeat: 0,
+  };
+
+  if (finalGoal) {
+    return {
+      player: goalCompletePlayer,
+      extraLogs: [`${name}: ゴール到着（最終移動ターン — スロット手番なし）`],
+    };
+  }
+
   if (!autoConfirmMulti) {
     return {
       player: {
         ...base,
         movePhase: "goalLanding",
         slotTurnsLeft: 0,
-        reservedSlotTurns: r,
         slotPullsGranted: 0,
         slotPullsThisSeat: 0,
       },
       extraLogs: [],
     };
   }
-  if (r <= 0) {
-    return {
-      player: {
-        ...base,
-        movePhase: "arrived",
-        slotTurnsLeft: 0,
-        reservedSlotTurns: 0,
-        slotPullsGranted: 0,
-        slotPullsThisSeat: 0,
-      },
-      extraLogs: [`${name}: ゴール済み／スロット権利0回でラウンド不参加`],
-    };
-  }
-  const maxPulls = r * BAL.dice.slotsPerSugorokuTurn;
+
   return {
     player: {
       ...base,
       movePhase: "waitingSlot",
       slotTurnsLeft: 0,
-      reservedSlotTurns: r,
       slotPullsGranted: 0,
       slotPullsThisSeat: 0,
     },
-    extraLogs: [
-      `${name}: ゴール到着ターン終了　→ スロット${r}ターンブン（計最大${maxPulls}回）は次の自分のターンで開始できます`,
-    ],
+    extraLogs: [`${name}: ゴール到着 — 次の自分の手番でスロット`],
   };
 }
 
@@ -1216,11 +1272,10 @@ export function applyGoalLandingConfirm(gs, playerId) {
   if (idx < 0) return null;
   const p = players[idx];
   if (p.movePhase !== "goalLanding") return null;
-  const r = p.reservedSlotTurns ?? 0;
   let newPlayers;
   let logs;
-  if (r <= 0) {
-    logs = [`${p.name}: ゴール済み／スロット権利0回でラウンド不参加`];
+  if (isDay8FinalMoveGoal(p)) {
+    logs = [`${p.name}: ゴール到着（最終移動ターン — スロット手番なし）`];
     newPlayers = players.map((pl, i) =>
       i !== idx
         ? pl
@@ -1228,17 +1283,23 @@ export function applyGoalLandingConfirm(gs, playerId) {
             ...pl,
             movePhase: "arrived",
             slotTurnsLeft: 0,
-            reservedSlotTurns: 0,
             slotPullsGranted: 0,
             slotPullsThisSeat: 0,
           },
     );
   } else {
-    const maxPulls = r * BAL.dice.slotsPerSugorokuTurn;
-    logs = [
-      `${p.name}: ゴール到着ターン終了　→ スロット${r}ターンブン（計最大${maxPulls}回）は次の自分のターンで開始できます`,
-    ];
-    newPlayers = players.map((pl, i) => (i !== idx ? pl : { ...pl, movePhase: "waitingSlot" }));
+    logs = [`${p.name}: ゴール到着 — 次の自分の手番でスロット`];
+    newPlayers = players.map((pl, i) =>
+      i !== idx
+        ? pl
+        : {
+            ...pl,
+            movePhase: "waitingSlot",
+            slotTurnsLeft: 0,
+            slotPullsGranted: 0,
+            slotPullsThisSeat: 0,
+          },
+    );
   }
   return stripLegacySlotFirestoreFields({
     ...gs,
@@ -1444,7 +1505,6 @@ export function formatDay8SlotSpinLogLine({
   bet,
   message,
   net,
-  newMoney,
   potPayout = 0,
 }) {
   const prefix = proxyTargetName
@@ -1455,7 +1515,13 @@ export function formatDay8SlotSpinLogLine({
     hit = `${hit}（POT +${potPayout}G）`;
   }
   const netStr = `${net >= 0 ? "+" : ""}${net}G`;
-  return `${prefix}${pullIndex}回目 ${bet}G → ${hit}（収支${netStr}・資金${newMoney}G）`;
+  return `${prefix}${pullIndex}回目 ${bet}G → ${hit} 収支${netStr}`;
+}
+
+/** 8日目スロット：3スピン（バースト）終了時の資金サマリー */
+export function formatDay8SlotBurstMoneyLogLine({ proxyTargetName = null, newMoney }) {
+  const label = proxyTargetName ? `${proxyTargetName}の資金` : "資金";
+  return `  ${label}${newMoney}G`;
 }
 
 /**
@@ -1555,13 +1621,33 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
   }
 
   const potPayout = Math.max(0, Math.floor(Number(ctx.potPayout) || 0));
-  const grossPayout = res.payout + potPayout;
+  let grossPayout = res.payout + potPayout;
+  const payoutBonus = applyDay8SlotPayoutBonus(actor, grossPayout, res.tier);
+  grossPayout = payoutBonus.grossPayout;
   const net = grossPayout - bet;
   const moneyIdx = proxyTargetIdx != null ? proxyTargetIdx : actorIdx;
   const moneyPlayer = freshGs.players[moneyIdx];
   const newMoney = clampMoney(moneyPlayer.stats.money - bet + grossPayout);
 
-  const logs = [
+  const batch = [];
+  const burst = Math.max(1, BAL.dice.slotsPerSugorokuTurn ?? 3);
+  const burstFinished = appliedPulls >= burst || (appliedLeft <= 0 && appliedPulls > 0);
+  if (burstFinished) {
+    batch.push(
+      formatDay8SlotBurstMoneyLogLine({
+        proxyTargetName:
+          proxyTargetIdx != null ? freshGs.players[proxyTargetIdx]?.name ?? null : null,
+        newMoney,
+      }),
+    );
+  }
+  if (payoutBonus.bonus > 0) {
+    const pct = payoutBonus.effectMeta
+      ? Math.round((Number(payoutBonus.effectMeta.value) - 1) * 100)
+      : 0;
+    batch.push(`  🎒 ${actor.name}: アイテム効果 +${payoutBonus.bonus}G（当たり+${pct}%）`);
+  }
+  batch.push(
     formatDay8SlotSpinLogLine({
       actorName: actor.name,
       proxyTargetName:
@@ -1570,15 +1656,18 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
       bet,
       message: res.message,
       net,
-      newMoney,
       potPayout,
     }),
-  ];
+  );
+  const logs = batch;
+
+  const actorAfterSpin = payoutBonus.player;
 
   const newPlayers = freshGs.players.map((pl, i) => {
     if (moneyIdx === actorIdx && i === actorIdx) {
       return {
         ...pl,
+        day8SeatEffects: actorAfterSpin.day8SeatEffects,
         stats: { ...pl.stats, money: newMoney },
         slotNet: (pl.slotNet ?? 0) + net,
         slotTurnsLeft: appliedLeft,
@@ -1599,6 +1688,7 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
     if (i === actorIdx) {
       return {
         ...pl,
+        day8SeatEffects: actorAfterSpin.day8SeatEffects,
         slotTurnsLeft: appliedLeft,
         slotPullsThisSeat: appliedPulls,
         spinCount: appliedSpins,
@@ -1969,7 +2059,8 @@ export function enterDay8AfterFinalBattleCue(gs) {
   const head = `${p0.name}の移動ターン（T1 / ${BOARD_GOAL}マス先へ！）`;
   const banner = "━━━ 8日目！全員で交互に移動＆スロット ━━━";
   const withDay7Snapshot = snapshotDailyEndAllPlayers(gs, LAST_DAILY_DAY, gs.players);
-  const day8Players = (withDay7Snapshot.players ?? gs.players ?? []).map((pl) => {
+  const day8Players = grantDay8StartInventoryToPlayers(
+    (withDay7Snapshot.players ?? gs.players ?? []).map((pl) => {
     if (pl.alive === false) {
       return { ...pl, roundHandoffDone: false, ghostActedThisRound: false };
     }
@@ -1987,7 +2078,8 @@ export function enterDay8AfterFinalBattleCue(gs) {
       slotPullsThisSeat: 0,
       lastMoveEvent: "",
     };
-  });
+  }),
+  );
   const next = {
     ...ensureSugorokuTileEffects(withDay7Snapshot),
     ...SLOT_SYNC_DEFAULTS,
@@ -2008,7 +2100,7 @@ export function enterDay8AfterFinalBattleCue(gs) {
   delete next.finalBattleStartedAt;
   delete next.finalBattleEntry;
   delete next.dailyActionFx;
-  next.log = prependLogs([head, banner], gs.log);
+  next.log = prependLogs([head, banner, formatDay8StartGrantLog()], gs.log);
   return next;
 }
 
@@ -2139,23 +2231,13 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
 
   /** スロット手番終了後、次の自分枠までこの手番用カウンタをリセット */
   const outgoingTimelineKind = (stayP?.slotPullsThisSeat ?? 0) > 0 ? "slot" : "move";
-  playersWithInterest = playersWithInterest.map((pl, i) =>
-    i !== gs.currentPlayerIdx ? pl : { ...pl, slotPullsThisSeat: 0 },
-  );
-
-  if (playersWithInterest.every((pl) => isDay8GameFinished(pl, playersWithInterest))) {
-    const turn = resolveDay8HistoryTurn(playersWithInterest);
-    let interim = {
-      ...gs,
-      players: playersWithInterest,
-      proxySlotTargetIdx: null,
-      log: prependLogs(extraMerged, gs.log),
-    };
-    if (turn != null) {
-      interim = snapshotDay8TurnEndAllPlayers(interim, turn, playersWithInterest, outgoingTimelineKind);
+  playersWithInterest = playersWithInterest.map((pl, i) => {
+    let next = i !== gs.currentPlayerIdx ? pl : { ...pl, slotPullsThisSeat: 0 };
+    if (i === gs.currentPlayerIdx) {
+      next = releaseDay8PlayerToWaitingSlotAfterBurst(next);
     }
-    return finalizeToResults(interim, playersWithInterest);
-  }
+    return next;
+  });
 
   const n = playersWithInterest.length;
   let nextIdx = (gs.currentPlayerIdx + 1) % n;
@@ -2170,14 +2252,15 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
 
   let playersNext = playersWithInterest.map((pl, i) => {
     if (i !== nextIdx) return pl;
+    let nextPl = resetDay8ItemSeatForPlayer(pl);
     if (
-      pl.alive === false &&
+      nextPl.alive === false &&
       hasSugorokuBoardTargets(playersWithInterest) &&
-      !pl.ghostActedThisRound
+      !nextPl.ghostActedThisRound
     ) {
-      if (pl.movePhase === "arrived" && (pl.slotTurnsLeft ?? 0) > 0) return pl;
+      if (nextPl.movePhase === "arrived" && (nextPl.slotTurnsLeft ?? 0) > 0) return nextPl;
       return {
-        ...pl,
+        ...nextPl,
         movePhase: "ghostPickTarget",
         slotTurnsLeft: 0,
         slotPullsThisSeat: 0,
@@ -2186,15 +2269,15 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
         skipTurns: 0,
       };
     }
-    if (pl.alive === false && pl.movePhase !== "spectating" && pl.movePhase !== "arrived") {
+    if (nextPl.alive === false && nextPl.movePhase !== "spectating" && nextPl.movePhase !== "arrived") {
       return {
-        ...pl,
+        ...nextPl,
         movePhase: "spectating",
         slotTurnsLeft: 0,
         slotPullsThisSeat: 0,
       };
     }
-    return pl;
+    return nextPl;
   });
 
   const nextP = playersNext[nextIdx];
@@ -2204,7 +2287,7 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
   } else if (nextP.movePhase === "arrived") {
     nextLog = `${nextP.name}のスロットターン（残り${nextP.slotTurnsLeft}回 / 資金${nextP.stats.money}G）`;
   } else if (nextP.movePhase === "waitingSlot") {
-    nextLog = `${nextP.name}のターン（ゴール到着済み・スロット${nextP.reservedSlotTurns ?? 0}ターンブンを開始できます）`;
+    nextLog = null;
   } else {
     nextLog = `${nextP.name}の移動ターン（T${nextP.moveTurns + 1} / ${nextP.position}/${BOARD_GOAL}マス）`;
   }
@@ -2234,7 +2317,7 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
       gsWithHistory.slotMirrorMachineKey ?? "standard",
       (playersWithInterest?.length ?? 0) > 1,
     ),
-    log: prependLogs([...extraMerged, nextLog], gs.log),
+    log: prependLogs([...extraMerged, ...(nextLog ? [nextLog] : [])], gs.log),
   });
 }
 

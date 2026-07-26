@@ -10,7 +10,7 @@
 | [ver1.0.2.md](ver1.0.2.md) | v1.0.2 タグ時点（現状 `main` と同一 tip） |
 | [ver1.0.3.md](ver1.0.3.md) | **作業中** — 8日目アイテム・ログ・SP UI 等 |
 
-**詳細リファレンス（Skill 内）:** [references/](../references/) — マルチ同期 / 8日目 / デプロイ
+**詳細リファレンス（Skill 内）:** [references/](../references/) — マルチ同期 / 8日目 / テスト / デプロイ
 
 古いブランチ: `ver1.0.0`, `ver1.0.1` は remote のみ。詳細は `git log ver1.0.0..ver1.0.1` を参照。
 

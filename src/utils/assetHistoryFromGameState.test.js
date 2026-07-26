@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildAssetHistoryChartData } from "./assetHistoryFromGameState";
+import {
+  buildAssetHistoryChartData,
+  buildAssetHistoryXAxisOrderTicks,
+  formatAssetHistoryOrderLabel,
+} from "./assetHistoryFromGameState";
 
 describe("buildAssetHistoryChartData", () => {
   it("builds daily and day8 series from stored assetHistory only", () => {
@@ -55,7 +59,7 @@ describe("buildAssetHistoryChartData", () => {
       },
       log: [
         "Winner: 最終資金 54404G / ランク SS+",
-        "Winner 1回目 100G → 🏆 POT JP!!（収支+54304G・資金54404G）",
+        "Winner 1回目 100G → 🏆 POT JP!! 収支+54304G",
       ],
     };
 
@@ -67,7 +71,7 @@ describe("buildAssetHistoryChartData", () => {
     expect(day1?.Winner).not.toBe(54404);
   });
 
-  it("builds day8 timeline from stored handoff snapshots", () => {
+  it("uses day8 turn buckets only and ignores move/slot timeline duplicates", () => {
     const gameState = {
       players: [
         { id: "w", name: "Winner", stats: { money: 1200 }, moveTurns: 5 },
@@ -76,7 +80,7 @@ describe("buildAssetHistoryChartData", () => {
       assetHistory: {
         v: 1,
         daily: { w: { "7": 480 }, l: { "7": 400 } },
-        day8: { w: { "5": 1200 } },
+        day8: { w: { "5": 1200 }, l: { "5": 400 } },
         day8Timeline: [
           { seq: 1, turn: 5, kind: "move", money: { w: 1300, l: 400 } },
           { seq: 2, turn: 5, kind: "slot", money: { w: 1200, l: 400 } },
@@ -88,9 +92,34 @@ describe("buildAssetHistoryChartData", () => {
     const { chartData } = buildAssetHistoryChartData(gameState);
     const day8Rows = chartData.filter((r) => String(r.time).startsWith("8-"));
 
-    expect(day8Rows).toHaveLength(2);
-    expect(day8Rows[0].Winner).toBe(1300);
-    expect(day8Rows[1].Winner).toBe(1200);
+    expect(day8Rows).toHaveLength(15);
+    const turn5Rows = day8Rows.filter((r) => r.time === "8-5");
+    expect(turn5Rows).toHaveLength(1);
+    expect(turn5Rows[0].Winner).toBe(1200);
+    expect(turn5Rows[0].Loser).toBe(400);
+    expect(day8Rows[day8Rows.length - 1].time).toBe("8-15");
+  });
+
+  it("shows one point per day8 turn up to 8-15", () => {
+    const gameState = {
+      players: [{ id: "a", name: "Alice", stats: { money: 1000 }, moveTurns: 15 }],
+      assetHistory: {
+        v: 1,
+        daily: { a: { "7": 500 } },
+        day8: {},
+        day8Timeline: [
+          { seq: 25, turn: 14, kind: "move", money: { a: 900 } },
+          { seq: 27, turn: 15, kind: "slot", money: { a: 1000 } },
+        ],
+      },
+    };
+
+    const { chartData } = buildAssetHistoryChartData(gameState);
+    const day8Rows = chartData.filter((r) => String(r.time).startsWith("8-"));
+
+    expect(day8Rows).toHaveLength(15);
+    expect(new Set(day8Rows.map((r) => r.time)).size).toBe(15);
+    expect(day8Rows.find((r) => r.time === "8-15")?.Alice).toBe(1000);
   });
 
   it("uses stored day8 turn buckets when timeline is empty", () => {
@@ -115,7 +144,7 @@ describe("buildAssetHistoryChartData", () => {
     };
 
     const { chartData } = buildAssetHistoryChartData(gameState);
-    const turn3 = chartData.find((r) => r.time === "8/3");
+    const turn3 = chartData.find((r) => r.time === "8-3");
     expect(turn3?.Alice).toBe(5000);
     expect(turn3?.Alice).not.toBe(99999);
   });
@@ -133,7 +162,66 @@ describe("buildAssetHistoryChartData", () => {
     };
 
     const { chartData } = buildAssetHistoryChartData(gameState);
-    const turn13 = chartData.find((r) => r.time === "8/13");
+    const turn13 = chartData.find((r) => r.time === "8-13");
     expect(turn13?.Alice).toBe(15628);
+  });
+
+  it("always includes day8 turns 8-1 through 8-15 when timeline stops early", () => {
+    const gameState = {
+      players: [
+        { id: "w", name: "Winner", stats: { money: 9000 }, moveTurns: 12 },
+        { id: "l", name: "Loser", stats: { money: 200 }, moveTurns: 12 },
+      ],
+      assetHistory: {
+        v: 1,
+        daily: { w: { "7": 1000 }, l: { "7": 500 } },
+        day8: { w: { "12": 8500 }, l: { "12": 200 } },
+        day8Timeline: [
+          { seq: 20, turn: 12, kind: "slot", money: { w: 8500, l: 200 } },
+        ],
+      },
+    };
+
+    const { chartData } = buildAssetHistoryChartData(gameState);
+    const day8Labels = [...new Set(chartData.filter((r) => String(r.time).startsWith("8-")).map((r) => r.time))];
+
+    expect(day8Labels).toEqual([
+      "8-1", "8-2", "8-3", "8-4", "8-5", "8-6", "8-7", "8-8", "8-9", "8-10",
+      "8-11", "8-12", "8-13", "8-14", "8-15",
+    ]);
+    expect(chartData.find((r) => r.time === "8-15")?.Winner).toBe(9000);
+  });
+
+  it("uses evenly spaced numeric order with exactly one point per bucket", () => {
+    const gameState = {
+      players: [
+        { id: "w", name: "Winner", stats: { money: 1200 }, moveTurns: 5 },
+        { id: "l", name: "Loser", stats: { money: 400 }, moveTurns: 5 },
+      ],
+      assetHistory: {
+        v: 1,
+        daily: { w: { "7": 480 }, l: { "7": 400 } },
+        day8: { w: { "5": 1200 }, l: { "5": 400 } },
+        day8Timeline: [
+          { seq: 1, turn: 5, kind: "move", money: { w: 1300, l: 400 } },
+          { seq: 2, turn: 5, kind: "slot", money: { w: 1200, l: 400 } },
+        ],
+      },
+    };
+
+    const { chartData, day8TransitionOrder, xDomain } = buildAssetHistoryChartData(gameState);
+    const day8Rows = chartData.filter((r) => String(r.time).startsWith("8-"));
+
+    expect(day8TransitionOrder).toBe(8);
+    expect(xDomain).toEqual([0, 22]);
+    expect(chartData.find((r) => r.time === "7日")?.order).toBe(7);
+    expect(day8Rows.find((r) => r.time === "8-1")?.order).toBe(8);
+    expect(day8Rows.find((r) => r.time === "8-15")?.order).toBe(22);
+    expect(day8Rows.filter((r) => r.time === "8-5")).toHaveLength(1);
+    expect(buildAssetHistoryXAxisOrderTicks()).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+    ]);
+    expect(formatAssetHistoryOrderLabel(8)).toBe("8-1");
+    expect(formatAssetHistoryOrderLabel(22)).toBe("8-15");
   });
 });

@@ -72,6 +72,8 @@ import {
   mergeDailyCutinFieldsIntoGameState,
   pickDailyCutinBroadcastFields,
   readDailyCutinBroadcast,
+  isDailyCutinBroadcastStale,
+  isDailyCutinPhaseOverdue,
 } from "./lib/dailyCutinSync";
 import {
   backfillInvitedAuthUids,
@@ -125,6 +127,7 @@ import {
   applyDay8ActorMoveCommit,
   applyDay8LandingStateToLive,
   applyDay8TaxiIntermediateCommit,
+  beginDay8SlotSeatForPlayer,
   computeAdvanceDay8Turn,
   computeTaxiCongestedLegDurations,
   computeSugorokuHopDurationMs,
@@ -165,6 +168,8 @@ import {
 import { runGhostAutomationStep, finishGhostSlotBurst } from "./lib/ghostPlayerAutomation";
 import { tryAcquireGhostAutomationLease } from "./lib/ghostAutomationLease";
 import { commitMarkNetworkGhostPatch } from "./lib/markNetworkGhost";
+import { applyDay8MoveStepBonus, buildDay8CardMoveEffectMeta } from "./lib/day8ItemEffects";
+import { useDay8ItemOnGameState } from "./lib/day8Items";
 import { BOARD_DEATH_FADE_MS, delayMs } from "./lib/boardDeathPresentation";
 import {
   computeProgressivePotDelta,
@@ -274,7 +279,6 @@ function buildDay8TileSlideMidpointPlayers(playersArr, moverIdx, midPos) {
           position: midPos,
           movePhase: "moving",
           slotTurnsLeft: 0,
-          reservedSlotTurns: 0,
           slotPullsGranted: 0,
           slotPullsThisSeat: 0,
         },
@@ -449,6 +453,8 @@ export default function App() {
   const sugorokuTileFxToastTimerRef = useRef(null);
   /** 7日目デイリー：Firestore 同期前に一覧・ログへ結果を反映（仕事・配信・神社・デイリースロット） */
   const [day7DailyOptimisticGs, setDay7DailyOptimisticGs] = useState(null);
+  /** 8日目アイテムゲート：Firestore 同期前にゲートを閉じて操作可能にする */
+  const [day8ItemOptimisticGs, setDay8ItemOptimisticGs] = useState(null);
   /** 配信失敗（日常）全画面カットイン */
   const [streamFailOverlay, setStreamFailOverlay] = useState(false);
   const streamFailOverlayTimerRef = useRef(null);
@@ -610,8 +616,14 @@ export default function App() {
   });
   const day7DailyOptimisticActive =
     day7DailyOptimisticGs != null && roomGs?.subPhase === "daily";
+  const day8ItemOptimisticActive =
+    day8ItemOptimisticGs != null && roomGs?.subPhase === "day8";
   const gs =
-    day7DailyOptimisticActive && day7DailyOptimisticGs ? day7DailyOptimisticGs : roomGs;
+    day7DailyOptimisticActive && day7DailyOptimisticGs
+      ? day7DailyOptimisticGs
+      : day8ItemOptimisticActive && day8ItemOptimisticGs
+        ? day8ItemOptimisticGs
+        : roomGs;
   const playerSlots = roomData?.playerSlots ?? [];
   const isHost      = roomData?.hostId === myId;
   const day7DailyWritePending = day7DailyOptimisticActive;
@@ -883,7 +895,7 @@ export default function App() {
       pieceHopping ||
       taxiPhase != null);
 
-  const day8ActionLocked =
+  const day8FxLocked =
     isDiceRolling ||
     movementFxSync.isRunning ||
     taxiPhase != null ||
@@ -893,6 +905,8 @@ export default function App() {
     turnChangeBannerTurns != null ||
     pendingTurnBannerTurns != null ||
     day8VisualActionLocked;
+
+  const day8ActionLocked = day8FxLocked;
 
   const sugorokuBoardViewPos = useMemo(() => {
     const canUseLocalViewOverride = isMyTurn || goalLandingSelf || day8SharedCameraActive;
@@ -1221,6 +1235,16 @@ export default function App() {
   }, [isHost, roomId, roomGs?.gamePhase, roomGs?.finalBattleStartedAt, roomGs?.finalBattleEntry]);
 
   /** 7日目楽観状態：日常フェーズを抜けたら即破棄。ログが Firestore 側で進んだら同期完了とみなす */
+  useEffect(() => {
+    if (!day8ItemOptimisticGs || !roomGs) return;
+    const idx = day8ItemOptimisticGs.currentPlayerIdx;
+    const optUsed = day8ItemOptimisticGs.players?.[idx]?.day8ItemUsedThisSeat;
+    const liveUsed = roomGs.players?.[idx]?.day8ItemUsedThisSeat;
+    if (optUsed && liveUsed) {
+      setDay8ItemOptimisticGs(null);
+    }
+  }, [roomGs, day8ItemOptimisticGs]);
+
   useEffect(() => {
     if (!day7DailyOptimisticGs) return;
     if (roomGs?.subPhase !== "daily") {
@@ -1889,6 +1913,23 @@ export default function App() {
       turnCompletePlayerId: opts.turnCompletePlayerId ?? null,
     });
 
+  const commitDay8ItemGate = useCallback(
+    async (mutator) => {
+      const live = gsRef.current;
+      if (!live || live.subPhase !== "day8") return false;
+      const optimistic = mutator(live);
+      if (!optimistic) return false;
+      setDay8ItemOptimisticGs(optimistic);
+      setUiError("");
+      const ok = await performGameStateUpdate(null, "actorTurn", {
+        liveMutator: (liveGs) => mutator(liveGs),
+      });
+      if (!ok) setDay8ItemOptimisticGs(null);
+      return ok;
+    },
+    [performGameStateUpdate],
+  );
+
   /** 日常行動ラベル（dailyActionFx）を一定時間後にクリア。フェーズ外に残っていれば即消す */
   const commitClearDailyActionFxFromLive = useCallback(
     () =>
@@ -2169,35 +2210,6 @@ export default function App() {
             return resolveDay8SlotBurstAdvance(liveGs);
           }
           return null;
-        },
-      });
-    },
-    [performGameStateUpdate],
-  );
-
-  /** 8日目スロット：残りスピンを捨てて手番を進める（代理スロット含む） */
-  const commitDay8SlotSkipAdvance = useCallback(
-    async (opts = {}) => {
-      const writeMode = opts.writeMode ?? "actorTurn";
-      return performGameStateUpdate(null, writeMode, {
-        markDay8TurnComplete: opts.markDay8TurnComplete ?? true,
-        turnCompletePlayerId: opts.turnCompletePlayerId ?? null,
-        liveMutator: (liveGs) => {
-          const idx = liveGs.currentPlayerIdx;
-          const p = liveGs.players?.[idx];
-          if (!p || p.movePhase !== "arrived") return null;
-          const phase = liveGs.slotPhase ?? "idle";
-          if (phase !== "idle" && phase !== "completed") return null;
-          const pxy =
-            typeof liveGs.proxySlotTargetIdx === "number" ? liveGs.proxySlotTargetIdx : null;
-          const wallet = pxy != null && liveGs.players[pxy] ? liveGs.players[pxy] : p;
-          const logs = [
-            `${p.name} スロット終了 / ${pxy != null ? `${wallet.name}の資金 ` : "資金"}${wallet.stats.money}G / ランク${rankLabel(wallet.stats.money)}`,
-          ];
-          const newPlayers = liveGs.players.map((pl, i) =>
-            i !== idx ? pl : { ...pl, slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 },
-          );
-          return computeAdvanceDay8Turn({ ...liveGs, proxySlotTargetIdx: null }, newPlayers, logs);
         },
       });
     },
@@ -3285,15 +3297,10 @@ export default function App() {
     if (!gs || !isMyTurn) return;
     const p = gs.players[gs.currentPlayerIdx];
     if (p.movePhase !== "waitingSlot") return;
-    const r = p.reservedSlotTurns ?? 0;
-    if (r <= 0) return;
-    const pulls = Math.max(0, r * BAL.dice.slotsPerSugorokuTurn);
-    const logs = [`${p.name}: スロット開始（${r}ターンブン・計${pulls}回）`];
-    const newPlayers = gs.players.map((pl, i) =>
-      i !== gs.currentPlayerIdx
-        ? pl
-        : { ...pl, movePhase: "arrived", slotTurnsLeft: pulls, reservedSlotTurns: 0, slotPullsGranted: pulls, slotPullsThisSeat: 0 },
-    );
+    const began = beginDay8SlotSeatForPlayer(p);
+    if (!began) return;
+    const logs = [`${p.name}: スロット開始`];
+    const newPlayers = gs.players.map((pl, i) => (i !== gs.currentPlayerIdx ? pl : began));
     await writeGS({ ...gs, players: newPlayers, log: prependLogs(logs, gs.log) });
   };
 
@@ -3389,6 +3396,14 @@ export default function App() {
     }
   }, [roomId, roomData?.isSolo, updateRoom, writeGS]);
 
+  const dismissStuckDailyCutin = useCallback(() => {
+    resetDailyOutgoingFxState();
+    setUiError("");
+    if (roomId && !roomData?.isSolo) {
+      void clearDailyCutinBroadcast();
+    }
+  }, [resetDailyOutgoingFxState, roomId, roomData?.isSolo, clearDailyCutinBroadcast]);
+
   const beginDailyCutinSession = useCallback(() => {
     const sid = buildDailyCutinSessionId();
     dailyCutinSessionIdRef.current = sid;
@@ -3454,6 +3469,21 @@ export default function App() {
     roomData?.dailyCutinPhase,
     resetDailyOutgoingFxState,
     clearDailyCutinBroadcast,
+  ]);
+
+  /** Firestore に残った stale 日常カットイン同期を自動解除（リロード後の固まり対策） */
+  useEffect(() => {
+    if (!roomId || !roomGs) return;
+    const broadcast = readDailyCutinBroadcast(roomData, roomGs);
+    if ((broadcast.phase ?? "idle") === "idle") return;
+    if (!isDailyCutinBroadcastStale(broadcast) && !isDailyCutinPhaseOverdue(broadcast)) return;
+    dismissStuckDailyCutin();
+  }, [
+    roomId,
+    roomGs,
+    roomData?.dailyCutinPhase,
+    roomData?.dailyCutinSessionId,
+    dismissStuckDailyCutin,
   ]);
 
   const patchDailySlotBroadcast = useCallback(
@@ -3612,22 +3642,8 @@ export default function App() {
       s.pon = clamp(s.pon + ponGain);
       statusLines.push(ponGainLine(ponBeforeGain, s.pon));
 
-      let ponEvent = null;
-      let newStreamMult = streamMult;
-      const penMoneyMul = char.ponFireMoneyPenaltyMultiplier ?? 1;
-      if (s.pon >= BAL.pon.fireThreshold && Math.random() < s.pon / 100) {
-        const ponBefore2 = s.pon;
-        const pen = Math.max(
-          1,
-          Math.round(rand(BAL.pon.work.penaltyMin, BAL.pon.work.penaltyMax) * penMoneyMul),
-        );
-        s.money = clampMoney(s.money - pen);
-        ponEvent = `⚠️ 弁償！資金-${pen}G`;
-        s.pon = Math.floor(ponBefore2 / 2);
-        statusLines.push(...ponFireLines(ponEvent));
-      } else {
-        statusLines.push(ponNoFireLine(s.pon, BAL.pon.fireThreshold));
-      }
+      const ponEvent = null;
+      const newStreamMult = streamMult;
 
       let newPlayers = g.players.map((pl, i) =>
         i === idx
@@ -3972,7 +3988,11 @@ export default function App() {
     let ponEvent    = null;
     let newStreamMult = streamMult; // vtuber大炎上で更新される
     const penMoneyMul = char.ponFireMoneyPenaltyMultiplier ?? 1;
-    if (s.pon >= BAL.pon.fireThreshold && Math.random() < s.pon / 100) {
+    if (
+      (actionType === "stream" || actionType === "work") &&
+      s.pon >= BAL.pon.fireThreshold &&
+      Math.random() < s.pon / 100
+    ) {
       const ponBefore2 = s.pon;
       if (actionType === "stream") {
         const gain = rand(BAL.pon.stream.moneyMin, BAL.pon.stream.moneyMax);
@@ -3985,10 +4005,6 @@ export default function App() {
           ponEvent += ` / 🎭リリム効果：配信倍率 ×${streamMult.toFixed(1)}→×${newStreamMult.toFixed(1)}（永続UP！）`;
         }
         deferStreamPonOverlay = true;
-      } else if (actionType === "shrine") {
-        const pen = Math.max(1, Math.round(rand(50, 150) * penMoneyMul));
-        s.money = clampMoney(s.money - pen);
-        ponEvent = `⚠️ ご神域で粗相をしてしまった！資金-${pen}G`;
       } else {
         const pen = Math.max(
           1,
@@ -3996,14 +4012,12 @@ export default function App() {
         );
         s.money = clampMoney(s.money - pen);
         ponEvent = `⚠️ 弁償！資金-${pen}G`;
-        if (actionType === "work") {
-          deferWorkPonOverlay = true;
-          workPenaltyForHud = pen;
-        }
+        deferWorkPonOverlay = true;
+        workPenaltyForHud = pen;
       }
       s.pon = Math.floor(ponBefore2 / 2);
       statusLines.push(...ponFireLines(ponEvent));
-    } else {
+    } else if (actionType === "stream" || actionType === "work") {
       statusLines.push(ponNoFireLine(s.pon, BAL.pon.fireThreshold));
     }
 
@@ -4182,6 +4196,14 @@ export default function App() {
   };
 
   // ─── 8日目：移動行動 ─────────────────────────────────────────────────
+  const handleUseDay8Item = async (itemId) => {
+    if (!isMyTurn || !gs || day8FxLocked) return;
+    if (!acceptTurnAction()) return;
+    await commitDay8ItemGate((liveGs) =>
+      useDay8ItemOnGameState(liveGs, liveGs.currentPlayerIdx, itemId),
+    );
+  };
+
   const handleMoveAction = async (actionType) => {
     if (!isMyTurn || !gs) return;
     if (day8ActionLocked || boardDeathPresentation) return;
@@ -4230,7 +4252,6 @@ export default function App() {
       const statsFinal = moverWait.stats;
       const arrivedWait = newPosFinal >= BOARD_GOAL;
       const timedOutWait = !arrivedWait && newTurnsWait >= BAL.dice.maxTurns;
-      const slotReservedWait = arrivedWait ? Math.max(0, BAL.dice.maxTurns - newTurnsWait) : 0;
 
       let fullMsgWait = `🚗 渋滞を待つ（Wait in Traffic）⋯ 残り${pendingTraffic}マス進行 → ${newPosFinal}/${BOARD_GOAL}マス / PON${ponBeforeWait}+${pendingTraffic}→${statsFinal.pon}`;
       if (newPosFinal !== landedDiceWait) {
@@ -4238,10 +4259,7 @@ export default function App() {
       }
       logsWait.push(`${p.name} T${newTurnsWait}: ${fullMsgWait}`);
       if (arrivedWait) {
-        const pullsWait = slotReservedWait * BAL.dice.slotsPerSugorokuTurn;
-        logsWait.push(
-          `🎯 ${p.name} がゴールへ到着！獲得スロット ${slotReservedWait}ターンブン（開始時までに計${pullsWait}回）（確認後ターン終了 → 次の自分のターンでスロット開始）`,
-        );
+        logsWait.push(`🎯 ${p.name} がゴールへ到着！`);
       }
       if (timedOutWait) {
         logsWait.push(`⏰ ${p.name} タイムアップ（${BAL.dice.maxTurns}ターン消費）`);
@@ -4262,18 +4280,14 @@ export default function App() {
           pendingTaxiSteps: 0,
         };
         if (arrivedWait) {
-          const { player, extraLogs } = applyGoalArrivalToPlayer(
-            base,
-            slotReservedWait,
-            isMultiplayerRoom,
-          );
+          const { player, extraLogs } = applyGoalArrivalToPlayer(base, isMultiplayerRoom);
           extraLogs.forEach((line) => logsWait.push(line));
           return player;
         }
         if (timedOutWait) {
-          return { ...base, movePhase: "missed", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
+          return { ...base, movePhase: "missed", slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
         }
-        return { ...base, movePhase: "moving", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
+        return { ...base, movePhase: "moving", slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
       });
 
       const gsWithDiceWait = { ...rrWait.gsWithTiles, lastDiceRolls: [] };
@@ -4488,7 +4502,20 @@ export default function App() {
       setTimeout(() => setShowLuckyDice(false), 1900);
     }
 
-    const stumbleCells = ponFired ? Math.ceil(origStep / 2) : step;
+    const stumbleCellsBase = ponFired ? Math.ceil(origStep / 2) : step;
+    let stumbleCells = stumbleCellsBase;
+    let moveBuffPlayer = p;
+    let day8CardMoveEffect = null;
+    if (actionType !== "taxi") {
+      const moveBonus = applyDay8MoveStepBonus(p, stumbleCells);
+      stumbleCells = moveBonus.stepCells;
+      moveBuffPlayer = moveBonus.player;
+      if (moveBonus.consumed && moveBonus.bonus !== 0) {
+        day8CardMoveEffect = buildDay8CardMoveEffectMeta(moveBonus.bonus);
+        logs.push(`  🎒 ${p.name}: アイテム +${moveBonus.bonus}マス（合計${stumbleCells}マス）`);
+      }
+    }
+
     const landedDice = Math.min(BOARD_GOAL, p.position + stumbleCells);
     const roundsUsedNow = Math.max(0, BAL.dice.maxTurns - day8RemainingTurns);
     const newTurns = roundsUsedNow + 1 + extraTurns;
@@ -4504,7 +4531,6 @@ export default function App() {
 
     const arrived = newPosFinal >= BOARD_GOAL;
     const timedOut = !arrived && newTurns >= BAL.dice.maxTurns;
-    const slotReserved = arrived ? Math.max(0, BAL.dice.maxTurns - newTurns) : 0;
 
     const ponLog = ponFired
       ? ` ⚡転倒(${ponBefore}%) ${origStep}→${step}マス / PON→半減→${statsFinal.pon}`
@@ -4519,10 +4545,7 @@ export default function App() {
     }
     if (ponFired) logs.push(`  ⚡転倒！${origStep}マス→${step}マス / PON半減`);
     if (arrived) {
-      const pullsArrive = slotReserved * BAL.dice.slotsPerSugorokuTurn;
-      logs.push(
-        `🎯 ${p.name} がゴールへ到着！獲得スロット ${slotReserved}ターンブン（開始時までに計${pullsArrive}回）（確認後ターン終了 → 次の自分のターンでスロット開始）`,
-      );
+      logs.push(`🎯 ${p.name} がゴールへ到着！`);
     }
     if (timedOut) logs.push(`⏰ ${p.name} タイムアップ（${BAL.dice.maxTurns}ターン消費）`);
 
@@ -4541,19 +4564,20 @@ export default function App() {
       if (i !== gs.currentPlayerIdx) return pl;
       const base = {
         ...pl,
+        day8SeatEffects: moveBuffPlayer.day8SeatEffects,
         moveTurns: newTurns,
         lastMoveEvent: fullMsg,
         pendingTaxiSteps: pendingStepsNext,
       };
       if (arrived) {
-        const { player, extraLogs } = applyGoalArrivalToPlayer(base, slotReserved, isMultiplayerRoom);
+        const { player, extraLogs } = applyGoalArrivalToPlayer(base, isMultiplayerRoom);
         extraLogs.forEach((line) => logs.push(line));
         return player;
       }
       if (timedOut) {
-        return { ...base, movePhase: "missed", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
+        return { ...base, movePhase: "missed", slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
       }
-      return { ...base, movePhase: "moving", slotTurnsLeft: 0, reservedSlotTurns: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
+      return { ...base, movePhase: "moving", slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
     });
 
     const gsWithDice = { ...rr.gsWithTiles, lastDiceRolls: diceRolls };
@@ -4578,9 +4602,9 @@ export default function App() {
         lastMoveEvent: final.lastMoveEvent,
         pendingTaxiSteps: final.pendingTaxiSteps,
         slotTurnsLeft: final.slotTurnsLeft,
-        reservedSlotTurns: final.reservedSlotTurns,
         slotPullsGranted: final.slotPullsGranted,
         slotPullsThisSeat: final.slotPullsThisSeat,
+        day8SeatEffects: final.day8SeatEffects,
       };
     });
 
@@ -4598,6 +4622,7 @@ export default function App() {
       finalPos: fxFinalPos,
       stepDelta: actionType === "taxi" ? step : fxLandedPos - p.position,
       diceRolls,
+      preMoveEffect: day8CardMoveEffect,
       tileEffect: actionType === "taxi" || (ponFired && !debtTrapTriggered) ? null : rr.tileEffectMeta,
       ...(actionType === "taxi"
         ? {
@@ -5211,9 +5236,10 @@ export default function App() {
         </div>
       ) : null}
 
+      {/* SP/すごろく中: POT は BoardGamePhase ヘッダー inline（sugorokuMobileLayout.js 参照） */}
       <ProgressivePotDisplay
         totalPot={roomData?.totalPot ?? 0}
-        visible={showProgressivePotHud}
+        visible={showProgressivePotHud && !cpIsSlot && !showSugorokuBoard}
       />
 
       {/* ── PON炎上シェイク警告テロップ ── */}
@@ -5254,6 +5280,7 @@ export default function App() {
           gold={workCutin.gold}
           stat={workCutin.stat}
           characterType={workCutin.characterType}
+          onDismiss={dismissStuckDailyCutin}
         />
       )}
 
@@ -5461,16 +5488,16 @@ export default function App() {
                       <strong>{day8RemainingTurns}</strong>
                       {" / "}
                       {BAL.dice.maxTurns}ターン{" "}
-                      <span className="font-normal text-slate-500">（すごろく／スロット共通）</span>
+                      <span className="hidden md:inline font-normal text-slate-500">（すごろく／スロット共通）</span>
                     </span>
                   </>
                 )}
               </p>
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
-              {/* 8日目：補助HUD（タイトル下に残りターンバースト／上限 を常時表示） */}
+              {/* 8日目：補助HUD（PCのみ） */}
               {gs?.subPhase === "day8" && cpGs && (
-                <div className="flex flex-col items-end gap-0.5">
+                <div className="hidden md:flex flex-col items-end gap-0.5">
                   <span className="text-[10px] font-bold uppercase tracking-wide text-amber-400/90 leading-none">8日目 HUD</span>
                   <span className="text-xs font-bold text-slate-200 tabular-nums leading-none">
                     {(cpGs.movePhase === "goalLanding" || cpGs.movePhase === "waitingSlot") ? (
@@ -5485,7 +5512,7 @@ export default function App() {
                   </span>
                 </div>
               )}
-              <div className="flex items-center gap-1.5">
+              <div className="hidden md:flex items-center gap-1.5">
                 <span className="text-xs text-slate-400 font-mono border border-slate-700 rounded px-2 py-0.5 select-all">
                   {roomId}
                 </span>
@@ -5496,12 +5523,12 @@ export default function App() {
                   type="button"
                   onClick={() => setLeaveGameConfirmOpen(true)}
                   disabled={leaveGameLoading}
-                  className="rounded-lg border border-rose-500/40 bg-rose-950/30 px-2.5 py-1 text-[11px] font-bold text-rose-200 hover:bg-rose-900/40 transition-colors disabled:opacity-50"
+                  className="hidden md:inline-flex rounded-lg border border-rose-500/40 bg-rose-950/30 px-2.5 py-1 text-[11px] font-bold text-rose-200 hover:bg-rose-900/40 transition-colors disabled:opacity-50"
                 >
                   退室
                 </button>
               )}
-              <div className="flex items-center gap-1.5 text-xs text-slate-400">
+              <div className="hidden md:flex items-center gap-1.5 text-xs text-slate-400">
                 <Users size={12} className="text-cyan-400 shrink-0" />
                 <span>
                   {(roomGs ?? gs).players.map((p, i) => (
@@ -5683,7 +5710,14 @@ export default function App() {
           )}
 
           {showDay8SlotSpectatorMirror && cpGs && (
-            <Day8SlotSpectatorMirror gs={gs} cpGs={cpGs} soundRef={soundRef} myId={myId} />
+            <Day8SlotSpectatorMirror
+              gs={gs}
+              cpGs={cpGs}
+              soundRef={soundRef}
+              myId={myId}
+              totalPot={roomData?.totalPot ?? 0}
+              showProgressivePot={showProgressivePotHud}
+            />
           )}
 
           {isMyTurn && dailySlotOpen && dailySlotSpinStats && cpGs && (
@@ -5743,6 +5777,7 @@ export default function App() {
             }
             interactionLocked={day8ActionLocked}
             onMoveAction={handleMoveAction}
+            onUseDay8Item={handleUseDay8Item}
             onGoalLandingConfirm={handleGoalLandingConfirm}
             goalLandingSelf={goalLandingSelf}
             tileEffectLines={sugorokuTileFxToast?.lines ?? null}
@@ -5750,6 +5785,8 @@ export default function App() {
             boardDeathPresentation={boardDeathPresentation}
             deathFadeHandledIds={deathFadeHandledIds}
             onBoardHelpDeathConfirm={handleBoardHelpDeathConfirm}
+            totalPot={roomData?.totalPot ?? 0}
+            showProgressivePot={showProgressivePotHud}
           />
           )}
 
@@ -5771,7 +5808,6 @@ export default function App() {
               writeGS={writeGS}
               commitPendingGameState={commitPendingGameState}
               commitDay8SlotLivePatch={commitDay8SlotLivePatch}
-              commitDay8SlotSkipAdvance={commitDay8SlotSkipAdvance}
               syncDay8SlotIdleFromLive={syncDay8SlotIdleFromLive}
               commitGameStateTransaction={commitGameStateTransaction}
               commitDay8SlotSpin={commitDay8SlotSpin}
@@ -5779,6 +5815,9 @@ export default function App() {
               roomId={roomId}
               interactionLocked={day8ActionLocked}
               myId={myId}
+              onUseDay8Item={handleUseDay8Item}
+              totalPot={roomData?.totalPot ?? 0}
+              showProgressivePot={showProgressivePotHud}
             />
           )}
 

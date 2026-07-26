@@ -5,7 +5,10 @@ import { CharacterIcon } from "./CharacterPieces";
 import SlotReelCanvasView from "./SlotReelCanvasView";
 import { BAL, SLOT_BETS, SLOT_COST, SLOT_MACHINES } from "../constants/gameBalance";
 import SlotProxyAccountability from "./SlotProxyAccountability";
+import Day8ItemBar from "./Day8ItemBar";
 import JackpotCelebration from "./JackpotCelebration";
+import ProgressivePotDisplay from "./ProgressivePotDisplay";
+import SlotPayoutAmountLabel from "./SlotPayoutAmountLabel";
 import {
   PROXY_SLOT_RULES_LINES,
   buildProxySlotSpinStats,
@@ -20,7 +23,6 @@ import {
   buildDay8SlotReloadRecoveryPatch,
   isDay8SlotBurstFinishedOnGameState,
   calcSlotRates,
-  computeAdvanceDay8Turn,
   day8SlotMajorWinCelebrationHoldMs,
   getSlotReachAnimationState,
   getSlotTierReelSymbols,
@@ -28,7 +30,6 @@ import {
   pickDisplayReelsFromGameState,
   pickWrongSymbol,
   randomStripTriple,
-  rankLabel,
   rollReachCutInDisplay,
   spinSlot,
   slotMachineForReels,
@@ -96,7 +97,6 @@ export default function SlotMachine({
   writeGS,
   commitPendingGameState,
   commitDay8SlotLivePatch,
-  commitDay8SlotSkipAdvance,
   syncDay8SlotIdleFromLive,
   commitGameStateTransaction,
   commitDay8SlotSpin,
@@ -104,7 +104,10 @@ export default function SlotMachine({
   roomId,
   interactionLocked = false,
   myId,
+  onUseDay8Item,
   spectatorMode = false,
+  totalPot = 0,
+  showProgressivePot = false,
 }) {
   const [isSpinning, setIsSpinning] = useState(false);
   const [localReels, setLocalReels] = useState(["?", "?", "?"]);
@@ -498,32 +501,6 @@ export default function SlotMachine({
     await commitPendingAdvance(pending);
   };
 
-  const skipSlot = async () => {
-    if (!gs || !isMyTurn || isSpinning || interactionLocked) return;
-    const phase = gs?.slotPhase ?? "idle";
-    if (phase !== "idle" && phase !== "completed") return;
-    if (roomId && typeof commitDay8SlotSkipAdvance === "function") {
-      await commitDay8SlotSkipAdvance({
-        markDay8TurnComplete: true,
-        turnCompletePlayerId: p?.id ?? null,
-      });
-      return;
-    }
-    const idx = gs.currentPlayerIdx;
-    const p = gs.players[idx];
-    const pxy = typeof gs.proxySlotTargetIdx === "number" ? gs.proxySlotTargetIdx : null;
-    const wallet = pxy != null && gs.players[pxy] ? gs.players[pxy] : p;
-    const logs = [
-      `${p.name} スロット終了 / ${pxy != null ? `${wallet.name}の資金 ` : "資金"}${wallet.stats.money}G / ランク${rankLabel(wallet.stats.money)}`,
-    ];
-    const newPlayers = gs.players.map((pl, i) =>
-      i !== idx ? pl : { ...pl, slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 },
-    );
-    await writeGS(computeAdvanceDay8Turn({ ...gs, proxySlotTargetIdx: null }, newPlayers, logs), {
-      markDay8TurnComplete: true,
-    });
-  };
-
   const handleSpin = async (bet = SLOT_COST) => {
     if (isSpinning || !isMyTurn || !gs || interactionLocked) return;
     if ((gs?.slotPhase ?? "idle") !== "idle") return;
@@ -871,34 +848,49 @@ export default function SlotMachine({
         onComplete={() => setShowJackpotCelebration(false)}
       />
       <div className={showReachCutin ? "anim-slot-reach-machine-shake" : ""}>
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold">
-            8日目 スロットターン — {cpGs.name}
-            {proxySlotTargetIdx != null && targetGs && (
-              <span className="ml-2 block sm:inline text-sm font-bold text-violet-300">
-                （資金は {targetGs.name} のもの）
+        <div
+          className="sticky top-0 z-[199] -mx-1 mb-3 border-b border-slate-800/80 bg-slate-950/95 px-1 py-2 backdrop-blur-md supports-[backdrop-filter]:bg-slate-950/85"
+          style={{ top: "max(0px, env(safe-area-inset-top))" }}
+        >
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1">
+            <p className="min-w-0 truncate text-left text-xs font-semibold text-slate-200 sm:text-sm">
+              8日目 スロットターン
+            </p>
+            <ProgressivePotDisplay
+              variant="inline"
+              totalPot={totalPot}
+              visible={showProgressivePot}
+            />
+            <div className="flex min-w-0 items-center justify-end gap-1.5">
+              <span className="truncate text-right text-xs font-semibold text-slate-100 sm:text-sm">
+                {cpGs.name}
               </span>
-            )}
-          </h2>
-          <button
-            type="button"
-            onClick={() => {
-              if (spectatorMode) return;
-              const next = !isMuted;
-              setIsMuted(next);
-              soundRef.current?.setMuted(next);
-            }}
-            disabled={spectatorMode}
-            title={spectatorMode ? "他プレイヤーの画面です" : isMuted ? "ミュート解除" : "ミュート"}
-            className={
-              spectatorMode
-                ? `flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-semibold ${spectatorBtn}`
-                : `flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors ${isMuted ? "border-slate-600 bg-slate-800 text-slate-400 hover:border-slate-500" : "border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20"}`
-            }
-          >
-            {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
-            {isMuted ? "OFF" : "ON"}
-          </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (spectatorMode) return;
+                  const next = !isMuted;
+                  setIsMuted(next);
+                  soundRef.current?.setMuted(next);
+                }}
+                disabled={spectatorMode}
+                title={spectatorMode ? "他プレイヤーの画面です" : isMuted ? "ミュート解除" : "ミュート"}
+                className={
+                  spectatorMode
+                    ? `flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1 text-[10px] font-semibold sm:px-2.5 sm:py-1.5 sm:text-xs ${spectatorBtn}`
+                    : `flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1 text-[10px] font-semibold transition-colors sm:px-2.5 sm:py-1.5 sm:text-xs ${isMuted ? "border-slate-600 bg-slate-800 text-slate-400 hover:border-slate-500" : "border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20"}`
+                }
+              >
+                {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                {isMuted ? "OFF" : "ON"}
+              </button>
+            </div>
+          </div>
+          {proxySlotTargetIdx != null && targetGs && (
+            <p className="mt-1 truncate text-center text-[10px] font-bold text-violet-300 sm:text-xs">
+              資金は {targetGs.name} のもの
+            </p>
+          )}
         </div>
       {cpGs.slotTurnsLeft > 0 || awaitingConfirm || postSpinPending ? (
         <div className={`space-y-4${spectatorMode ? " relative min-h-[360px]" : ""}`}>
@@ -1189,28 +1181,18 @@ export default function SlotMachine({
                   >
                     {showPayoutNow && (
                       <div
-                        className="pointer-events-none absolute top-1/2 z-[42] flex -translate-y-1/2 items-center pl-2 sm:pl-3"
+                        className="pointer-events-none absolute top-1/2 z-[42] hidden -translate-y-1/2 items-center pl-3 md:flex"
                         style={{ left: "100%" }}
                         aria-live="polite"
                         aria-atomic="true"
                       >
-                        <span
-                          role="presentation"
-                          className="anim-slot-payout-popup font-black tabular-nums leading-none tracking-tight text-[#ffe566]"
-                          style={{
-                            fontSize: "clamp(2.5rem, min(14vw, 5rem), 5rem)",
-                            WebkitTextStroke: "2px rgba(120,53,15,0.85)",
-                            paintOrder: "stroke fill",
-                            textShadow:
-                              "0 0 2px #000, 0 2px 0 #854d0e, 0 4px 12px rgba(0,0,0,0.75), 0 0 28px rgba(250,204,21,0.75), 0 0 48px rgba(234,179,8,0.45)",
-                          }}
+                        <SlotPayoutAmountLabel
+                          amount={payoutAmount}
                           onAnimationEnd={() => {
                             setShowPayout(false);
                             setPayoutAmount(0);
                           }}
-                        >
-                          +{payoutAmount}G
-                        </span>
+                        />
                       </div>
                     )}
                     {isReach && (
@@ -1237,6 +1219,24 @@ export default function SlotMachine({
                           className="h-full w-full"
                         />
                       </div>
+
+                      {showPayoutNow && (
+                        <div
+                          className="pointer-events-none absolute z-[15] flex items-center justify-center md:hidden"
+                          style={winBox}
+                          aria-live="polite"
+                          aria-atomic="true"
+                        >
+                          <SlotPayoutAmountLabel
+                            amount={payoutAmount}
+                            compact
+                            onAnimationEnd={() => {
+                              setShowPayout(false);
+                              setPayoutAmount(0);
+                            }}
+                          />
+                        </div>
+                      )}
 
                       {spinAuraActive && (
                         <div
@@ -1421,27 +1421,24 @@ export default function SlotMachine({
                     標的の所持金が少なすぎてスピンできません（30%上限で100G未満）。
                   </p>
                 )}
-                <button
-                  type="button"
-                  onClick={skipSlot}
-                  disabled={
-                    spectatorMode ||
-                    isSpinning ||
-                    interactionLocked ||
-                    !["idle", "completed"].includes(gs?.slotPhase ?? "idle")
-                  }
-                  className={
-                    spectatorMode
-                      ? `inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm ${spectatorBtn}`
-                      : "inline-flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600 transition-colors disabled:opacity-40"
-                  }
-                >
-                  <ChevronRight size={16} />
-                  終了・次へ
-                </button>
               </>
             )}
           </div>
+          {!spectatorMode && isMyTurn && (
+            <Day8ItemBar
+              player={cpGs}
+              gs={gs}
+              isMyTurn={isMyTurn}
+              interactionLocked={
+                interactionLocked ||
+                isSpinning ||
+                awaitingConfirm ||
+                postSpinPending ||
+                !["idle", "completed"].includes(gs?.slotPhase ?? "idle")
+              }
+              onUseItem={onUseDay8Item}
+            />
+          )}
         </div>
         </div>
       ) : (

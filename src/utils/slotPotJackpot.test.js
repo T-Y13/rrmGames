@@ -3,6 +3,7 @@ import {
   applyDay8SlotSpinToFreshGameState,
   calcSlotRates,
   formatDay8SlotSpinLogLine,
+  formatDay8SlotBurstMoneyLogLine,
   spinSlot,
   getSlotReelSymbols,
   slotMachineForReels,
@@ -74,7 +75,9 @@ describe("potJackpot tier", () => {
         net: 50,
         newMoney: 750,
       }),
-    ).toBe("Alice 2回目 100G → 🔔 当たり！（収支+50G・資金750G）");
+    ).toBe("Alice 2回目 100G → 🔔 当たり！ 収支+50G");
+
+    expect(formatDay8SlotBurstMoneyLogLine({ newMoney: 750 })).toBe("  資金750G");
 
     expect(
       formatDay8SlotSpinLogLine({
@@ -88,7 +91,7 @@ describe("potJackpot tier", () => {
         potPayout: 5000,
       }),
     ).toBe(
-      "【代理→Carol】Bob 1回目 100G → 🏆 POT JP!! ポット全額GET！（収支+5000G・資金5100G）",
+      "【代理→Carol】Bob 1回目 100G → 🏆 POT JP!! ポット全額GET！ 収支+5000G",
     );
   });
 
@@ -142,5 +145,55 @@ describe("potJackpot tier", () => {
     expect(next.players[0].slotTurnsLeft).toBe(2);
     expect(next.players[0].slotPullsThisSeat).toBe(1);
     expect(next.players[0].stats.money).toBe(1000 - 100 + 18000);
+  });
+
+  it("appends burst money summary after the third spin of a seat", () => {
+    const machine = SLOT_MACHINES.standard;
+    const gs = {
+      gamePhase: "playing",
+      subPhase: "day8",
+      currentPlayerIdx: 0,
+      players: [
+        {
+          id: "a",
+          name: "Alice",
+          movePhase: "arrived",
+          slotTurnsLeft: 6,
+          slotPullsThisSeat: 2,
+          spinCount: 2,
+          slotHeat: 0,
+          slotPityCounter: 0,
+          slotNet: 0,
+          stats: { money: 5000, skill: 50, luck: 50, virtue: 50 },
+        },
+      ],
+      log: [],
+      slotPhase: "idle",
+    };
+    const res = {
+      tier: "atari",
+      payout: 1800,
+      message: "🔔 当たり！",
+      r: { atari: 0.1, miss: 0.5 },
+      reels: ["🔔", "🔔", "🔔"],
+    };
+    const next = applyDay8SlotSpinToFreshGameState(gs, {
+      actorIdx: 0,
+      proxyTargetIdx: null,
+      bet: 1000,
+      res,
+      newLeft: 6,
+      newPullsSeat: 3,
+      newSpins: 3,
+      newHeat: 1,
+      pityAfter: 0,
+      visualReels: ["🔔", "🔔", "🔔"],
+      emotionLine: null,
+      machine,
+      slotTurnsBefore: 6,
+      potPayout: 0,
+    });
+    expect(next.log[0]).toBe("Alice 3回目 1000G → 🔔 当たり！ 収支+800G");
+    expect(next.log[1]).toBe("  資金5800G");
   });
 });

@@ -6,8 +6,18 @@ import MovementFloatingLabel from "./MovementFloatingLabel";
 import DailyActionFloatingLabel from "./DailyActionFloatingLabel";
 import BoardCalloutBubble from "./BoardCalloutBubble";
 import PieceNearbyStack from "./PieceNearbyStack";
+import BoardCharacterSideDice from "./BoardCharacterSideDice";
 import { sugorokuPlayerName } from "../lib/sugorokuPlayerName";
 import { TILE_EFFECT_KIND } from "../constants/gameBalance";
+import {
+  SUGOROKU_BOARD_STANDEE_SCALE,
+  SUGOROKU_PLAYER_NAME_BUBBLE_CLASS,
+  SUGOROKU_STANDEE_MOBILE_SCALE_CLASS,
+  SUGOROKU_TILE_ABS_MIN_W,
+  SUGOROKU_DICE_BESIDE_CHARACTER_GAP_CLASS,
+  SUGOROKU_NAME_ANCHOR_WITH_STANDEE,
+  sugorokuCurrentStandeeImgStyle,
+} from "../constants/sugorokuMobileLayout";
 import { squareDeco, easeInOutCubic, computeTaxiDriveDurationMs, computeSugorokuMsPerStep, SUGOROKU_MS_PER_STEP_NORMAL, getBoardTombDisplayPosition } from "../utils/gameLogic";
 import { BOARD_DEATH_FADE_MS } from "../lib/boardDeathPresentation";
 import { publicAssetUrl } from "../lib/publicAssetUrl";
@@ -25,8 +35,9 @@ const TAXI_AS_BOARD_PIECE_PHASES = new Set([
   "driveAfterJam",
 ]);
 
-/** すごろくマス上の駒（立ち絵）表示倍率（サラリーマン等の駒絵） */
-const BOARD_STANDEE_SCALE = 1.15;
+/** すごろくマス上の駒（立ち絵）表示倍率 — 詳細は constants/sugorokuMobileLayout.js */
+const BOARD_STANDEE_SCALE = SUGOROKU_BOARD_STANDEE_SCALE;
+const STANDEE_MOBILE_SCALE_CLASS = SUGOROKU_STANDEE_MOBILE_SCALE_CLASS;
 
 /** 大学生の立ち絵はアートが大きめのため、サラリーマンと同程度に見えるようだけ縮小 */
 function boardStandeePieceScale(characterType) {
@@ -142,13 +153,17 @@ function GoalFinishLine({ tileW }) {
 
 const HOP_SETTLE_PADDING_MS = 300;
 const PLAYER_SYMBOL_COLORS = ["#ef4444", "#3b82f6", "#facc15", "#22c55e"]; // red, blue, yellow, green
-/** キャラ上プレイヤー名タグ（名前幅に合わせ・改行なし） */
-const PLAYER_NAME_BUBBLE_CLASS =
-  "inline-flex w-max max-w-none whitespace-nowrap justify-center text-center text-[10px] px-2 py-0.5 drop-shadow-sm";
+const PLAYER_NAME_BUBBLE_CLASS = SUGOROKU_PLAYER_NAME_BUBBLE_CLASS;
 
 /** 道幅に合わせたマス（正方形）の一辺（px） */
 const TILE_MIN_W = 52;
 const TILE_MAX_W = 72;
+/** 低いビューポート向けの下限（SP でも PC と同数の先マスが見えるよう縮小可） */
+const TILE_ABS_MIN_W = SUGOROKU_TILE_ABS_MIN_W;
+/** 手前に見せるマス数の目標（viewport 高さに関わらず同等） */
+const TARGET_AHEAD_VISIBLE = 5;
+/** pt-2 pb-3 相当の縦パディング概算 */
+const LANE_VIEWPORT_VERTICAL_PAD = 20;
 /** マス同士の縦すき間（px） */
 const ROW_GAP_PX = 12;
 /** ビューポート内で駒を置く目標（上寄りの中央＝手前に進行余地を残す） */
@@ -277,7 +292,15 @@ export default function BoardViewport({
       const h = el.clientHeight || 480;
       const w = el.clientWidth || 360;
       setViewportH(h);
-      setLaneTileW(Math.min(TILE_MAX_W, Math.max(TILE_MIN_W, Math.round(w * 0.22))));
+      const widthBased = Math.round(w * 0.22);
+      const aheadBudget = Math.max(0, h * (1 - CAMERA_ANCHOR_FRAC) - LANE_VIEWPORT_VERTICAL_PAD);
+      const heightBased = Math.floor(aheadBudget / TARGET_AHEAD_VISIBLE) - ROW_GAP_PX;
+      const compactLane = heightBased < TILE_MIN_W;
+      const fromHeight = compactLane
+        ? Math.max(TILE_ABS_MIN_W, heightBased)
+        : Math.max(TILE_MIN_W, heightBased);
+      const tileW = Math.min(TILE_MAX_W, widthBased, fromHeight);
+      setLaneTileW(tileW);
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -846,8 +869,8 @@ export default function BoardViewport({
                         const pieceCharScale = boardStandeePieceScale(p.characterType);
                         const nameColor = playerNameColor(players, p.id);
                         return (
-                          <div key={p.id} className="relative flex flex-col items-center justify-end">
-                            <div className="pointer-events-none absolute bottom-full left-1/2 z-[39] mb-1 -translate-x-1/2">
+                          <div key={p.id} className={`relative flex flex-col items-center justify-end ${STANDEE_MOBILE_SCALE_CLASS}`}>
+                            <div className="pointer-events-none relative z-[39] mb-0.5">
                               <BoardCalloutBubble
                                 tail="bottom"
                                 fillColor={nameColor}
@@ -899,27 +922,28 @@ export default function BoardViewport({
                             traveling,
                           })}
                         >
-                          <PieceNearbyStack
-                            playerName={currentPlayer.name}
-                            nameFillColor={playerNameColor(players, currentPlayer.id)}
-                            tileEffectLines={tileEffectLines}
-                            tileEffectKind={tileEffectKind}
-                            remainingTravelSteps={
-                              traveling && remainingSteps > 0 && !taxiPhase ? remainingSteps : null
-                            }
-                            congestionActive={(currentPlayer.pendingTaxiSteps ?? 0) > 0}
-                            localDiceItems={localDiceItems}
-                            localDiceShowTotal={localDiceShowTotal}
-                            localDiceTotal={localDiceTotal}
-                            movementFxDiceActive={movementFxDiceActive}
-                            movementFxDiceRolls={movementFxDiceRolls}
-                          />
-                          <DailyActionFloatingLabel
-                            label={dailyFxPlayerId === currentPlayer.id ? dailyFxLabel : null}
-                            visible={dailyFxVisible && dailyFxPlayerId === currentPlayer.id}
-                          />
+                          <div className={`flex flex-row items-end justify-center ${SUGOROKU_DICE_BESIDE_CHARACTER_GAP_CLASS}`}>
+                            <BoardCharacterSideDice
+                              localDiceItems={localDiceItems}
+                              localDiceShowTotal={localDiceShowTotal}
+                              localDiceTotal={localDiceTotal}
+                              movementFxDiceActive={movementFxDiceActive}
+                              movementFxDiceRolls={movementFxDiceRolls}
+                            />
                           {showTaxiBoardingVisual ? (
-                            <div className="flex max-w-[min(340px,calc(100vw-40px))] flex-row flex-nowrap items-end justify-center gap-1 pr-0.5 origin-bottom scale-[0.88] sm:scale-95 md:scale-100">
+                            <div className={`relative flex max-w-[min(340px,calc(100vw-40px))] flex-col items-center ${STANDEE_MOBILE_SCALE_CLASS}`}>
+                              <PieceNearbyStack
+                                anchor={SUGOROKU_NAME_ANCHOR_WITH_STANDEE}
+                                playerName={currentPlayer.name}
+                                nameFillColor={playerNameColor(players, currentPlayer.id)}
+                                tileEffectLines={tileEffectLines}
+                                tileEffectKind={tileEffectKind}
+                                remainingTravelSteps={
+                                  traveling && remainingSteps > 0 && !taxiPhase ? remainingSteps : null
+                                }
+                                congestionActive={(currentPlayer.pendingTaxiSteps ?? 0) > 0}
+                              />
+                            <div className="flex w-full flex-row flex-nowrap items-end justify-center gap-1 pr-0.5">
                               <div
                                 className={`order-1 shrink-0 self-end ${
                                   taxiPhase === "enter"
@@ -943,17 +967,26 @@ export default function BoardViewport({
                                     characterType={currentPlayer.characterType}
                                     pose={(currentPlayer.skipTurns ?? 0) > 0 ? "fallen" : "normal"}
                                     imgClassName="w-auto object-contain object-bottom"
-                                    imgStyle={{
-                                      maxHeight: 150 * currentPlayerStandeeMult,
-                                      width: "auto",
-                                      maxWidth: `min(${Math.round(207 * currentPlayerStandeeMult)}px, ${55 * currentPlayerStandeeMult}vw)`,
-                                    }}
+                                    imgStyle={sugorokuCurrentStandeeImgStyle(currentPlayerStandeeMult)}
                                     spanClassName="text-4xl leading-none"
                                   />
                                 </span>
                               </div>
                             </div>
+                            </div>
                           ) : (
+                          <div className={`relative flex flex-col items-center justify-end ${STANDEE_MOBILE_SCALE_CLASS}`}>
+                            <PieceNearbyStack
+                              anchor={SUGOROKU_NAME_ANCHOR_WITH_STANDEE}
+                              playerName={currentPlayer.name}
+                              nameFillColor={playerNameColor(players, currentPlayer.id)}
+                              tileEffectLines={tileEffectLines}
+                              tileEffectKind={tileEffectKind}
+                              remainingTravelSteps={
+                                traveling && remainingSteps > 0 && !taxiPhase ? remainingSteps : null
+                              }
+                              congestionActive={(currentPlayer.pendingTaxiSteps ?? 0) > 0}
+                            />
                           <div
                             className={`relative flex items-end justify-center ${
                               showPlayerPieceAsTaxi ? "z-[26]" : ""
@@ -1008,11 +1041,7 @@ export default function BoardViewport({
                                       characterType={currentPlayer.characterType}
                                       pose={(currentPlayer.skipTurns ?? 0) > 0 ? "fallen" : "normal"}
                                       imgClassName="w-auto object-contain object-bottom"
-                                      imgStyle={{
-                                        maxHeight: 150 * currentPlayerStandeeMult,
-                                        width: "auto",
-                                        maxWidth: `min(${Math.round(207 * currentPlayerStandeeMult)}px, ${55 * currentPlayerStandeeMult}vw)`,
-                                      }}
+                                      imgStyle={sugorokuCurrentStandeeImgStyle(currentPlayerStandeeMult)}
                                       spanClassName="text-4xl leading-none"
                                     />
                                   )}
@@ -1035,7 +1064,13 @@ export default function BoardViewport({
                                 </span>
                               ))}
                           </div>
+                          </div>
                           )}
+                          </div>
+                          <DailyActionFloatingLabel
+                            label={dailyFxPlayerId === currentPlayer.id ? dailyFxLabel : null}
+                            visible={dailyFxVisible && dailyFxPlayerId === currentPlayer.id}
+                          />
                         </div>
                       )}
                     </div>

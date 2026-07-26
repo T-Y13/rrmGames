@@ -2,8 +2,22 @@
 
 - **Git tip:** `4068219`（**`main` と同一** — ブランチ上の追加 commit はまだ無い）
 - **ブランチ:** `ver1.0.3`（ローカル）
-- **記録更新:** 2026-07-24
-- **本番 Hosting:** 未反映（下記はすべて **ローカル未 commit**）
+- **記録更新:** 2026-07-26
+
+## 2026-07-26: 8日目15ラウンド・スロット席・資産グラフ
+
+**設計正本:** [references/day8-guide.md](../references/day8-guide.md) の「8日目ラウンドとスロット（設計の正本・2026-07）」
+
+| 要点 | 内容 |
+|------|------|
+| スロット | **手番ごと3スピン付与**（bank なし）。15Tゴールはスロットなし |
+| グラフ | `daily`/`day8` のみ（`day8Timeline` 不使用）、個人所持金、X軸等間隔 |
+
+**変更ファイル（ローカル）:** `gameLogic.js`, `App.jsx`, `ghostPlayerAutomation.js`, `assetHistoryFromGameState.js`, `AssetHistoryChart.jsx`, 各 test
+
+**テスト:** `npm run test:run` → 182 passed（2026-07-26 手番ごとスピン付与後）
+
+**ルール正本:** [references/game-rules.md](../references/game-rules.md)
 
 ## ベースラインに含まれる commit（main = ver1.0.3 共通）
 
@@ -52,6 +66,12 @@
 |--------|----------|
 | ヘッダー簡略（HUD・ルームID・コピー・退室・プレイヤー名非表示） | `App.jsx` |
 | 1〜7日目キャラ右寄せ・ボタンと非重なり | `DailyActionPhase.jsx` |
+| **8日目すごろく SP レイアウト定数**（駒縮小・名前追従・横ダイス・POT inline） | `constants/sugorokuMobileLayout.js` |
+| すごろく盤面 SP 実装 | `BoardViewport.jsx`, `PieceNearbyStack.jsx`, `BoardCharacterSideDice.jsx`, `BoardGamePhase.jsx` |
+| 盤面フレーム高さ SP 低め | `gameAnimationsCss.js` → `BOARD_VIEWPORT_FRAME_SIZE_CLASS` |
+| POT：すごろく中は fixed 非表示・ヘッダー inline | `App.jsx`, `BoardGamePhase.jsx` |
+
+**SP すごろく調整時:** 数値・Tailwind クラスは `sugorokuMobileLayout.js` を正本に。コンポーネントに直書きしない。
 
 ### 変更ファイル一覧（tracked 改修）
 
@@ -87,7 +107,6 @@ npm run test:rules:emulator     # rules 変更後
 |------|------|
 | 高 | タクシー行ログ**二重**（同一ターン2行）— 原因調査未 |
 | 高 | `🎒 …アイテムを使わずに手番開始` — 旧 gate 残骸 or 古い Firestore 状態の可能性 |
-| 中 | SP: 8日目盤面 `min(720px,80vh)` が高すぎ |
 | 中 | SP: スロット HUD 折りたたみ |
 | 中 | SP: サイドバー → ボトムタブ / ログシート |
 | 中 | hover ツールチップ（カード・コンビニ・タクシー）→ タップ説明 |

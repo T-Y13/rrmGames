@@ -80,7 +80,8 @@ export function compactLogLine(entry, player, day) {
 }
 
 /**
- * gs.log（新しい順）を日別タイムラインタイルへ変換
+ * gs.log（新しい順）を日別タイムラインタイルへ変換。
+ * 各日タイル内も gs.log と同じく新しい行が上になる。
  * @returns {Array<{ day: number, title: string, showPlayerSubHeaders: boolean, sections: Array<{ playerGameIdx: number|null, playerName: string|null, stripeClass: string, entries: string[] }> }>}
  */
 export function parseLogIntoDailyTiles(log, players) {
@@ -92,7 +93,9 @@ export function parseLogIntoDailyTiles(log, players) {
   let runningDay = 1;
   const tagged = [];
 
-  for (const entry of chronological) {
+  for (let i = 0; i < chronological.length; i++) {
+    const entry = chronological[i];
+    const logIndex = entries.length - 1 - i;
     const explicit = extractExplicitDayFromEntry(entry);
     if (explicit != null) {
       runningDay = explicit;
@@ -104,7 +107,7 @@ export function parseLogIntoDailyTiles(log, players) {
       runningDay = 0;
     }
 
-    tagged.push({ entry, day: runningDay });
+    tagged.push({ entry, day: runningDay, logIndex });
   }
 
   /** @type {Map<number, typeof tagged>} */
@@ -117,9 +120,11 @@ export function parseLogIntoDailyTiles(log, players) {
   const sortedDays = [...byDay.keys()].sort((a, b) => b - a);
 
   return sortedDays.map((day) => {
-    const dayEntries = byDay.get(day) ?? [];
+    const dayEntries = (byDay.get(day) ?? []).slice().sort((a, b) => a.logIndex - b.logIndex);
     /** @type {Array<{ playerGameIdx: number|null, playerId: string|null, playerName: string|null, stripeClass: string, entries: string[] }>} */
-    const sections = [];
+    const playerSections = [];
+    /** @type {{ playerGameIdx: number|null, playerId: string|null, playerName: string|null, stripeClass: string, entries: string[] } | null} */
+    let globalSection = null;
     let current = null;
 
     for (const { entry } of dayEntries) {
@@ -135,17 +140,16 @@ export function parseLogIntoDailyTiles(log, players) {
         parsed?.t === "dayHeader" || parsed?.t === "dayDivider" || parsed?.t === "turnHandoff";
 
       if (isGlobalHeader) {
-        if (!current) {
-          current = {
+        if (!globalSection) {
+          globalSection = {
             playerGameIdx: null,
             playerId: null,
             playerName: null,
             stripeClass: "border-slate-600",
             entries: [],
           };
-          sections.push(current);
         }
-        current.entries.push(entry);
+        globalSection.entries.push(entry);
         continue;
       }
 
@@ -157,7 +161,7 @@ export function parseLogIntoDailyTiles(log, players) {
           stripeClass: playerLogStripeClass(playerGameIdx),
           entries: [],
         };
-        sections.push(current);
+        playerSections.push(current);
       } else if (!current) {
         current = {
           playerGameIdx: playerGameIdx >= 0 ? playerGameIdx : null,
@@ -166,7 +170,7 @@ export function parseLogIntoDailyTiles(log, players) {
           stripeClass: playerLogStripeClass(playerGameIdx),
           entries: [],
         };
-        sections.push(current);
+        playerSections.push(current);
       } else if (matched && current.playerId == null && playerId) {
         current.playerGameIdx = playerGameIdx >= 0 ? playerGameIdx : null;
         current.playerId = playerId;
@@ -184,9 +188,11 @@ export function parseLogIntoDailyTiles(log, players) {
           stripeClass: "border-slate-600",
           entries: [entry],
         };
-        sections.push(current);
+        playerSections.push(current);
       }
     }
+
+    const sections = globalSection ? [...playerSections, globalSection] : playerSections;
 
     const showPlayerSubHeaders = sections.filter((s) => s.playerName).length > 1;
     const soloSection = sections.length === 1 ? sections[0] : null;

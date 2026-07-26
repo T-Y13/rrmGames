@@ -6,6 +6,7 @@ import {
   sugorokuLuckyDiceChancePct,
   applyGoalLandingConfirm,
   applyGoalArrivalToPlayer,
+  beginDay8SlotSeatForPlayer,
   buildNextGsAfterGoalArrival,
   advanceDay8AfterSlotSpinShow,
   applyDay8ActorMoveCommit,
@@ -18,6 +19,8 @@ import {
   resolveDebtTrapTriggered,
   snapshotDeathOnBoard,
   isDay8Done,
+  isDay8GameFinished,
+  releaseDay8PlayerToWaitingSlotAfterBurst,
   skipGhostTurnAllPlayersArrived,
   skipGhostTurnNoPickableProxy,
   buildDay8SlotSpinningGs,
@@ -57,26 +60,89 @@ describe("initial rolls → final virtue", () => {
   });
 });
 
+describe("day8 slot seat helpers", () => {
+  it("beginDay8SlotSeatForPlayer grants spins for this handoff only", () => {
+    const began = beginDay8SlotSeatForPlayer({
+      id: "a",
+      movePhase: "waitingSlot",
+      moveTurns: 9,
+      slotTurnsLeft: 0,
+    });
+    expect(began?.movePhase).toBe("arrived");
+    expect(began?.slotTurnsLeft).toBe(3);
+    expect(began?.slotPullsGranted).toBe(3);
+  });
+
+  it("beginDay8SlotSeatForPlayer returns null on final move goal", () => {
+    expect(
+      beginDay8SlotSeatForPlayer({
+        id: "a",
+        movePhase: "waitingSlot",
+        moveTurns: 15,
+      }),
+    ).toBeNull();
+  });
+
+  it("isDay8GameFinished is false for goal players still slotting", () => {
+    const player = {
+      id: "a",
+      alive: true,
+      movePhase: "waitingSlot",
+      moveTurns: 9,
+    };
+    expect(isDay8GameFinished(player, [player])).toBe(false);
+  });
+
+  it("isDay8GameFinished is true for final-turn goal", () => {
+    const player = {
+      id: "a",
+      alive: true,
+      movePhase: "arrived",
+      moveTurns: 15,
+      slotTurnsLeft: 0,
+    };
+    expect(isDay8GameFinished(player, [player])).toBe(true);
+  });
+
+  it("releaseDay8PlayerToWaitingSlotAfterBurst returns player to waitingSlot", () => {
+    const released = releaseDay8PlayerToWaitingSlotAfterBurst({
+      movePhase: "arrived",
+      moveTurns: 9,
+      slotTurnsLeft: 0,
+      slotPullsThisSeat: 3,
+    });
+    expect(released.movePhase).toBe("waitingSlot");
+    expect(released.slotPullsThisSeat).toBe(0);
+  });
+});
+
 describe("applyGoalArrivalToPlayer", () => {
   it("solo keeps goalLanding until manual confirm", () => {
     const { player, extraLogs } = applyGoalArrivalToPlayer(
       { id: "a", name: "A", moveTurns: 3 },
-      2,
       false,
     );
     expect(player.movePhase).toBe("goalLanding");
-    expect(player.reservedSlotTurns).toBe(2);
     expect(extraLogs).toEqual([]);
   });
 
   it("multi skips goalLanding and goes to waitingSlot", () => {
     const { player, extraLogs } = applyGoalArrivalToPlayer(
       { id: "a", name: "A", moveTurns: 3 },
-      2,
       true,
     );
     expect(player.movePhase).toBe("waitingSlot");
     expect(extraLogs.length).toBe(1);
+  });
+
+  it("final move goal skips slot waiting", () => {
+    const { player, extraLogs } = applyGoalArrivalToPlayer(
+      { id: "a", name: "A", moveTurns: 15 },
+      true,
+    );
+    expect(player.movePhase).toBe("arrived");
+    expect(player.slotTurnsLeft).toBe(0);
+    expect(extraLogs[0]).toContain("最終移動ターン");
   });
 });
 
@@ -88,8 +154,8 @@ describe("applyGoalLandingConfirm", () => {
       currentPlayerIdx: 1,
       log: [],
       players: [
-        { id: "a", name: "A", movePhase: "arrived", reservedSlotTurns: 0 },
-        { id: "b", name: "B", movePhase: "goalLanding", reservedSlotTurns: 2 },
+        { id: "a", name: "A", movePhase: "arrived" },
+        { id: "b", name: "B", movePhase: "goalLanding", moveTurns: 5 },
       ],
     };
     const next = applyGoalLandingConfirm(gs, "b");

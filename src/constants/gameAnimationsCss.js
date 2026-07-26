@@ -1279,3 +1279,8 @@ export const GAME_STYLES = `
   }
 
 `;
+
+/** すごろく盤面フレーム高さ: SP は操作 UI 用に低め、md+ は従来（SP 関連は sugorokuMobileLayout.js も参照） */
+export const BOARD_VIEWPORT_FRAME_SIZE_CLASS =
+  "h-[min(360px,54vh)] min-h-[min(320px,50vh)] md:h-[min(720px,80vh)] md:min-h-[min(560px,72vh)]";
+

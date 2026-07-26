@@ -31,6 +31,8 @@ rules 未 deploy だとクライアントだけ直しても permission エラー
 
 ### 1. 開発・テスト（ローカル）
 
+→ 詳細: [testing.md](../references/testing.md)
+
 ```bash
 npm run dev
 npm run test:run

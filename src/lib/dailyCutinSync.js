@@ -66,15 +66,47 @@ export function mergeDailyCutinFieldsIntoGameState(gameState, cutinFields) {
   return { ...gameState, ...cutinFields };
 }
 
+/** sessionId 先頭の epoch ms を読む（buildDailyCutinSessionId 形式） */
+export function parseDailyCutinSessionStartedAt(sessionId) {
+  if (!sessionId || typeof sessionId !== "string") return null;
+  const ts = Number(sessionId.split("-")[0]);
+  return Number.isFinite(ts) && ts > 0 ? ts : null;
+}
+
+/** 長時間残存したカットイン同期を stale とみなす */
+export function isDailyCutinBroadcastStale(cutinBroadcast, maxAgeMs = 45000) {
+  if (!cutinBroadcast || (cutinBroadcast.phase ?? DAILY_CUTIN_PHASE.idle) === DAILY_CUTIN_PHASE.idle) {
+    return false;
+  }
+  const started = parseDailyCutinSessionStartedAt(cutinBroadcast.sessionId);
+  if (!started) return true;
+  return Date.now() - started > maxAgeMs;
+}
+
+/** 演出時間＋猶予を過ぎたカットイン（同期失敗で phase が idle に戻らないケース） */
+export function isDailyCutinPhaseOverdue(cutinBroadcast, graceMs = 8000) {
+  if (!cutinBroadcast || (cutinBroadcast.phase ?? DAILY_CUTIN_PHASE.idle) === DAILY_CUTIN_PHASE.idle) {
+    return false;
+  }
+  const started = parseDailyCutinSessionStartedAt(cutinBroadcast.sessionId);
+  if (!started) return true;
+  const expectedEnd = started + dailyCutinPhaseDurationMs(cutinBroadcast.phase) + graceMs;
+  return Date.now() >= expectedEnd;
+}
+
 /** ルーム doc / gameState からカットイン同期フィールドを読む */
 export function readDailyCutinBroadcast(roomData, gameState) {
+  const idle = { phase: DAILY_CUTIN_PHASE.idle, sessionId: "", payload: null };
+  if (gameState?.subPhase && gameState.subPhase !== "daily") {
+    return idle;
+  }
   // ルーム直下が明示的 idle なら gameState に残った stale cutin は無視する
   if (
     roomData != null &&
     Object.prototype.hasOwnProperty.call(roomData, "dailyCutinPhase") &&
     (roomData.dailyCutinPhase ?? DAILY_CUTIN_PHASE.idle) === DAILY_CUTIN_PHASE.idle
   ) {
-    return { phase: DAILY_CUTIN_PHASE.idle, sessionId: "", payload: null };
+    return idle;
   }
   return {
     phase: roomData?.dailyCutinPhase ?? gameState?.dailyCutinPhase ?? DAILY_CUTIN_PHASE.idle,
