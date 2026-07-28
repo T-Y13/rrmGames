@@ -88,6 +88,7 @@ import {
 import useSugorokuMovementFx from "./hooks/useSugorokuMovementFx";
 import { applyWorkIncomeToStats } from "./lib/dailyActions/work";
 import { applyShrineToStats, rollShrineAmuletDrop } from "./lib/dailyActions/shrine";
+import { rollAndApplyStream } from "./lib/dailyActions/stream";
 import { buildDailyActionFx, DAILY_ACTION_FX_CLEAR_MS, attachDailyActionFxForDailyPhase, clearDailyActionFx } from "./lib/dailyActionFx";
 import { buildMovementFx, buildPonVisualPayload, buildTaxiTrafficWaitVisualPayload, buildTaxiVisualPayload, holdMoverForMovementFx, buildOrphanedMovementFxPatch, isMovementFxForPlayer, isTaxiDeferredMovementFx, runTileEffectPresentation, tileEffectExplainDurationMs } from "./lib/sugorokuMovementFx";
 import {
@@ -117,7 +118,6 @@ import {
   buildNextGsAfterGoalArrival,
   applyRimiruDailyEnd,
   applySplashDamage,
-  applyVirtueIncomeBoost,
   applyVirtueWave,
   applyDay8SlotSpinToFreshGameState,
   buildDay8SlotSpinningGs,
@@ -3866,37 +3866,24 @@ export default function App() {
       streamFxChainTimeoutsRef.current.forEach(clearTimeout);
       streamFxChainTimeoutsRef.current = [];
 
-      const streamType = Math.random() < 0.5 ? "chat" : "game";
-      const streamLabel = streamType === "chat" ? "雑談配信" : "ゲーム配信";
-
       if (streamCutinTimerRef.current) {
         clearTimeout(streamCutinTimerRef.current);
         streamCutinTimerRef.current = null;
       }
 
-      const streamSkillLuck = s.skill + s.luck;
-      const failRate =
-        streamSkillLuck > BAL.stream.combinedStatNoFailThreshold
-          ? 0
-          : Math.max(
-            0,
-            BAL.stream.baseFailRate -
-              (streamSkillLuck / BAL.stream.combinedStatNoFailThreshold) * BAL.stream.baseFailRate
-          );
-      const failed = Math.random() < failRate;
-      streamRollFailed = failed;
-      let streamCutinGold = 0;
-      let streamCutinStat = null;
-      const moneyBeforeStream = s.money;
-      const virtueBeforeStream = s.virtue;
-      const skillBeforeStream = s.skill;
-      if (failed) {
-        const baseReward = BAL.stream.successMin;
-        const streamBaseMoney = Math.round(baseReward * streamMult);
-        const vimS = virtueIncomeMult(s.virtue);
-        const delta = applyVirtueIncomeBoost(streamBaseMoney, s.virtue);
-        streamCutinGold = delta;
-        s.money = clampMoney(s.money + delta);
+      const streamResult = rollAndApplyStream(s, char, streamMult);
+      s = streamResult.stats;
+      streamRollFailed = streamResult.failed;
+      const streamType = streamResult.streamType;
+      const streamLabel = streamResult.streamLabel;
+      const streamCutinGold = streamResult.streamCutinGold;
+      const streamCutinStat = streamResult.streamCutinStat;
+      outcome = streamResult.outcome;
+      const moneyBeforeStream = streamResult.moneyBefore;
+      const virtueBeforeStream = streamResult.virtueBefore;
+      const skillBeforeStream = streamResult.skillBefore;
+
+      if (streamResult.failed) {
         const { lines, label } = streamActionLines({
           streamLabel,
           failed: true,
@@ -3905,46 +3892,30 @@ export default function App() {
         });
         actionLines.push(...lines);
         actionLabel = label;
-        outcome = "failure";
+      } else if (streamType === "chat") {
+        const { lines, label } = streamActionLines({
+          streamLabel,
+          failed: false,
+          moneyBefore: moneyBeforeStream,
+          moneyAfter: s.money,
+          statLabel: "善行",
+          statBefore: virtueBeforeStream,
+          statAfter: s.virtue,
+        });
+        actionLines.push(...lines);
+        actionLabel = label;
       } else {
-        const baseReward = rand(BAL.stream.successMin, BAL.stream.successMax);
-        const streamBaseMoney = Math.round(baseReward * streamMult);
-        const vimS = virtueIncomeMult(s.virtue);
-        const delta = applyVirtueIncomeBoost(streamBaseMoney, s.virtue);
-        streamCutinGold = delta;
-        s.money = clampMoney(s.money + delta);
-        if (streamType === "chat") {
-          const vg = rand(BAL.stream.chat.virtueGainMin, BAL.stream.chat.virtueGainMax);
-          s.virtue = clamp(s.virtue + vg);
-          streamCutinStat = vg ? { label: "善行", delta: vg } : null;
-          const { lines, label } = streamActionLines({
-            streamLabel,
-            failed: false,
-            moneyBefore: moneyBeforeStream,
-            moneyAfter: s.money,
-            statLabel: "善行",
-            statBefore: virtueBeforeStream,
-            statAfter: s.virtue,
-          });
-          actionLines.push(...lines);
-          actionLabel = label;
-        } else {
-          const sg = rand(BAL.stream.game.skillGainMin, BAL.stream.game.skillGainMax);
-          s.skill  = clamp(s.skill + sg);
-          streamCutinStat = sg ? { label: "技量", delta: sg } : null;
-          const { lines, label } = streamActionLines({
-            streamLabel,
-            failed: false,
-            moneyBefore: moneyBeforeStream,
-            moneyAfter: s.money,
-            statLabel: "技量",
-            statBefore: skillBeforeStream,
-            statAfter: s.skill,
-          });
-          actionLines.push(...lines);
-          actionLabel = label;
-        }
-        outcome = "success";
+        const { lines, label } = streamActionLines({
+          streamLabel,
+          failed: false,
+          moneyBefore: moneyBeforeStream,
+          moneyAfter: s.money,
+          statLabel: "技量",
+          statBefore: skillBeforeStream,
+          statAfter: s.skill,
+        });
+        actionLines.push(...lines);
+        actionLabel = label;
       }
       setStreamTypeCutin({
         mode: streamType,

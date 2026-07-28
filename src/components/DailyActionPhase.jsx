@@ -2,6 +2,7 @@ import React from "react";
 import { Briefcase, Tv, Dice5 } from "lucide-react";
 import { BAL, CHARACTERS, FINAL_GAME_DAY, LAST_DAILY_DAY } from "../constants/gameBalance";
 import { computeWorkPayout } from "../lib/dailyActions/work";
+import { computeStreamFailRate } from "../lib/dailyActions/stream";
 import { livingCostForPlayer } from "../utils/gameLogic";
 import { SugorokuBoardPiece } from "./CharacterPieces";
 
@@ -29,11 +30,7 @@ export default function DailyActionPhase({
 
   const workPayShown = computeWorkPayout(char, cpGs.stats.virtue).workTotal;
 
-  const streamSkillLuck = cpGs.stats.skill + cpGs.stats.luck;
-  const streamFailRate =
-    streamSkillLuck > BAL.stream.combinedStatNoFailThreshold
-      ? 0
-      : Math.max(0, BAL.stream.baseFailRate - (streamSkillLuck / BAL.stream.combinedStatNoFailThreshold) * BAL.stream.baseFailRate);
+  const streamFailRate = computeStreamFailRate(cpGs.stats);
 
   const auraShadows = [];
   const auraTextShadows = [];
