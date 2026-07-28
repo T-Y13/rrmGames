@@ -1,4 +1,5 @@
 import { CHARACTERS } from "../../constants/gameBalance";
+import { SUB_PHASE } from "../../constants/gamePhases";
 import {
   applyRimiruDailyEnd,
   applyVirtueWave,
@@ -25,7 +26,7 @@ export function resolveDailyAction(gs, actionType, ctx = {}) {
 export function resolveWorkDailyAction(gs, ctx = {}) {
   const idx = gs?.currentPlayerIdx;
   const p = gs?.players?.[idx];
-  if (!p || gs.subPhase !== "daily") return null;
+  if (!p || gs.subPhase !== SUB_PHASE.daily) return null;
 
   const logs = [];
   let s = { ...p.stats };

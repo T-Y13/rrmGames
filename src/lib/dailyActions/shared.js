@@ -1,4 +1,5 @@
 import { BAL } from "../../constants/gameBalance";
+import { SUB_PHASE } from "../../constants/gamePhases";
 import { clamp, clampMoney, livingCostForPlayer } from "../../utils/gameLogic";
 
 /** ターン開始時のお守り運補正 */
@@ -17,7 +18,7 @@ export function applyDailyLivingCostAndPon(stats, player, char, gs) {
   const logs = [];
   let s = stats;
 
-  if (gs?.subPhase === "daily") {
+  if (gs?.subPhase === SUB_PHASE.daily) {
     const lc = livingCostForPlayer(player);
     s = { ...s, money: clampMoney(s.money - lc) };
     logs.push(`  生活費 -${lc}G → 資金 ${s.money}G`);

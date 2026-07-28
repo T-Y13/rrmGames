@@ -1,4 +1,5 @@
 import { BAL, BOARD_GOAL, SLOT_COST, SLOT_MACHINES } from "../constants/gameBalance";
+import { GAME_PHASE, MOVE_PHASE, SUB_PHASE, isDailySubPhase } from "../constants/gamePhases";
 import {
   advanceDay8AfterSlotSpinShow,
   applyGoalArrivalToPlayer,
@@ -345,15 +346,15 @@ export function runGhostAutomationStep(
     return runGhostBeginSlot(gs);
   }
 
-  if (gs.subPhase === "daily" && gs.gamePhase === "playing") {
+  if (isDailySubPhase(gs) && gs.gamePhase === GAME_PHASE.playing) {
     return runGhostDailyWork(gs);
   }
 
-  if (gs.subPhase === "day8") {
-    if (p.movePhase === "moving") {
+  if (gs.subPhase === SUB_PHASE.day8) {
+    if (p.movePhase === MOVE_PHASE.moving) {
       return runGhostDay8Dice(gs, day8RemainingTurns);
     }
-    if (p.movePhase === "arrived") {
+    if (p.movePhase === MOVE_PHASE.arrived) {
       const advance = tryGhostSlotBurstAdvance(gs);
       if (advance) return advance;
       const prep = prepareGhostSlotSpinStep(gs);

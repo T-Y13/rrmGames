@@ -21,6 +21,11 @@ import { canSelectAsProxySlotTarget, canContinueAsProxySlotTarget, canProxySlotB
 import { applyDay8SlotPayoutBonus } from "../lib/day8ItemEffects";
 import { luckGaugeRangeForCharacter, resolveInitialLuck } from "../lib/characterEffects";
 import {
+  GAME_PHASE,
+  MOVE_PHASE,
+  SUB_PHASE,
+} from "../constants/gamePhases";
+import {
   formatDay8StartGrantLog,
   grantDay8StartInventoryToPlayers,
   resetDay8ItemSeatForPlayer,
@@ -1378,7 +1383,7 @@ export function eliminateDay8Player(gs, playerIdx, deathLogLine) {
     gs: {
       ...gs,
       players: newPlayers,
-      gamePhase: "gameOver",
+      gamePhase: GAME_PHASE.gameOver,
       gameOverMsg: `${name} はPON${pon}の状態で人助けに失敗し、社会的に抹殺された…`,
       log: prependLogs([`💀 GAME OVER: ${name} / PON${pon}で人助け失敗！`, ...logs], gs.log),
     },
@@ -1411,7 +1416,7 @@ export function resolveDebtTrapTriggered(gs, playerIdx) {
     gs: {
       ...gs,
       players: newPlayers,
-      gamePhase: "gameOver",
+      gamePhase: GAME_PHASE.gameOver,
       gameOverMsg: soloMsg,
       log: prependLogs([`💀 GAME OVER: ${soloMsg}`], gs.log),
     },
@@ -1887,8 +1892,8 @@ export function finalizeToResults(gs, playersOverride) {
     ...withHistory,
     ...SLOT_SYNC_DEFAULTS,
     players,
-    gamePhase: "results",
-    subPhase: "daily",
+    gamePhase: GAME_PHASE.results,
+    subPhase: SUB_PHASE.daily,
     log: prependLogs(moreLogs, gs.log),
   };
   delete next.finalBattleStartedAt;
@@ -2085,8 +2090,8 @@ export function enterDay8AfterFinalBattleCue(gs) {
     ...SLOT_SYNC_DEFAULTS,
     ...DAILY_SLOT_SYNC_DEFAULTS,
     ...DAILY_CUTIN_SYNC_DEFAULTS,
-    gamePhase: "playing",
-    subPhase: "day8",
+    gamePhase: GAME_PHASE.playing,
+    subPhase: SUB_PHASE.day8,
     currentPlayerIdx: 0,
     players: day8Players,
     aidAvailable: Math.random() < BAL.dice.helpChance,
@@ -2133,8 +2138,8 @@ export function initialGameState(playerSlots) {
     players,
     currentDay: 1,
     currentPlayerIdx: 0,
-    subPhase: "daily",
-    gamePhase: "playing",
+    subPhase: SUB_PHASE.daily,
+    gamePhase: GAME_PHASE.playing,
     log: logs,
     aidAvailable: false,
     taxiAvailable: false,
@@ -2170,8 +2175,8 @@ export function computeAdvanceDaily(gs, newPlayers, extraLogs) {
       patch = {
         currentDay: nextDay,
         currentPlayerIdx: 0,
-        subPhase: "finalBattle",
-        gamePhase: "finalBattle",
+        subPhase: SUB_PHASE.finalBattle,
+        gamePhase: GAME_PHASE.finalBattle,
         finalBattleStartedAt: startedAt,
         finalBattleEntry: "preDay8",
       };
