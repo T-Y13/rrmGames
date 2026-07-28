@@ -89,6 +89,12 @@ import useSugorokuMovementFx from "./hooks/useSugorokuMovementFx";
 import { applyWorkIncomeToStats } from "./lib/dailyActions/work";
 import { applyShrineToStats, rollShrineAmuletDrop } from "./lib/dailyActions/shrine";
 import { rollAndApplyStream } from "./lib/dailyActions/stream";
+import {
+  applyDailySlotSpinsToStats,
+  computeDailySlotSkillGainTotal,
+  resolveDailySlotPityCounter,
+  validateDailySlotSpinResults,
+} from "./lib/dailyActions/dailySlot";
 import { buildDailyActionFx, DAILY_ACTION_FX_CLEAR_MS, attachDailyActionFxForDailyPhase, clearDailyActionFx } from "./lib/dailyActionFx";
 import { buildMovementFx, buildPonVisualPayload, buildTaxiTrafficWaitVisualPayload, buildTaxiVisualPayload, holdMoverForMovementFx, buildOrphanedMovementFxPatch, isMovementFxForPlayer, isTaxiDeferredMovementFx, runTileEffectPresentation, tileEffectExplainDurationMs } from "./lib/sugorokuMovementFx";
 import {
@@ -156,7 +162,6 @@ import {
   rollDie,
   toEpochMsMaybe,
   rand,
-  virtueIncomeMult,
   DAILY_SLOT_SYNC_DEFAULTS,
 } from "./utils/gameLogic";
 import { publicAssetUrl } from "./lib/publicAssetUrl";
@@ -3586,36 +3591,16 @@ export default function App() {
       }
 
       const ds = BAL.dailySlot;
-      if (!Array.isArray(spinResults) || spinResults.length !== ds.spins) {
+      if (!validateDailySlotSpinResults(spinResults, ds.spins)) {
         setUiError("デイリースロットの結果データが不正です");
         return;
       }
 
-      const slotPityCounter =
-        typeof spinResults[spinResults.length - 1]?.pityCounterAfter === "number"
-          ? spinResults[spinResults.length - 1].pityCounterAfter
-          : (p.slotPityCounter ?? 0);
+      const slotPityCounter = resolveDailySlotPityCounter(spinResults, p.slotPityCounter ?? 0);
 
-      let totalNet = 0;
-      const spinDetails = [];
-      spinResults.forEach((res, i) => {
-        const betAmt = Number(res?.bet ?? ds.spinBet);
-        const pay = Number(res?.payout ?? 0);
-        const net = pay - betAmt;
-        totalNet += net;
-        s.money = clampMoney(s.money - betAmt + pay);
-        const skBase = ds.skillGainEverySpin;
-        const skRole = res?.tier && res.tier !== "miss" ? ds.skillGainOnRole : 0;
-        s.skill = clamp(s.skill + skBase + skRole);
-        spinDetails.push({
-          index: i + 1,
-          bet: betAmt,
-          message: res?.message ?? "？",
-          net,
-          moneyAfterSpin: s.money,
-          skillAfterSpin: s.skill,
-        });
-      });
+      const slotApplied = applyDailySlotSpinsToStats(s, spinResults, char, ds);
+      s = slotApplied.stats;
+      const { spinDetails, totalNet } = slotApplied;
 
       const slotBuilt = slotActionLines({
         spinCount: spinResults.length,
@@ -3679,11 +3664,7 @@ export default function App() {
 
       const baseGs = { ...g, recentPonEvent: ponEvent ? { player: p.name, msg: ponEvent } : null };
       const nextGs = computeAdvanceDaily(baseGs, newPlayers, logs);
-      const skillGainTotal = spinResults.reduce((sum, res) => {
-        const skBase = ds.skillGainEverySpin;
-        const skRole = res?.tier && res.tier !== "miss" ? ds.skillGainOnRole : 0;
-        return sum + skBase + skRole;
-      }, 0);
+      const skillGainTotal = computeDailySlotSkillGainTotal(spinResults, char, ds);
       const dailyActionFx = buildDailyActionFx({
         playerId: p.id,
         actionType: "dailySlot",

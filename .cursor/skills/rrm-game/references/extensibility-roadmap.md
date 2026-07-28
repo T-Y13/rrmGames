@@ -12,7 +12,7 @@
 |-------|------|------|
 | **0** | テストゲート・rules deploy 手順・既知バグ整理 | 進行中 |
 | **1** | `lib/characterEffects.js` 土台 | **完了（2026-07-29）** |
-| **2** | `lib/dailyActions/` + ghost 統合 | **着手済（work）** |
+| **2** | `lib/dailyActions/` + ghost 統合 | **完了（2026-07-29）** |
 | **3** | `constants/gamePhases.js` 定数化 | 未着手 |
 | **4** | `gameLogic.js` ドメイン分割（継続） | 未着手 |
 | **5** | 大家実装 | Phase 2 後 |
@@ -50,11 +50,24 @@
 
 **接続:** `App.jsx`（仕事報酬）、`ghostPlayerAutomation.js`（`resolveWorkDailyAction`）、`DailyActionPhase.jsx`（表示）
 
-**残:** shrine / stream / dailySlot の切り出し
+**追加（2026-07-29 完了）:** shrine / stream / dailySlot も同パターンで切り出し済
 
 ---
 
-## Phase 2 予定（残り）
+## Phase 2 完了内容（2026-07-29）
+
+| モジュール | App | ghost | UI |
+|-----------|-----|-------|-----|
+| work.js | ✓ | ✓ | ✓ |
+| shrine.js | ✓ | — | — |
+| stream.js | ✓ | — | ✓ |
+| dailySlot.js | ✓ | — | — |
+
+**残:** Phase 3 以降（gamePhases 定数化等）
+
+---
+
+## Phase 2 予定（完了）
 
 1. `lib/dailyActions/work.js` — 仕事1手を純関数化
 2. `resolveDailyAction(gs, playerIdx, actionType, ctx)`
