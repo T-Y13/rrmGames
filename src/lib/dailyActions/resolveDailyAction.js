@@ -9,7 +9,7 @@ import { applyAmuletLuckBoost, applyDailyLivingCostAndPon } from "./shared";
 import { applyWorkIncomeToStats } from "./work";
 
 /**
- * 日常行動を純関数で解決（Phase 2: work のみ）。
+ * 日常行動を純関数で解決（Phase 2: work / shrine ロジックは各モジュール）。
  * @returns {object|null} 次 gameState（ゴースト自動操作と同形）
  */
 export function resolveDailyAction(gs, actionType, ctx = {}) {

@@ -87,6 +87,7 @@ import {
 } from "./lib/inviteDiscovery";
 import useSugorokuMovementFx from "./hooks/useSugorokuMovementFx";
 import { applyWorkIncomeToStats } from "./lib/dailyActions/work";
+import { applyShrineToStats, rollShrineAmuletDrop } from "./lib/dailyActions/shrine";
 import { buildDailyActionFx, DAILY_ACTION_FX_CLEAR_MS, attachDailyActionFxForDailyPhase, clearDailyActionFx } from "./lib/dailyActionFx";
 import { buildMovementFx, buildPonVisualPayload, buildTaxiTrafficWaitVisualPayload, buildTaxiVisualPayload, holdMoverForMovementFx, buildOrphanedMovementFxPatch, isMovementFxForPlayer, isTaxiDeferredMovementFx, runTileEffectPresentation, tileEffectExplainDurationMs } from "./lib/sugorokuMovementFx";
 import {
@@ -153,7 +154,6 @@ import {
   resolveDay8LandingWithTiles,
   resolveDebtTrapTriggered,
   rollDie,
-  shrineAmuletDropChance,
   toEpochMsMaybe,
   rand,
   virtueIncomeMult,
@@ -3786,19 +3786,16 @@ export default function App() {
     }
 
     if (actionType === "shrine") {
-      const sh = BAL.shrine;
       const virtueBeforeShrine = s.virtue;
       const moneyBeforeShrine = s.money;
       const luckBeforeShrine = s.luck;
       const ponBeforeShrine = s.pon;
-      s.money  = clampMoney(s.money - sh.cost);
-      s.luck    = clamp(s.luck   + sh.luckGain);
-      s.virtue  = clamp(s.virtue + sh.virtueGain);
-      s.pon     = Math.max(0, s.pon - sh.ponReduce);
+      const shrineApplied = applyShrineToStats(s, char);
+      s = shrineApplied.stats;
       actionLabel = "神社 · 二礼二拍手一礼";
-      const amuletP = shrineAmuletDropChance(virtueBeforeShrine, sh.amuletBaseRate ?? 0.2);
+      const amuletRoll = rollShrineAmuletDrop(virtueBeforeShrine);
       let gotAmulet = false;
-      if (Math.random() < amuletP) {
+      if (amuletRoll.gotAmulet) {
         newAmulets++;
         gotAmulet = true;
       }
