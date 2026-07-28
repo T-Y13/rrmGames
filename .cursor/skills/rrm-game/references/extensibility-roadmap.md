@@ -11,8 +11,8 @@
 | Phase | 内容 | 状態 |
 |-------|------|------|
 | **0** | テストゲート・rules deploy 手順・既知バグ整理 | 進行中 |
-| **1** | `lib/characterEffects.js` 土台 | **着手済（2026-07-29）** |
-| **2** | `lib/dailyActions/` + ghost 統合 | 未着手 |
+| **1** | `lib/characterEffects.js` 土台 | **完了（2026-07-29）** |
+| **2** | `lib/dailyActions/` + ghost 統合 | **着手済（work）** |
 | **3** | `constants/gamePhases.js` 定数化 | 未着手 |
 | **4** | `gameLogic.js` ドメイン分割（継続） | 未着手 |
 | **5** | 大家実装 | Phase 2 後 |
@@ -38,7 +38,23 @@
 
 ---
 
-## Phase 2 予定（次の PR）
+## Phase 2 進捗（2026-07-29）
+
+**新規:** `src/lib/dailyActions/`
+
+| ファイル | 内容 |
+|---------|------|
+| `work.js` | `computeWorkPayout` / `applyWorkIncomeToStats`（`applyCharacterStatGain` 接続済） |
+| `shared.js` | お守り・生活費+PON（ゴースト用） |
+| `resolveDailyAction.js` | `work` 解決（ゴースト正本） |
+
+**接続:** `App.jsx`（仕事報酬）、`ghostPlayerAutomation.js`（`resolveWorkDailyAction`）、`DailyActionPhase.jsx`（表示）
+
+**残:** shrine / stream / dailySlot の切り出し
+
+---
+
+## Phase 2 予定（残り）
 
 1. `lib/dailyActions/work.js` — 仕事1手を純関数化
 2. `resolveDailyAction(gs, playerIdx, actionType, ctx)`

@@ -1,7 +1,8 @@
 import React from "react";
 import { Briefcase, Tv, Dice5 } from "lucide-react";
 import { BAL, CHARACTERS, FINAL_GAME_DAY, LAST_DAILY_DAY } from "../constants/gameBalance";
-import { livingCostForPlayer, virtueIncomeMult } from "../utils/gameLogic";
+import { computeWorkPayout } from "../lib/dailyActions/work";
+import { livingCostForPlayer } from "../utils/gameLogic";
 import { SugorokuBoardPiece } from "./CharacterPieces";
 
 const HIGH_STAT_AURA_THRESHOLD = 80;
@@ -26,11 +27,7 @@ export default function DailyActionPhase({
   const ponInc = Math.ceil(BAL.pon.dailyGain * pm);
   const ponAfterAction = cpGs.stats.pon + ponInc;
 
-  const workRewardMul = char.workRewardMultiplier ?? 1;
-  const workBonus = char.workRewardBonus ?? 0;
-  const workPayShown = Math.round(
-    Math.floor((BAL.work.reward + workBonus) * workRewardMul) * virtueIncomeMult(cpGs.stats.virtue),
-  );
+  const workPayShown = computeWorkPayout(char, cpGs.stats.virtue).workTotal;
 
   const streamSkillLuck = cpGs.stats.skill + cpGs.stats.luck;
   const streamFailRate =

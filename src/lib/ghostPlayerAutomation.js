@@ -1,20 +1,17 @@
-import { BAL, BOARD_GOAL, SLOT_COST, SLOT_MACHINES, CHARACTERS } from "../constants/gameBalance";
+import { BAL, BOARD_GOAL, SLOT_COST, SLOT_MACHINES } from "../constants/gameBalance";
 import {
   advanceDay8AfterSlotSpinShow,
   applyGoalArrivalToPlayer,
   applyGoalLandingConfirm,
-  applyRimiruDailyEnd,
   applyVirtueWave,
   beginDay8SlotSeatForPlayer,
   clamp,
   clampMoney,
-  computeAdvanceDaily,
   computeAdvanceDay8Turn,
   hasSugorokuBoardTargets,
   isDay8SlotBurstFinishedOnGameState,
   isGhostPickTargetPhase,
   isSugorokuBoardPlaying,
-  livingCostForPlayer,
   pickGhostSlotTarget,
   prependLogs,
   resolveDay8LandingWithTiles,
@@ -24,11 +21,9 @@ import {
   skipGhostTurnNoPickableProxy,
   spinSlot,
   slotMachineForReels,
-  virtueIncomeMult,
-  applyVirtueIncomeBoost,
   shouldDeferDay8SlotTurnAdvanceForMajorWin,
 } from "../utils/gameLogic";
-import { buildDailyActionFx } from "./dailyActionFx";
+import { resolveWorkDailyAction } from "./dailyActions/resolveDailyAction";
 import {
   canContinueAsProxySlotTarget,
   canSelectAsProxySlotTarget,
@@ -160,54 +155,7 @@ function prepareGhostSlotSpinStep(gs) {
 }
 
 function runGhostDailyWork(gs) {
-  const idx = gs.currentPlayerIdx;
-  const p = gs.players[idx];
-  if (!p || gs.subPhase !== "daily") return null;
-
-  let s = { ...p.stats };
-  const logs = [];
-  const virtueBefore = s.virtue;
-  const char = CHARACTERS[p.characterType] ?? CHARACTERS.salaryman;
-  let newAmulets = p.amulets ?? 0;
-
-  if (newAmulets > 0) {
-    const luckBonus = newAmulets * 2;
-    s.luck = clamp(s.luck + luckBonus);
-    logs.push(`🧿 お守り効果（${newAmulets}個）: 運+${luckBonus}→${s.luck}`);
-  }
-
-  const workBonus = char.workRewardBonus ?? 0;
-  const wm = char.workRewardMultiplier ?? 1;
-  const workBase = Math.floor((BAL.work.reward + workBonus) * wm);
-  const workTotal = applyVirtueIncomeBoost(workBase, s.virtue);
-  s.money = clampMoney(s.money + workTotal);
-  s.virtue = clamp(s.virtue + BAL.work.virtueGain);
-  logs.push(
-    `🤖 ${p.name} ${gs.currentDay}日目【仕事・自動】資金+${workTotal}G / 善行+${BAL.work.virtueGain}→${s.virtue}`,
-  );
-
-  const lc = livingCostForPlayer(p);
-  s.money = clampMoney(s.money - lc);
-  logs.push(`  生活費 -${lc}G → 資金 ${s.money}G`);
-
-  const ponMultiplier = char.ponMultiplier ?? 1;
-  const ponGain = Math.ceil(BAL.pon.dailyGain * ponMultiplier);
-  s.pon = clamp(s.pon + ponGain);
-  logs.push(`  PON: +${ponGain} → ${s.pon}`);
-
-  let newPlayers = gs.players.map((pl, i) =>
-    i === idx ? { ...pl, stats: s, amulets: newAmulets, streamMultiplier: p.streamMultiplier ?? char.streamMultiplier } : pl,
-  );
-  newPlayers = applyVirtueWave(p, virtueBefore, s.virtue, newPlayers, logs);
-  newPlayers = newPlayers.map((pl, i) => (i !== idx ? pl : applyRimiruDailyEnd(pl, logs)));
-
-  const advanced = computeAdvanceDaily({ ...gs, recentPonEvent: null }, newPlayers, logs);
-  const dailyActionFx = buildDailyActionFx({
-    playerId: p.id,
-    actionType: "work",
-    detail: { money: workTotal },
-  });
-  return dailyActionFx ? { ...advanced, dailyActionFx } : advanced;
+  return resolveWorkDailyAction(gs);
 }
 
 function runGhostDay8Dice(gs, day8RemainingTurns) {

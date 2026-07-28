@@ -86,6 +86,7 @@ import {
   resolveInviteeUid,
 } from "./lib/inviteDiscovery";
 import useSugorokuMovementFx from "./hooks/useSugorokuMovementFx";
+import { applyWorkIncomeToStats } from "./lib/dailyActions/work";
 import { buildDailyActionFx, DAILY_ACTION_FX_CLEAR_MS, attachDailyActionFxForDailyPhase, clearDailyActionFx } from "./lib/dailyActionFx";
 import { buildMovementFx, buildPonVisualPayload, buildTaxiTrafficWaitVisualPayload, buildTaxiVisualPayload, holdMoverForMovementFx, buildOrphanedMovementFxPatch, isMovementFxForPlayer, isTaxiDeferredMovementFx, runTileEffectPresentation, tileEffectExplainDurationMs } from "./lib/sugorokuMovementFx";
 import {
@@ -3834,14 +3835,10 @@ export default function App() {
       }
       setWorkPonHud(null);
 
-      const workBonus = char.workRewardBonus ?? 0;
-      const wm = char.workRewardMultiplier ?? 1;
-      const workBase = Math.floor((BAL.work.reward + workBonus) * wm);
-      const vim = virtueIncomeMult(s.virtue);
-      const workTotal = applyVirtueIncomeBoost(workBase, s.virtue);
-      const workVirtueGain = BAL.work.virtueGain;
-      s.money  = clampMoney(s.money  + workTotal);
-      s.virtue = clamp(s.virtue + workVirtueGain);
+      const workApplied = applyWorkIncomeToStats(s, char);
+      s = workApplied.stats;
+      const workTotal = workApplied.workTotal;
+      const workVirtueGain = workApplied.workVirtueGain;
       setWorkCutin({
         gold: workTotal,
         stat: workVirtueGain ? { label: "善行", delta: workVirtueGain } : null,
