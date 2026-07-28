@@ -193,6 +193,7 @@ export const SLOT_MACHINES = {
 };
 
 export const CHARACTERS = {
+  /** 任意拡張フィールド（characterEffects.js 参照）: luckFixed, statGainMultiplier, rentIncomeRate, multiplayerOnly */
   salaryman: {
     key: "salaryman",
     label: "ギャンブラーサラリーマン",

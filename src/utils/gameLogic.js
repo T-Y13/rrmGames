@@ -19,6 +19,7 @@ import {
 import { DAILY_CUTIN_SYNC_DEFAULTS } from "../lib/dailyCutinSync";
 import { canSelectAsProxySlotTarget, canContinueAsProxySlotTarget, canProxySlotBetAt, computeProxySlotMaxBet } from "../lib/slotProxyTarget";
 import { applyDay8SlotPayoutBonus } from "../lib/day8ItemEffects";
+import { luckGaugeRangeForCharacter, resolveInitialLuck } from "../lib/characterEffects";
 import {
   formatDay8StartGrantLog,
   grantDay8StartInventoryToPlayers,
@@ -425,7 +426,7 @@ export function initialStatGaugeRanges(charType) {
   const pb = char.ponBonus ?? 0;
   const livingDelta = (char.dailyLivingCost ?? BAL.living.dailyCost) - 300;
   return {
-    luck: { min: lb, max: 10 + lb },
+    luck: luckGaugeRangeForCharacter(char),
     skill: { min: 30 + sb, max: 55 + sb },
     virtue: { min: 30 + vb, max: 70 + vb },
     pon: { min: pb, max: 50 + pb },
@@ -481,14 +482,13 @@ export function computeFinalStatsFromInitialRolls(initialRolls, characterType) {
   const vr = initialRolls.virtue;
   const pr = initialRolls.pon;
 
-  const luckBase = lr * 2;
   const skillBase = 30 + sr * 5;
   const virtueBase = 20 + VIRTUE_BY_INITIAL_ROLL[vr];
   const ponBase = pr * 10;
   const livingRoll = livingRollFromInitialRolls(initialRolls);
   const livingBase = 200 + livingRoll * 50;
 
-  const luck = clamp(luckBase + (char.luckBonus ?? 0), 0, 999999);
+  const luck = clamp(resolveInitialLuck(char, lr), 0, 999999);
   const skill = clamp(skillBase + (char.skillBonus ?? 0), 0, 2000);
   const virtue = clamp(virtueBase + (char.virtueBonus ?? 0), 0, 999999);
   const pon = clamp(ponBase + (char.ponBonus ?? 0), 0, 999999);

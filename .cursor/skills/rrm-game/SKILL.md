@@ -64,7 +64,10 @@ React 19 + Vite + Tailwind + Firebase（匿名 Auth / Firestore / Hosting）の�
 
 | トピック | ファイル | いつ読む |
 |----------|----------|----------|
-| **ゲームルール全体** | [references/game-rules.md](references/game-rules.md) | ルール確認、バランス、新機能の可否判断 |
+| ゲームルール全体 | [references/game-rules.md](references/game-rules.md) | ルール確認、バランス、新機能の可否判断 |
+| **キャラシステム構造** | [references/character-system.md](references/character-system.md) | キャラ追加、if 連打回避、データ駆動 |
+| **拡張性ロードマップ** | [references/extensibility-roadmap.md](references/extensibility-roadmap.md) | 大家前の Phase 1〜2 整備 |
+| **次期キャラ（大家）** | [references/next-character-landlord.md](references/next-character-landlord.md) | 大家実装前 |
 | マルチ同期・transaction・ゴースト | [references/multiplayer-patterns.md](references/multiplayer-patterns.md) | `App.jsx` 書き込み、観戦、ゴースト |
 | 8日目・アイテム・ログ | [references/day8-guide.md](references/day8-guide.md) | すごろく/スロット/アイテム/ログ/ **15ラウンド・グラフ** |
 | テスト | [references/testing.md](references/testing.md) | test 追加、rules 変更、CI 失敗 |

@@ -58,6 +58,12 @@ describe("initial rolls → final virtue", () => {
     expect(livingRollFromInitialRolls({ luck: 0, skill: 0, virtue: 0, pon: 0 })).toBe(0);
     expect(livingRollFromInitialRolls({ luck: 2, skill: 3, virtue: 4, pon: 0 })).toBe(3);
   });
+
+  it("student luck still uses roll*2 + luckBonus via resolveInitialLuck", () => {
+    const rolls = { luck: 1, skill: 0, virtue: 0, pon: 0 };
+    const { luck } = computeFinalStatsFromInitialRolls(rolls, "student");
+    expect(luck).toBe(2 + 20);
+  });
 });
 
 describe("day8 slot seat helpers", () => {

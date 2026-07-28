@@ -27,7 +27,13 @@
 | `11cee26` | ゴーストスロット同期、観戦オーバーレイ、自動操作の排他 |
 | `4068219` | recharts 用 react-is 依存追加 |
 
-## ローカル未 commit（2026-07-24 時点）
+## 次期キャラ（未実装）
+
+**大家（おばあちゃん／おじいちゃん）** — マルチ特化・家賃70%・ステ0.8倍・運3固定  
+→ 設計正本: [references/next-character-landlord.md](../references/next-character-landlord.md)  
+→ 実装構造: [references/character-system.md](../references/character-system.md)
+
+---
 
 ### 8日目アイテム（Phase 1）
 
