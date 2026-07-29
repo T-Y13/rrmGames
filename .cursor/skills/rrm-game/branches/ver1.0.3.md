@@ -2,7 +2,7 @@
 
 - **ブランチ:** `ver1.0.3`
 - **リモート:** `origin/ver1.0.3`（push 済み想定 — 作業再開時は `git fetch && git status`）
-- **Git tip:** `git log -1 --oneline`（2026-07-29 push 時点: `ccb2936` doc / `82eba4a` rent+ooya）
+- **Git tip:** `cf9235e`（`git log -1 --oneline` で確認）
 - **記録更新:** 2026-07-29
 
 > **新しいチャットで作業再開するとき:** このファイル → [extensibility-roadmap.md](../references/extensibility-roadmap.md) → [game-rules.md](../references/game-rules.md) の順に読む。
@@ -81,7 +81,7 @@
 | `a29483c` | Phase 4: gameLogic 分割 |
 | `3f7c6d7` | Phase 5: landlord 本体 |
 | `82eba4a` | ooya 画像 + 家賃ターン開始 + UI |
-| `ccb2936` | 引き継ぎ doc + rules / roadmap 同期 |
+| `cf9235e` | 引き継ぎ doc + rules / roadmap 同期 |
 
 ---
 
