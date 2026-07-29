@@ -14,8 +14,8 @@
 | **1** | `lib/characterEffects.js` 土台 | **完了（2026-07-29）** |
 | **2** | `lib/dailyActions/` + ghost 統合 | **完了（2026-07-29）** |
 | **3** | `constants/gamePhases.js` 定数化 | **完了（2026-07-29）** |
-| **4** | `gameLogic.js` ドメイン分割（継続） | 未着手 |
-| **5** | 大家実装 | Phase 2 後 |
+| **4** | `gameLogic.js` ドメイン分割（継続） | **完了（第1弾 2026-07-29）** |
+| **5** | 大家実装 | 未着手 |
 
 ---
 
@@ -84,6 +84,22 @@
 - 上記ファイル群で `"daily"` / `"day8"` / `"moving"` 等の直書きを排除
 
 **次:** Phase 4（`gameLogic.js` ドメイン分割）
+
+---
+
+## Phase 4 完了内容（第1弾 2026-07-29）
+
+**新規:** `src/utils/gameLogic/`
+
+| モジュール | 内容 |
+|-----------|------|
+| `core.js` | clamp / rand / prependLogs |
+| `initialStats.js` | 初期ステ・ロビー・生活費 |
+| `virtueEffects.js` | 善行経済・波及・巻き添え |
+
+`gameLogic.js` は re-export ハブ + day8/slot/sugoroku 本体。既存 import パスは不変。
+
+**将来（任意）:** slot / day8 / sugoroku の追加分割
 
 ---
 

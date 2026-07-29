@@ -19,7 +19,6 @@ import {
 import { DAILY_CUTIN_SYNC_DEFAULTS } from "../lib/dailyCutinSync";
 import { canSelectAsProxySlotTarget, canContinueAsProxySlotTarget, canProxySlotBetAt, computeProxySlotMaxBet } from "../lib/slotProxyTarget";
 import { applyDay8SlotPayoutBonus } from "../lib/day8ItemEffects";
-import { luckGaugeRangeForCharacter, resolveInitialLuck } from "../lib/characterEffects";
 import {
   GAME_PHASE,
   MOVE_PHASE,
@@ -38,6 +37,43 @@ import {
   snapshotDay8TurnEndAllPlayers,
   resolveDay8HistoryTurn,
 } from "../lib/playerAssetHistory";
+import { clamp, clampMoney, rand, prependLogs } from "./gameLogic/core.js";
+import {
+  livingCostForPlayer,
+  computeFinalStatsFromInitialRolls,
+  normalizeSlotInitialRolls,
+  normalizeSlotInitialStats,
+  rollSlotInitialStatsForGameStart,
+} from "./gameLogic/initialStats.js";
+import { slotPityMaxThreshold, applySplashDamage, virtueMinRoll } from "./gameLogic/virtueEffects.js";
+
+export { clamp, clampMoney, rand, prependLogs } from "./gameLogic/core.js";
+export {
+  dailyLivingCostFor,
+  livingCostForPlayer,
+  initialStatGaugeRanges,
+  lobbyFixedGaugeRanges,
+  VIRTUE_BY_INITIAL_ROLL,
+  rollInitialRolls,
+  livingRollFromInitialRolls,
+  computeFinalStatsFromInitialRolls,
+  rollInitialStats,
+  rollSlotInitialStatsForGameStart,
+  normalizeSlotInitialRolls,
+  isLobbySlotConfigured,
+  isLobbyMemberReady,
+  allLobbyMembersReady,
+  normalizeSlotInitialStats,
+} from "./gameLogic/initialStats.js";
+export {
+  virtueMinRoll,
+  slotPityMaxThreshold,
+  virtueIncomeMult,
+  applyVirtueIncomeBoost,
+  shrineAmuletDropChance,
+  applyVirtueWave,
+  applySplashDamage,
+} from "./gameLogic/virtueEffects.js";
 
 /** 8日目スロット：1手番あたりの基本スピン数（将来アイテムで加算） */
 export function day8SlotBurstSize() {
@@ -104,10 +140,6 @@ export function portraitUrlFromFullId(seed) {
   return `https://api.dicebear.com/9.x/adventurer/svg?seed=${s}&backgroundColor=transparent`;
 }
 
-export const clamp = (v, lo = 0, hi = 999999) => Math.max(lo, Math.min(hi, v));
-export const clampMoney = (v) => Math.round(Math.max(-999999999, Math.min(999999999, v)));
-export const rand = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
-
 /** BoardViewport と同じステップ間隔で、from→to のホップが収束するまでのおおよその時間（ms） */
 export function estimateSugorokuHopDurationMs(fromPos, toPos) {
   const diff = toPos - fromPos;
@@ -115,9 +147,6 @@ export function estimateSugorokuHopDurationMs(fromPos, toPos) {
   const msPerStep = computeSugorokuMsPerStep(Math.abs(diff));
   return Math.max(0, steps * msPerStep);
 }
-
-export const prependLogs = (newEntries, existing = []) =>
-  [...newEntries.slice().reverse(), ...existing].slice(0, 100);
 
 /** 全員表示用スロット同期（Firestore gameState 上位フィールド） */
 export const SLOT_SYNC_DEFAULTS = {
@@ -411,184 +440,6 @@ export const genRoomId = () => {
 export const genQuickName = () =>
   QUICK_NAMES[Math.floor(Math.random() * QUICK_NAMES.length)] + Math.floor(10 + Math.random() * 89);
 
-export function dailyLivingCostFor(characterType) {
-  const c = CHARACTERS[characterType] ?? CHARACTERS.salaryman;
-  return c.dailyLivingCost ?? BAL.living.dailyCost;
-}
-
-export function livingCostForPlayer(pl) {
-  const lc = pl?.stats?.livingCost;
-  if (typeof lc === "number" && Number.isFinite(lc) && lc >= 0) return lc;
-  return dailyLivingCostFor(pl?.characterType);
-}
-
-/** 待機室ゲージ用：キャラ補正込みの各項目最小〜最大（roll 0〜5 が達しうる範囲） */
-export function initialStatGaugeRanges(charType) {
-  const char = CHARACTERS[charType] ?? CHARACTERS.salaryman;
-  const lb = char.luckBonus ?? 0;
-  const sb = char.skillBonus ?? 0;
-  const vb = char.virtueBonus ?? 0;
-  const pb = char.ponBonus ?? 0;
-  const livingDelta = (char.dailyLivingCost ?? BAL.living.dailyCost) - 300;
-  return {
-    luck: luckGaugeRangeForCharacter(char),
-    skill: { min: 30 + sb, max: 55 + sb },
-    virtue: { min: 30 + vb, max: 70 + vb },
-    pon: { min: pb, max: 50 + pb },
-    livingCost: { min: 200 + livingDelta, max: 450 + livingDelta },
-  };
-}
-
-/** 待機室 UI 用：キャラに依存しない共通スケール（全キャラの可取りうる値の包絡） */
-export function lobbyFixedGaugeRanges() {
-  const keys = Object.keys(CHARACTERS);
-  if (keys.length === 0) {
-    return initialStatGaugeRanges("salaryman");
-  }
-  const ranges = keys.map((k) => initialStatGaugeRanges(k));
-  const span = (pick) => ({
-    min: Math.min(...ranges.map((r) => r[pick].min)),
-    max: Math.max(...ranges.map((r) => r[pick].max)),
-  });
-  return {
-    luck: span("luck"),
-    skill: span("skill"),
-    virtue: span("virtue"),
-    pon: span("pon"),
-    livingCost: span("livingCost"),
-  };
-}
-
-/** 善行ダイス 0〜5 に対応する加算テーブル（最終 Virtue の一部） */
-export const VIRTUE_BY_INITIAL_ROLL = [10, 18, 26, 34, 42, 50];
-
-/** 運・技量・善行・PON だけ独立ダイス（各 0〜5）。生活費はこれらから導出 */
-export function rollInitialRolls() {
-  return {
-    luck: Math.floor(Math.random() * 6),
-    skill: Math.floor(Math.random() * 6),
-    virtue: Math.floor(Math.random() * 6),
-    pon: Math.floor(Math.random() * 6),
-  };
-}
-
-export function livingRollFromInitialRolls(initialRolls) {
-  return Math.floor((initialRolls.luck + initialRolls.skill + initialRolls.virtue) / 3);
-}
-
-/**
- * ロビー raw ダイス + キャラタイプ → ゲーム用の最終5値。
- * キャラ補正（luckBonus / skillBonus / virtueBonus / ponBonus / 生活費オフセット）はここでのみ加算する。
- */
-export function computeFinalStatsFromInitialRolls(initialRolls, characterType) {
-  const char = CHARACTERS[characterType] ?? CHARACTERS.salaryman;
-  const lr = initialRolls.luck;
-  const sr = initialRolls.skill;
-  const vr = initialRolls.virtue;
-  const pr = initialRolls.pon;
-
-  const skillBase = 30 + sr * 5;
-  const virtueBase = 20 + VIRTUE_BY_INITIAL_ROLL[vr];
-  const ponBase = pr * 10;
-  const livingRoll = livingRollFromInitialRolls(initialRolls);
-  const livingBase = 200 + livingRoll * 50;
-
-  const luck = clamp(resolveInitialLuck(char, lr), 0, 999999);
-  const skill = clamp(skillBase + (char.skillBonus ?? 0), 0, 2000);
-  const virtue = clamp(virtueBase + (char.virtueBonus ?? 0), 0, 999999);
-  const pon = clamp(ponBase + (char.ponBonus ?? 0), 0, 999999);
-  const livingCost = Math.max(
-    50,
-    livingBase + ((char.dailyLivingCost ?? BAL.living.dailyCost) - 300),
-  );
-
-  return { luck, skill, virtue, pon, livingCost };
-}
-
-/**
- * 待機室での初期ステータス抽選（従来API）。内部で raw ダイス → キャラで最終値を組み立てる。
- */
-export function rollInitialStats(charType) {
-  const raw = rollInitialRolls();
-  const final = computeFinalStatsFromInitialRolls(raw, charType);
-  const livingRoll = livingRollFromInitialRolls(raw);
-  return {
-    ...final,
-    luckRoll: raw.luck,
-    skillRoll: raw.skill,
-    virtueRoll: raw.virtue,
-    ponRoll: raw.pon,
-    livingRoll,
-  };
-}
-
-/** ゲーム開始時フォールバック：その場で raw を振り直して最終値だけ返す */
-export function rollSlotInitialStatsForGameStart(charKey) {
-  return computeFinalStatsFromInitialRolls(rollInitialRolls(), charKey ?? "salaryman");
-}
-
-/**
- * Firestore `playerSlots[].initialRolls` を検証（キャラ非依存の raw 0〜5 のみ）
- */
-export function normalizeSlotInitialRolls(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const toDie = (v) => {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return null;
-    const i = Math.round(n);
-    if (i < 0 || i > 5) return null;
-    return i;
-  };
-  const luck = toDie(raw.luck);
-  const skill = toDie(raw.skill);
-  const virtue = toDie(raw.virtue);
-  const pon = toDie(raw.pon);
-  if (luck == null || skill == null || virtue == null || pon == null) return null;
-  return { luck, skill, virtue, pon };
-}
-
-/** 待機室：キャラ＋抽選確定済みか */
-export function isLobbySlotConfigured(slot) {
-  return !!(slot?.character && normalizeSlotInitialRolls(slot.initialRolls));
-}
-
-/** 待機室：メンバー一覧の準備完了表示（ホストは設定済みなら自動で完了扱い） */
-export function isLobbyMemberReady(slot, hostId) {
-  if (!isLobbySlotConfigured(slot)) return false;
-  if (slot.id === hostId) return true;
-  return slot.lobbyReady === true;
-}
-
-export function allLobbyMembersReady(playerSlots, hostId) {
-  return (
-    Array.isArray(playerSlots) &&
-    playerSlots.length > 0 &&
-    playerSlots.every((s) => isLobbyMemberReady(s, hostId))
-  );
-}
-
-/**
- * Firestore `playerSlots[].initialStats` を検証し、makePlayer に渡せる5値だけにする。
- * 後方互換：旧ロビーで保存された「補正込み最終値」用。
- */
-export function normalizeSlotInitialStats(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const luck = Number(raw.luck);
-  const skill = Number(raw.skill);
-  const virtue = Number(raw.virtue);
-  const pon = Number(raw.pon);
-  const livingCost = Number(raw.livingCost);
-  if (![luck, skill, virtue, pon, livingCost].every((n) => Number.isFinite(n))) return null;
-  return { luck, skill, virtue, pon, livingCost };
-}
-
-export function virtueMinRoll(virtue) {
-  if (virtue >= 100) return 4;
-  if (virtue >= 70) return 3;
-  if (virtue >= 50) return 2;
-  return 1;
-}
-
 /** すごろく：ラッキーダイス（2個目）発動確率（0〜100） */
 export function sugorokuLuckyDiceChancePct(luck) {
   const cfg = BAL.dice.luckyDice ?? {};
@@ -703,28 +554,6 @@ export function calcSlotRates(stats, machine, heat = 0, characterType = null, op
 /** デイリースロット（技能練習）：ミス以外なら成功（参加費返却＋技量ボーナス対象） */
 export function isDailySlotTrainingWin(slotResult) {
   return Boolean(slotResult && slotResult.tier && slotResult.tier !== "miss");
-}
-
-/** 善行に応じたスロット天井（当たり/ハズレ問わず同一回数到達で次スピン強制救済） */
-export function slotPityMaxThreshold(virtue) {
-  const v = Number(virtue) || 0;
-  return Math.max(10, 15 - Math.floor(v / 20));
-}
-
-/** 仕事・配信の資金へ掛ける倍率: 1 + virtue×0.2/100（スロット配当には非適用） */
-export function virtueIncomeMult(virtue) {
-  return 1 + ((Number(virtue) || 0) * 0.2) / 100;
-}
-
-export function applyVirtueIncomeBoost(baseReward, virtue) {
-  return Math.round(Number(baseReward) * virtueIncomeMult(virtue));
-}
-
-/** 神社お守り抽選: baseRate × (1 + virtue/100)、上限1 */
-export function shrineAmuletDropChance(virtue, baseRate) {
-  const b = Number(baseRate);
-  if (!(b > 0)) return 0;
-  return Math.min(1, b * (1 + (Number(virtue) || 0) / 100));
 }
 
 function rollWinTierFromRates(r, roll01) {
@@ -2323,33 +2152,6 @@ export function computeAdvanceDay8Turn(gs, newPlayers, extraLogs) {
       (playersWithInterest?.length ?? 0) > 1,
     ),
     log: prependLogs([...extraMerged, ...(nextLog ? [nextLog] : [])], gs.log),
-  });
-}
-
-export function applyVirtueWave(actingPlayer, virtueBefore, virtueAfter, players, logs) {
-  const thresh = BAL.dice.virtueWaveThresh;
-  if (virtueBefore < thresh && virtueAfter >= thresh) {
-    const delta = BAL.dice.virtueWavePonDelta;
-    const updatedPlayers = players.map((pl) => ({
-      ...pl,
-      stats: { ...pl.stats, pon: clamp(pl.stats.pon + delta, 0) },
-    }));
-    logs.push(`🌟 ${actingPlayer.name}の徳が高すぎて全員の心が洗われた！全員PON${delta}`);
-    return updatedPlayers;
-  }
-  return players;
-}
-
-export function applySplashDamage(triggerIdx, players, logs) {
-  const origin = players[triggerIdx];
-  const radius = BAL.dice.splashRadius;
-  return players.map((pl, i) => {
-    if (i === triggerIdx) return pl;
-    if (!pl.alive) return pl;
-    if (pl.movePhase !== "moving") return pl;
-    if (Math.abs(pl.position - origin.position) > radius) return pl;
-    logs.push(`💥 巻き添え！${pl.name}（${pl.position}マス付近）→ 次ターン1回休み`);
-    return { ...pl, skipTurns: (pl.skipTurns || 0) + 1 };
   });
 }
 
