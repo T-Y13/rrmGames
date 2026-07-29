@@ -87,6 +87,11 @@ import {
 } from "./lib/inviteDiscovery";
 import useSugorokuMovementFx from "./hooks/useSugorokuMovementFx";
 import { applyWorkIncomeToStats } from "./lib/dailyActions/work";
+import {
+  GAME_PHASE,
+  MOVE_PHASE,
+  SUB_PHASE,
+} from "./constants/gamePhases";
 import { applyShrineToStats, rollShrineAmuletDrop } from "./lib/dailyActions/shrine";
 import { rollAndApplyStream } from "./lib/dailyActions/stream";
 import {
@@ -283,7 +288,7 @@ function buildDay8TileSlideMidpointPlayers(playersArr, moverIdx, midPos) {
       : {
           ...pl,
           position: midPos,
-          movePhase: "moving",
+          movePhase: MOVE_PHASE.moving,
           slotTurnsLeft: 0,
           slotPullsGranted: 0,
           slotPullsThisSeat: 0,
@@ -304,8 +309,8 @@ function buildDay7DailyOptimisticGs(nextGs, sourceGs, advancesToSugoroku) {
   delete o.finalBattleEntry;
   return {
     ...o,
-    gamePhase: "playing",
-    subPhase: "daily",
+    gamePhase: GAME_PHASE.playing,
+    subPhase: SUB_PHASE.daily,
     currentDay: LAST_DAILY_DAY,
     currentPlayerIdx: sourceGs.currentPlayerIdx,
   };
@@ -621,9 +626,9 @@ export default function App() {
     shrinePhase,
   });
   const day7DailyOptimisticActive =
-    day7DailyOptimisticGs != null && roomGs?.subPhase === "daily";
+    day7DailyOptimisticGs != null && roomGs?.subPhase === SUB_PHASE.daily;
   const day8ItemOptimisticActive =
-    day8ItemOptimisticGs != null && roomGs?.subPhase === "day8";
+    day8ItemOptimisticGs != null && roomGs?.subPhase === SUB_PHASE.day8;
   const gs =
     day7DailyOptimisticActive && day7DailyOptimisticGs
       ? day7DailyOptimisticGs
@@ -641,33 +646,33 @@ export default function App() {
   const roomCompletedPlayers = normalizeCompletedPlayers(roomData?.completedPlayers);
   const myPlayerAlive = roomGs?.players?.find((p) => p.id === myId)?.alive !== false;
   const isMyDay8RoundCompleted =
-    roomGs?.gamePhase === "playing" &&
-    roomGs?.subPhase === "day8" &&
+    roomGs?.gamePhase === GAME_PHASE.playing &&
+    roomGs?.subPhase === SUB_PHASE.day8 &&
     !!myId &&
     myPlayerAlive &&
     roomCompletedPlayers.includes(myId);
   const cpFromRoom = roomGs?.players?.[roomGs?.currentPlayerIdx];
   const roomDay8Active =
-    roomGs?.gamePhase === "playing" && roomGs?.subPhase === "day8";
-  const playingMainRoom = roomGs?.gamePhase === "playing";
+    roomGs?.gamePhase === GAME_PHASE.playing && roomGs?.subPhase === SUB_PHASE.day8;
+  const playingMainRoom = roomGs?.gamePhase === GAME_PHASE.playing;
   const isMyTurn = resolveDay8IsMyTurn({
     rawIsMyTurn,
     isMyDay8RoundCompleted,
-    cpIsSlot: playingMainRoom && roomGs?.subPhase === "day8" && cpFromRoom?.movePhase === "arrived",
+    cpIsSlot: playingMainRoom && roomGs?.subPhase === SUB_PHASE.day8 && cpFromRoom?.movePhase === MOVE_PHASE.arrived,
     cpIsWaitingSlot:
-      playingMainRoom && roomGs?.subPhase === "day8" && cpFromRoom?.movePhase === "waitingSlot",
+      playingMainRoom && roomGs?.subPhase === SUB_PHASE.day8 && cpFromRoom?.movePhase === MOVE_PHASE.waitingSlot,
     cpIsGhostPick:
-      playingMainRoom && roomGs?.subPhase === "day8" && isGhostPickTargetPhase(cpFromRoom),
+      playingMainRoom && roomGs?.subPhase === SUB_PHASE.day8 && isGhostPickTargetPhase(cpFromRoom),
     cpIsMoving:
-      playingMainRoom && roomGs?.subPhase === "day8" && cpFromRoom?.movePhase === "moving" && cpFromRoom?.alive !== false,
+      playingMainRoom && roomGs?.subPhase === SUB_PHASE.day8 && cpFromRoom?.movePhase === MOVE_PHASE.moving && cpFromRoom?.alive !== false,
     cpIsGoalLanding:
-      playingMainRoom && roomGs?.subPhase === "day8" && cpFromRoom?.movePhase === "goalLanding",
+      playingMainRoom && roomGs?.subPhase === SUB_PHASE.day8 && cpFromRoom?.movePhase === MOVE_PHASE.goalLanding,
   });
   const ghostPickIsMyTurn =
     rawIsMyTurn && roomDay8Active && isGhostPickTargetPhase(cpFromRoom);
   const cpGs = useMemo(() => {
     const src =
-      roomGs?.subPhase === "day8" && roomGs?.gamePhase === "playing" ? roomGs : gs;
+      roomGs?.subPhase === SUB_PHASE.day8 && roomGs?.gamePhase === GAME_PHASE.playing ? roomGs : gs;
     if (!src) return null;
     const players = applyFxMoneyRevealToPlayers(src.players, fxMoneyReveal);
     return players[src.currentPlayerIdx] ?? null;
@@ -683,30 +688,30 @@ export default function App() {
   const gsRef       = useRef(roomGs);
   gsRef.current     = roomGs;
   const displayDice  = isDiceRolling ? localDice : (gs?.lastDiceRolls ?? []);
-  const playingMain = gs?.gamePhase === "playing";
+  const playingMain = gs?.gamePhase === GAME_PHASE.playing;
   const isMultiplayerRoom = (gs?.players?.length ?? 0) > 1 && !roomData?.isSolo;
   /** gamePhase だけ欠けた古いスナップショットでも演出を出す */
   const isFinalBattleUIMode =
-    (gs?.gamePhase === "finalBattle" || gs?.subPhase === "finalBattle") && !dailyOutgoingFxActive;
+    (gs?.gamePhase === GAME_PHASE.finalBattle || gs?.subPhase === SUB_PHASE.finalBattle) && !dailyOutgoingFxActive;
   const showSugorokuBoard =
     !dailyOutgoingFxActive && (roomGs?.subPhase ?? gs?.subPhase) !== "daily";
   const cpIsWaitingSlot =
     roomDay8Active
-      ? cpFromRoom?.movePhase === "waitingSlot"
-      : playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "waitingSlot";
+      ? cpFromRoom?.movePhase === MOVE_PHASE.waitingSlot
+      : playingMain && gs?.subPhase === SUB_PHASE.day8 && cpGs?.movePhase === MOVE_PHASE.waitingSlot;
   /** 手番が別プレイヤーでも、自分が goalLanding なら GOAL 確認 UI を出す（ソロのみ） */
   const goalLandingSelf =
-    playingMain && gs?.subPhase === "day8" && myId && !isMultiplayerRoom
-      ? gs.players?.find((pl) => pl.id === myId && pl.movePhase === "goalLanding") ?? null
+    playingMain && gs?.subPhase === SUB_PHASE.day8 && myId && !isMultiplayerRoom
+      ? gs.players?.find((pl) => pl.id === myId && pl.movePhase === MOVE_PHASE.goalLanding) ?? null
       : null;
   const anyGoalLandingPlayer =
-    playingMain && gs?.subPhase === "day8" && !isMultiplayerRoom
-      ? gs.players?.find((pl) => pl.movePhase === "goalLanding") ?? null
+    playingMain && gs?.subPhase === SUB_PHASE.day8 && !isMultiplayerRoom
+      ? gs.players?.find((pl) => pl.movePhase === MOVE_PHASE.goalLanding) ?? null
       : null;
   const cpIsSlot =
     roomDay8Active
-      ? cpFromRoom?.movePhase === "arrived"
-      : playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "arrived";
+      ? cpFromRoom?.movePhase === MOVE_PHASE.arrived
+      : playingMain && gs?.subPhase === SUB_PHASE.day8 && cpGs?.movePhase === MOVE_PHASE.arrived;
   const cpIsNetworkAutomatedTurn =
     !!cpGs &&
     (cpGs.isGameOver === true || (cpGs.isGhost === true && cpGs.alive !== false));
@@ -715,7 +720,7 @@ export default function App() {
   /** 8日目スロット：手番以外に idle〜結果まで共有表示（マルチのみ） */
   const showDay8SlotSpectatorMirror =
     playingMain &&
-    gs?.subPhase === "day8" &&
+    gs?.subPhase === SUB_PHASE.day8 &&
     isMultiplayerRoom &&
     !rawIsMyTurn &&
     !isMyTurn &&
@@ -723,23 +728,23 @@ export default function App() {
     !cpIsSpectatorSlotMirrorExcluded;
   const showSlotSpinBroadcastMirror =
     playingMain &&
-    gs?.subPhase === "day8" &&
+    gs?.subPhase === SUB_PHASE.day8 &&
     (slotPhase === "spinning" || slotPhase === "completed") &&
     !(isMyTurn && cpIsSlot && !cpIsNetworkAutomatedTurn) &&
     !showDay8SlotSpectatorMirror;
   const showProgressivePotHud =
     playingMain &&
-    gs?.subPhase === "day8" &&
+    gs?.subPhase === SUB_PHASE.day8 &&
     (gs?.players?.length ?? 0) > 1 &&
     !roomData?.isSolo;
   const cpIsGhostPick =
     roomDay8Active
       ? isGhostPickTargetPhase(cpFromRoom)
-      : playingMain && gs?.subPhase === "day8" && isGhostPickTargetPhase(cpGs);
+      : playingMain && gs?.subPhase === SUB_PHASE.day8 && isGhostPickTargetPhase(cpGs);
   const isDay8Moving =
     roomDay8Active
-      ? cpFromRoom?.movePhase === "moving" && cpFromRoom?.alive !== false
-      : playingMain && gs?.subPhase === "day8" && cpGs?.movePhase === "moving" && cpGs?.alive !== false;
+      ? cpFromRoom?.movePhase === MOVE_PHASE.moving && cpFromRoom?.alive !== false
+      : playingMain && gs?.subPhase === SUB_PHASE.day8 && cpGs?.movePhase === MOVE_PHASE.moving && cpGs?.alive !== false;
   const boardProgress = cpGs ? Math.min(100, (cpGs.position / BOARD_GOAL) * 100) : 0;
   const day8DiceRollCount = Array.isArray(gs?.lastDiceRolls) ? gs.lastDiceRolls.length : 0;
 
@@ -777,7 +782,7 @@ export default function App() {
   /** 8日目移動中は観戦者にも盤面を見せ、フルスクリーン待ち UI は出さない */
   const isDay8SharedMoveWatch =
     isDay8Moving && !isMyTurn && !goalLandingSelf;
-  const isDailyPhase = playingMain && gs?.subPhase === "daily";
+  const isDailyPhase = playingMain && gs?.subPhase === SUB_PHASE.daily;
   const dailySlotPhase = roomGs?.dailySlotPhase ?? "idle";
   const dailyCutinBroadcast = useMemo(
     () => readDailyCutinBroadcast(roomData, roomGs),
@@ -955,7 +960,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!gs || gs.gamePhase !== "playing" || gs.subPhase !== "day8" || !Array.isArray(gs.players)) {
+    if (!gs || gs.gamePhase !== GAME_PHASE.playing || gs.subPhase !== SUB_PHASE.day8 || !Array.isArray(gs.players)) {
       prevDay8RemainingTurnsRef.current = null;
       setPendingTurnBannerTurns(null);
       return;
@@ -986,7 +991,7 @@ export default function App() {
       mp === "arrived" ||
       mp === "ghostPickTarget";
     const turnStarted =
-      gs?.gamePhase === "playing" && gs?.subPhase === "day8" && bannerReadyMovePhase;
+      gs?.gamePhase === GAME_PHASE.playing && gs?.subPhase === SUB_PHASE.day8 && bannerReadyMovePhase;
     if (!turnStarted) return;
     const idleNow =
       !movementFxSync.isRunning &&
@@ -1092,15 +1097,15 @@ export default function App() {
 
   const dailyBgmShouldPlay = useMemo(() => {
     if (screen !== "playing") return false;
-    if (!gs || gs.gamePhase !== "playing") return false;
+    if (!gs || gs.gamePhase !== GAME_PHASE.playing) return false;
     const d = Number(gs.currentDay);
-    return gs.subPhase === "daily" && d >= 1 && d <= LAST_DAILY_DAY;
+    return gs.subPhase === SUB_PHASE.daily && d >= 1 && d <= LAST_DAILY_DAY;
   }, [screen, gs?.gamePhase, gs?.subPhase, gs?.currentDay]);
 
   const day8BgmShouldPlay = useMemo(() => {
     if (screen !== "playing") return false;
-    if (!gs || gs.gamePhase !== "playing") return false;
-    return gs.subPhase === "day8";
+    if (!gs || gs.gamePhase !== GAME_PHASE.playing) return false;
+    return gs.subPhase === SUB_PHASE.day8;
   }, [screen, gs?.gamePhase, gs?.subPhase]);
 
   /** タイトル入力〜モード選択〜キャラ選択待機（認証完了後のみ） */
@@ -1157,8 +1162,8 @@ export default function App() {
 
   useEffect(() => {
     if (!roomGs?.gamePhase) return;
-    if (roomGs.gamePhase === "results"  && screen !== "results")  setScreen("results");
-    if (roomGs.gamePhase === "gameOver" && screen !== "gameover" && !gameOverSplashMsg) {
+    if (roomGs.gamePhase === GAME_PHASE.results  && screen !== "results")  setScreen("results");
+    if (roomGs.gamePhase === GAME_PHASE.gameOver && screen !== "gameover" && !gameOverSplashMsg) {
       setGameOverSplashMsg(roomGs.gameOverMsg ?? "ゲームオーバー");
       if (gameOverSplashTimerRef.current) clearTimeout(gameOverSplashTimerRef.current);
       gameOverSplashTimerRef.current = setTimeout(() => {
@@ -1173,7 +1178,7 @@ export default function App() {
     const sm = soundRef.current;
     if (!sm || !roomGs?.gamePhase) return;
     const inFinalBattle =
-      roomGs.gamePhase === "finalBattle" || roomGs.subPhase === "finalBattle";
+      roomGs.gamePhase === GAME_PHASE.finalBattle || roomGs.subPhase === SUB_PHASE.finalBattle;
     if (!inFinalBattle) {
       sm.stopFinalBattleAmbient();
       return;
@@ -1205,7 +1210,7 @@ export default function App() {
 
   /** ホスト:「決戦の日」経由は preDay8 なら8日目盤開始、それ以外（旧データ）は結果へ（楽観表示は無視し実データのみ） */
   useEffect(() => {
-    if (!isHost || !roomId || !roomGs || roomGs.gamePhase !== "finalBattle") return;
+    if (!isHost || !roomId || !roomGs || roomGs.gamePhase !== GAME_PHASE.finalBattle) return;
     const startedMs = toEpochMsMaybe(roomGs.finalBattleStartedAt);
     if (!Number.isFinite(startedMs)) return;
     const totalMs =
@@ -1219,7 +1224,7 @@ export default function App() {
         const snap = await fetchRoom(roomId);
         const rdSnap = snap.data();
         const cur = rdSnap?.gameState;
-        if (!cur || cur.gamePhase !== "finalBattle") return;
+        if (!cur || cur.gamePhase !== GAME_PHASE.finalBattle) return;
         if (cur.finalBattleEntry === "preDay8") {
           const next = enterDay8AfterFinalBattleCue(cur);
           await performGameStateUpdateRef.current(next, "hostFinalBattle", {
@@ -1253,7 +1258,7 @@ export default function App() {
 
   useEffect(() => {
     if (!day7DailyOptimisticGs) return;
-    if (roomGs?.subPhase !== "daily") {
+    if (roomGs?.subPhase !== SUB_PHASE.daily) {
       setDay7DailyOptimisticGs(null);
       return;
     }
@@ -1696,10 +1701,10 @@ export default function App() {
   // ─── 1回休みの自動スキップ ───────────────────────────────────────────
   useEffect(() => {
     const liveGs = gsRef.current;
-    if (!isMyTurn || !liveGs || liveGs.subPhase !== "day8" || liveGs.gamePhase !== "playing") return;
+    if (!isMyTurn || !liveGs || liveGs.subPhase !== SUB_PHASE.day8 || liveGs.gamePhase !== GAME_PHASE.playing) return;
     const idx = liveGs.currentPlayerIdx;
     const p = liveGs.players?.[idx];
-    if (!p || p.skipTurns <= 0 || p.movePhase !== "moving") return;
+    if (!p || p.skipTurns <= 0 || p.movePhase !== MOVE_PHASE.moving) return;
     if ((p.pendingTaxiSteps ?? 0) > 0) return;
     const newPlayers = liveGs.players.map((pl, i) =>
       i === idx ? { ...pl, skipTurns: pl.skipTurns - 1 } : pl,
@@ -1799,8 +1804,8 @@ export default function App() {
             writeMode === "ghostAutomation" ||
             writeMode === "dailyFxClear") &&
           roomId &&
-          authG?.gamePhase === "playing" &&
-          (authG?.subPhase === "day8" || authG?.subPhase === "daily")
+          authG?.gamePhase === GAME_PHASE.playing &&
+          (authG?.subPhase === SUB_PHASE.day8 || authG?.subPhase === SUB_PHASE.daily)
         ) {
           const ref = doc(db, "rooms", roomId);
           await runTransaction(db, async (transaction) => {
@@ -1835,9 +1840,9 @@ export default function App() {
             } else if (!resolvedGS) {
               throw new Error("NO_GAME_STATE");
             } else if (
-              liveGs?.subPhase === "day8" &&
-              resolvedGS.subPhase !== "day8" &&
-              resolvedGS.gamePhase === "playing"
+              liveGs?.subPhase === SUB_PHASE.day8 &&
+              resolvedGS.subPhase !== SUB_PHASE.day8 &&
+              resolvedGS.gamePhase === GAME_PHASE.playing
             ) {
               throw new Error("PHASE_REGRESSION");
             }
@@ -1845,7 +1850,7 @@ export default function App() {
               ...resolvedGS,
               assetHistory: mergeAssetHistoryBuckets(liveGs, resolvedGS),
             };
-            if (liveGs?.subPhase === "day8") {
+            if (liveGs?.subPhase === SUB_PHASE.day8) {
               let markTurnCompleteFor = null;
               if (markDay8TurnComplete === true) {
                 markTurnCompleteFor =
@@ -1863,15 +1868,15 @@ export default function App() {
                 totalPot: tracked.totalPot,
               };
               if (typeof setStatus === "string") updates.status = setStatus;
-              else if (tracked.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
-              else if (tracked.gameState.gamePhase === "results") updates.status = "completed";
+              else if (tracked.gameState.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
+              else if (tracked.gameState.gamePhase === GAME_PHASE.results) updates.status = "completed";
               transaction.update(ref, updates);
               return;
             }
             const updates = { gameState: resolvedGS };
             if (typeof setStatus === "string") updates.status = setStatus;
-            else if (resolvedGS.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
-            else if (resolvedGS.gamePhase === "results") updates.status = "completed";
+            else if (resolvedGS.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
+            else if (resolvedGS.gamePhase === GAME_PHASE.results) updates.status = "completed";
             transaction.update(ref, updates);
           });
           return true;
@@ -1887,8 +1892,8 @@ export default function App() {
         let updates = { gameState: mergedGS };
         if (
           roomId &&
-          mergedGS?.gamePhase === "playing" &&
-          mergedGS?.subPhase === "day8"
+          mergedGS?.gamePhase === GAME_PHASE.playing &&
+          mergedGS?.subPhase === SUB_PHASE.day8
         ) {
           const roomDoc = authRd ?? roomDataRef.current;
           const tracked = applyDay8RoundTracking(roomDoc, mergedGS, {});
@@ -1900,8 +1905,8 @@ export default function App() {
           };
         }
         if (typeof setStatus === "string") updates.status = setStatus;
-        else if (mergedGS.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
-        else if (mergedGS.gamePhase === "results") updates.status = "completed";
+        else if (mergedGS.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
+        else if (mergedGS.gamePhase === GAME_PHASE.results) updates.status = "completed";
         await updateRoom(updates);
         return true;
       } catch (e) {
@@ -1922,7 +1927,7 @@ export default function App() {
   const commitDay8ItemGate = useCallback(
     async (mutator) => {
       const live = gsRef.current;
-      if (!live || live.subPhase !== "day8") return false;
+      if (!live || live.subPhase !== SUB_PHASE.day8) return false;
       const optimistic = mutator(live);
       if (!optimistic) return false;
       setDay8ItemOptimisticGs(optimistic);
@@ -1950,9 +1955,9 @@ export default function App() {
     const fx = roomGs?.dailyActionFx;
     if (!fx?.id || !roomId) return undefined;
     const staleDailyFx =
-      roomGs?.gamePhase === "finalBattle" ||
-      roomGs?.subPhase === "day8" ||
-      (roomGs?.gamePhase === "playing" && roomGs?.subPhase !== "daily");
+      roomGs?.gamePhase === GAME_PHASE.finalBattle ||
+      roomGs?.subPhase === SUB_PHASE.day8 ||
+      (roomGs?.gamePhase === GAME_PHASE.playing && roomGs?.subPhase !== SUB_PHASE.daily);
     const mayClear = myId === fx.playerId || isHost;
     const clearFxFromLive = () => {
       if (!mayClear) return;
@@ -1964,7 +1969,7 @@ export default function App() {
     }
     const timer = setTimeout(() => {
       const live = gsRef.current;
-      if (live?.subPhase !== "daily") return;
+      if (live?.subPhase !== SUB_PHASE.daily) return;
       if (!live?.dailyActionFx || live.dailyActionFx.id !== fx.id) return;
       clearFxFromLive();
     }, DAILY_ACTION_FX_CLEAR_MS);
@@ -2246,8 +2251,8 @@ export default function App() {
             completedPlayers: tracked.completedPlayers,
             totalPot: tracked.totalPot,
           };
-          if (tracked.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
-          if (tracked.gameState.gamePhase === "results") updates.status = "completed";
+          if (tracked.gameState.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
+          if (tracked.gameState.gamePhase === GAME_PHASE.results) updates.status = "completed";
           transaction.update(ref, updates);
           return tracked.gameState;
         });
@@ -2302,8 +2307,8 @@ export default function App() {
             completedPlayers: trackedWithPot.completedPlayers,
             totalPot: trackedWithPot.totalPot,
           };
-          if (trackedWithPot.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
-          if (trackedWithPot.gameState.gamePhase === "results") updates.status = "completed";
+          if (trackedWithPot.gameState.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
+          if (trackedWithPot.gameState.gamePhase === GAME_PHASE.results) updates.status = "completed";
           transaction.update(ref, updates);
           return trackedWithPot.gameState;
         });
@@ -2346,8 +2351,8 @@ export default function App() {
             completedPlayers: tracked.completedPlayers,
             totalPot: tracked.totalPot,
           };
-          if (tracked.gameState.gamePhase === "finalBattle") updates.status = "FINAL_BATTLE";
-          if (tracked.gameState.gamePhase === "results") updates.status = "completed";
+          if (tracked.gameState.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
+          if (tracked.gameState.gamePhase === GAME_PHASE.results) updates.status = "completed";
           transaction.update(ref, updates);
           return tracked.gameState;
         });
@@ -3041,7 +3046,7 @@ export default function App() {
     const tick = async () => {
       if (ghostAutomationBusyRef.current) return;
       const gs = gsRef.current;
-      if (!gs || gs.gamePhase !== "playing") return;
+      if (!gs || gs.gamePhase !== GAME_PHASE.playing) return;
       const cp = gs.players?.[gs.currentPlayerIdx];
       if (!isTurnAutomatable(cp, roomPlayers)) return;
 
@@ -3302,7 +3307,7 @@ export default function App() {
   const handleBeginSlotPhase = async () => {
     if (!gs || !isMyTurn) return;
     const p = gs.players[gs.currentPlayerIdx];
-    if (p.movePhase !== "waitingSlot") return;
+    if (p.movePhase !== MOVE_PHASE.waitingSlot) return;
     const began = beginDay8SlotSeatForPlayer(p);
     if (!began) return;
     const logs = [`${p.name}: スロット開始`];
@@ -3319,7 +3324,7 @@ export default function App() {
       return;
     }
     const me = roomGs.players?.find((pl) => pl.id === myId);
-    if (me?.movePhase !== "goalLanding") {
+    if (me?.movePhase !== MOVE_PHASE.goalLanding) {
       autoGoalLandingConfirmRef.current = false;
       return;
     }
@@ -3362,7 +3367,7 @@ export default function App() {
   const patchDailyCutinBroadcast = useCallback(
     async (patch) => {
       if (!roomId || roomData?.isSolo) return false;
-      if (gsRef.current?.subPhase !== "daily") return false;
+      if (gsRef.current?.subPhase !== SUB_PHASE.daily) return false;
       try {
         await updateRoom({
           dailyCutinPhase: patch.dailyCutinPhase,
@@ -3442,7 +3447,7 @@ export default function App() {
     const pending = pendingDailyTurnWriteRef.current;
     pendingDailyTurnWriteRef.current = null;
     if (!pending) return;
-    if (gsRef.current?.subPhase !== "daily") return;
+    if (gsRef.current?.subPhase !== SUB_PHASE.daily) return;
     finishDailyCutinSession();
     const ok = await writeGS({
       ...pending.nextGsWithFx,
@@ -3460,9 +3465,9 @@ export default function App() {
   useEffect(() => {
     if (!roomGs) return;
     const leftDaily =
-      roomGs.subPhase === "day8" ||
-      roomGs.subPhase === "finalBattle" ||
-      roomGs.gamePhase === "finalBattle";
+      roomGs.subPhase === SUB_PHASE.day8 ||
+      roomGs.subPhase === SUB_PHASE.finalBattle ||
+      roomGs.gamePhase === GAME_PHASE.finalBattle;
     if (!leftDaily) return;
     resetDailyOutgoingFxState();
     setDay7DailyOptimisticGs(null);
@@ -3496,7 +3501,7 @@ export default function App() {
     async (patch) => {
       if (!roomId || roomData?.isSolo) return false;
       const g = gsRef.current;
-      if (!g || g.subPhase !== "daily") return false;
+      if (!g || g.subPhase !== SUB_PHASE.daily) return false;
       return writeGS({ ...g, ...patch });
     },
     [roomId, roomData?.isSolo, writeGS],
@@ -3518,7 +3523,7 @@ export default function App() {
   );
 
   const handleOpenDailySlot = useCallback(() => {
-    if (!isMyTurn || !roomGs || roomGs.subPhase !== "daily") return;
+    if (!isMyTurn || !roomGs || roomGs.subPhase !== SUB_PHASE.daily) return;
     if (
       workCutin != null ||
       streamTypeCutin != null ||
@@ -3564,7 +3569,7 @@ export default function App() {
   const finalizeDailySlotTraining = useCallback(
     async (spinResults) => {
       const g = gsRef.current;
-      if (!g || g.subPhase !== "daily") return;
+      if (!g || g.subPhase !== SUB_PHASE.daily) return;
       try {
         await updateCurrentAction("dailySlot");
       } catch (_) {}
@@ -3616,7 +3621,7 @@ export default function App() {
 
       const actionType = "dailySlot";
 
-      if (g.subPhase === "daily") {
+      if (g.subPhase === SUB_PHASE.daily) {
         const lc = livingCostForPlayer(p);
         const moneyBeforeLiving = s.money;
         s.money = clampMoney(s.money - lc);
@@ -3641,7 +3646,7 @@ export default function App() {
       newPlayers = applyVirtueWave(p, virtueBefore, s.virtue, newPlayers, virtueLogs);
       virtueLogs.forEach((line) => logExtras.push(legacyExtrasLine(line)));
 
-      if (g.subPhase === "daily") {
+      if (g.subPhase === SUB_PHASE.daily) {
         const rimiruLogs = [];
         newPlayers = newPlayers.map((pl, i) => (i !== idx ? pl : applyRimiruDailyEnd(pl, rimiruLogs)));
         rimiruLogs.forEach((line) => logExtras.push(legacyExtrasLine(line)));
@@ -3677,7 +3682,7 @@ export default function App() {
         nextGsWithFx = clearDailyActionFx(nextGsWithFx);
         setShrinePhase(null);
       }
-      if (g.currentDay === LAST_DAILY_DAY && g.subPhase === "daily") {
+      if (g.currentDay === LAST_DAILY_DAY && g.subPhase === SUB_PHASE.daily) {
         setDay7DailyOptimisticGs(buildDay7DailyOptimisticGs(nextGsWithFx, g, advancesToSugoroku));
       }
       if (advancesToSugoroku) {
@@ -3918,7 +3923,7 @@ export default function App() {
     }
 
     // ─ 生活費（1〜7日目毎日）：マイナスになっても借金として続行
-    if (gs.subPhase === "daily") {
+    if (gs.subPhase === SUB_PHASE.daily) {
       const lc = livingCostForPlayer(p);
       const moneyBeforeLiving = s.money;
       s.money = clampMoney(s.money - lc);
@@ -4047,11 +4052,11 @@ export default function App() {
     newPlayers = applyVirtueWave(p, virtueBefore, s.virtue, newPlayers, virtueLogs);
     virtueLogs.forEach((line) => logExtras.push(legacyExtrasLine(line)));
 
-    if (ponEvent && actionType === "stream" && gs.subPhase === "day8") {
+    if (ponEvent && actionType === "stream" && gs.subPhase === SUB_PHASE.day8) {
       newPlayers = applySplashDamage(gs.currentPlayerIdx, newPlayers, virtueLogs);
     }
 
-    if (gs.subPhase === "daily") {
+    if (gs.subPhase === SUB_PHASE.daily) {
       const idx = gs.currentPlayerIdx;
       const rimiruLogs = [];
       newPlayers = newPlayers.map((pl, i) =>
@@ -4088,7 +4093,7 @@ export default function App() {
     if (advancesToSugoroku) {
       setShrinePhase(null);
     }
-    if (gs.currentDay === LAST_DAILY_DAY && gs.subPhase === "daily") {
+    if (gs.currentDay === LAST_DAILY_DAY && gs.subPhase === SUB_PHASE.daily) {
       setDay7DailyOptimisticGs(buildDay7DailyOptimisticGs(nextGsWithFx, gs, advancesToSugoroku));
     }
     if (advancesToSugoroku) {
@@ -4102,9 +4107,9 @@ export default function App() {
       finishDailyCutinSession();
     }
     const cutinClearPatch =
-      nextGsWithFx.subPhase !== "daily" ? DAILY_CUTIN_SYNC_DEFAULTS : {};
+      nextGsWithFx.subPhase !== SUB_PHASE.daily ? DAILY_CUTIN_SYNC_DEFAULTS : {};
     const cutinPreserve =
-      nextGsWithFx.subPhase === "daily"
+      nextGsWithFx.subPhase === SUB_PHASE.daily
         ? pickDailyCutinBroadcastFields(pendingDailyCutinBroadcastRef.current)
         : null;
     if (isMultiplayerRoom && cutinPreserve) {
@@ -4112,7 +4117,7 @@ export default function App() {
     }
 
     /** マルチ日常：カットイン中に手番を進めると観戦側が stale cutin で止まるため、演出後に writeGS */
-    if (isMultiplayerRoom && gs.subPhase === "daily" && !advancesToSugoroku) {
+    if (isMultiplayerRoom && gs.subPhase === SUB_PHASE.daily && !advancesToSugoroku) {
       const holdMs = computeDay7TransitionFxHoldMs(actionType, {
         deferStreamPonOverlay,
         streamRollFailed,
@@ -4155,7 +4160,7 @@ export default function App() {
     if (day8ActionLocked || boardDeathPresentation) return;
     const idx = gs.currentPlayerIdx;
     const p = gs.players[idx];
-    if (p.movePhase !== "moving") return;
+    if (p.movePhase !== MOVE_PHASE.moving) return;
 
     if (!acceptTurnAction()) return;
 
@@ -4231,9 +4236,9 @@ export default function App() {
           return player;
         }
         if (timedOutWait) {
-          return { ...base, movePhase: "missed", slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
+          return { ...base, movePhase: MOVE_PHASE.missed, slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
         }
-        return { ...base, movePhase: "moving", slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
+        return { ...base, movePhase: MOVE_PHASE.moving, slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
       });
 
       const gsWithDiceWait = { ...rrWait.gsWithTiles, lastDiceRolls: [] };
@@ -4521,9 +4526,9 @@ export default function App() {
         return player;
       }
       if (timedOut) {
-        return { ...base, movePhase: "missed", slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
+        return { ...base, movePhase: MOVE_PHASE.missed, slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
       }
-      return { ...base, movePhase: "moving", slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
+      return { ...base, movePhase: MOVE_PHASE.moving, slotTurnsLeft: 0, slotPullsGranted: 0, slotPullsThisSeat: 0 };
     });
 
     const gsWithDice = { ...rr.gsWithTiles, lastDiceRolls: diceRolls };
@@ -5134,7 +5139,7 @@ export default function App() {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // ゲーム中（gamePhase === "playing"）
+  // ゲーム中（gamePhase === GAME_PHASE.playing）
   // ════════════════════════════════════════════════════════════════════════
   const hasRenderableGameState =
     gs && Array.isArray(gs.players) && gs.players.length > 0;
@@ -5417,11 +5422,11 @@ export default function App() {
                 {GAME_TITLE_FULL}
               </p>
               <p className="text-xs text-slate-400 mt-1.5 leading-relaxed space-y-0.5">
-                {gs?.subPhase === "daily" && `${gs.currentDay}日目 / ${cpGs?.name}のターン`}
-                {gs?.subPhase === "day8" && cpGs && (
+                {gs?.subPhase === SUB_PHASE.daily && `${gs.currentDay}日目 / ${cpGs?.name}のターン`}
+                {gs?.subPhase === SUB_PHASE.day8 && cpGs && (
                   <>
                     <span className="block">
-                      {cpGs.movePhase === "missed" &&
+                      {cpGs.movePhase === MOVE_PHASE.missed &&
                         `【8日目・決戦】タイムアウト／${cpGs.name}`}
                       {anyGoalLandingPlayer &&
                         `【8日目・決戦】ゴール到着処理中／${anyGoalLandingPlayer.name}`}
@@ -5442,18 +5447,18 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2 flex-wrap justify-end">
               {/* 8日目：補助HUD（PCのみ） */}
-              {gs?.subPhase === "day8" && cpGs && (
+              {gs?.subPhase === SUB_PHASE.day8 && cpGs && (
                 <div className="hidden md:flex flex-col items-end gap-0.5">
                   <span className="text-[10px] font-bold uppercase tracking-wide text-amber-400/90 leading-none">8日目 HUD</span>
                   <span className="text-xs font-bold text-slate-200 tabular-nums leading-none">
-                    {(cpGs.movePhase === "goalLanding" || cpGs.movePhase === "waitingSlot") ? (
+                    {(cpGs.movePhase === MOVE_PHASE.goalLanding || cpGs.movePhase === MOVE_PHASE.waitingSlot) ? (
                       <>ゴール済・スロット待ち</>
-                    ) : cpGs.movePhase === "arrived" ? (
+                    ) : cpGs.movePhase === MOVE_PHASE.arrived ? (
                       <>🎰 スロット</>
-                    ) : cpGs.movePhase === "moving" ? (
+                    ) : cpGs.movePhase === MOVE_PHASE.moving ? (
                       <>移動手番 <strong>{BAL.dice.maxTurns - day8RemainingTurns}</strong><span className="text-slate-600">/</span><strong>{BAL.dice.maxTurns}</strong></>
                     ) : (
-                      <>{cpGs.movePhase === "missed" ? "すごろくタイムアウト済" : "—"}</>
+                      <>{cpGs.movePhase === MOVE_PHASE.missed ? "すごろくタイムアウト済" : "—"}</>
                     )}
                   </span>
                 </div>
@@ -5585,7 +5590,7 @@ export default function App() {
                 <span className="text-amber-400/60 text-xs ml-auto">毎ターン 運+{cpGs.amulets * 2}</span>
               </div>
             )}
-            {gs.subPhase === "day8" && cpGs.spinCount > 0 && (
+            {gs.subPhase === SUB_PHASE.day8 && cpGs.spinCount > 0 && (
               <div className="mt-2 flex items-center justify-end gap-2">
                 {cpGs.slotNet >= 0 ? <TrendingUp size={14} className="text-emerald-400" /> : <TrendingDown size={14} className="text-rose-400" />}
                 <span className="text-xs text-slate-400">スロット収支:</span>
@@ -5633,7 +5638,7 @@ export default function App() {
           )}
 
           {/* ── 1〜7日目（自分のターン） ── */}
-          {isMyTurn && gs.subPhase === "daily" && cpGs && (
+          {isMyTurn && gs.subPhase === SUB_PHASE.daily && cpGs && (
             <DailyActionPhase
               gs={gs}
               cpGs={cpGs}
@@ -5690,7 +5695,7 @@ export default function App() {
             onSugorokuHopComplete={handleSugorokuHopComplete}
             isMyTurn={isMyTurn}
             dailyActionFx={
-              gs.subPhase === "daily" ? roomGs?.dailyActionFx ?? null : null
+              gs.subPhase === SUB_PHASE.daily ? roomGs?.dailyActionFx ?? null : null
             }
             cpIsWaitingSlot={cpIsWaitingSlot}
             isDay8Moving={isDay8Moving}
