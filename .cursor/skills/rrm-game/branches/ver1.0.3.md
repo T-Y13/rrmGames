@@ -1,144 +1,169 @@
-# ver1.0.3（作業中）
+# ver1.0.3（作業中 — 引き継ぎ正本）
 
-- **Git tip:** `4068219`（**`main` と同一** — ブランチ上の追加 commit はまだ無い）
-- **ブランチ:** `ver1.0.3`（ローカル）
-- **記録更新:** 2026-07-26
+- **ブランチ:** `ver1.0.3`
+- **リモート:** `origin/ver1.0.3`（push 済み想定 — 作業再開時は `git fetch && git status`）
+- **Git tip:** `git log -1 --oneline`（2026-07-29 push 時点: `ccb2936` doc / `82eba4a` rent+ooya）
+- **記録更新:** 2026-07-29
 
-## 2026-07-26: 8日目15ラウンド・スロット席・資産グラフ
-
-**設計正本:** [references/day8-guide.md](../references/day8-guide.md) の「8日目ラウンドとスロット（設計の正本・2026-07）」
-
-| 要点 | 内容 |
-|------|------|
-| スロット | **手番ごと3スピン付与**（bank なし）。15Tゴールはスロットなし |
-| グラフ | `daily`/`day8` のみ（`day8Timeline` 不使用）、個人所持金、X軸等間隔 |
-
-**変更ファイル（ローカル）:** `gameLogic.js`, `App.jsx`, `ghostPlayerAutomation.js`, `assetHistoryFromGameState.js`, `AssetHistoryChart.jsx`, 各 test
-
-**テスト:** `npm run test:run` → 182 passed（2026-07-26 手番ごとスピン付与後）
-
-**ルール正本:** [references/game-rules.md](../references/game-rules.md)
-
-## ベースラインに含まれる commit（main = ver1.0.3 共通）
-
-| commit | 内容 |
-|--------|------|
-| `46ef006` | マルチデイリーカットイン観戦同期、8日目移動観戦のスタール修正 |
-| `11cee26` | ゴーストスロット同期、観戦オーバーレイ、自動操作の排他 |
-| `4068219` | recharts 用 react-is 依存追加 |
-
-## 次期キャラ（未実装）
-
-**大家（おばあちゃん／おじいちゃん）** — マルチ特化・家賃70%・ステ0.8倍・運3固定  
-→ 設計正本: [references/next-character-landlord.md](../references/next-character-landlord.md)  
-→ 実装構造: [references/character-system.md](../references/character-system.md)
+> **新しいチャットで作業再開するとき:** このファイル → [extensibility-roadmap.md](../references/extensibility-roadmap.md) → [game-rules.md](../references/game-rules.md) の順に読む。
 
 ---
 
-### 8日目アイテム（Phase 1）
+## 現在の状態（2026-07-29）
 
-| 項目 | 内容 |
+| 項目 | 状態 |
 |------|------|
-| 配布 | 8日目開始時 3 枚固定: 🏃 dash +3マス / ✨ lucky +50% 次当たり / 🪙 gold +20% バースト全スピン |
-| UI | `Day8ItemBar.jsx` — 進む・スロットボタン**下**にインライン表示（旧 `Day8ItemSelectGate` は削除） |
-| 状態 | `day8Inventory`, `day8SeatEffects[]`, `day8ItemUsedThisSeat` |
-| 効果 | `day8ItemEffects.js` — 移動 `applyDay8MoveStepBonus`, スロット `applyDay8SlotPayoutBonus` |
-| 演出 | 移動 +3 は `buildDay8CardMoveEffectMeta` → `movementFx.preMoveEffect`（カード効果吹き出し） |
-| マルチ | `commitDay8ItemGate` + `day8ItemOptimisticGs` |
+| 拡張性 Phase 1〜5 | **完了・commit 済** |
+| 大家（landlord） | **実装済** — バランスは現状 OK（変更なし合意） |
+| 家賃タイミング | **ターン開始・1日1回**（`lastRentCollectedDay`）— 行動後徴収は廃止 |
+| ooya 画像 | **追加・wire 済** |
+| テスト | `npm run test:run` → **231 passed** |
+| マルチ実機 | **未** |
+| deploy | **未**（明示依頼まで `deploy:prod` 禁止） |
 
-**新規ファイル（主）:** `day8Items.js`, `day8ItemEffects.js`, `Day8ItemBar.jsx`, `day8Items.test.js`
+---
 
-### ログ
+## 拡張性ロードマップ（Phase 0〜5）
 
-| 変更 | 詳細 |
+| Phase | 内容 | 状態 |
+|-------|------|------|
+| 0 | テストゲート・rules deploy・既知バグ整理 | 進行中 |
+| 1 | `lib/characterEffects.js` | **完了** |
+| 2 | `lib/dailyActions/` + ghost | **完了** |
+| 3 | `constants/gamePhases.js` | **完了** |
+| 4 | `gameLogic/` 分割（core / initialStats / virtueEffects） | **完了（第1弾）** |
+| 5 | 大家 | **完了** |
+
+詳細: [references/extensibility-roadmap.md](../references/extensibility-roadmap.md)
+
+---
+
+## 大家（landlord）実装メモ
+
+### 数値（`gameBalance.js` → `CHARACTERS.landlord`）
+
+- `luckFixed: 3`, `skillBonus: -20`, `virtueBonus: 10`
+- `dailyLivingCost: 150`（ロールレンジは他キャラ同様）
+- `statGainMultiplier: 0.8`（配信・神社・デイリースロットのステのみ）
+- `rentIncomeRate: 0.7`, `multiplayerOnly: true`
+
+### 家賃フロー
+
+1. **ゲーム開始** — 1日目・各大家に1回
+2. **日付繰り上げ** — 新しい日・全大家に1回（8日目はスキップ）
+3. **手番交代** — その日まだ徴収していなければ大家ターン開始時に1回
+4. **UI** — `DailyActionPhase` 上部 `家賃：＋{amount}G`（`text-amber-300`）
+
+### キーファイル
+
+| 用途 | パス |
 |------|------|
-| サイドバー表示順 | `parseLogIntoDailyTiles` — 日タイル内も **新しい順**（8日目バナーはタイル下部） |
-| スロット開始 | `（Nターンブン・計M回）` 削除 → `配信者97: スロット開始` のみ |
-| waitingSlot 手番行 | `ゴール到着済み・スロット…` ログ行は**出さない** |
-| スピン1行 | `→ 🔔 当たり！ 収支+800G`（**資金は行末に付けない**） |
-| バースト終了 | 3スピン後（または残り0で中断時）に `  資金4953G` を1行だけ |
+| 家賃ロジック | `src/lib/characterEffects.js` — `applyTurnStartRentToPlayer`, `applyDailyRentForAllEligible`, `previewTurnStartRentAmount`, `lastRentCollectedDay` |
+| ターン/日次フック | `src/utils/gameLogic.js` — `initialGameState`, `computeAdvanceDaily` |
+| 行動後生活費（家賃なし） | `src/lib/dailyActions/shared.js` |
+| ロビー制限 | `src/components/WaitingRoom.jsx` — `isCharacterSelectableInLobby` |
+| 画像 | `src/constants/assets.js`, `src/utils/assetLoader.js`, `public/images/*ooya*` |
+| 設計 | [references/next-character-landlord.md](../references/next-character-landlord.md) |
 
-**関数:** `formatDay8SlotSpinLogLine`, `formatDay8SlotBurstMoneyLogLine`（`gameLogic.js`）
+### App.jsx 方針
 
-### デイリーカットイン回収
+- **`if (landlord)` なし** — `rentIncomeRate` / `characterEffects` でデータ駆動
 
-- `dailyCutinSync.js` — stale cutin 復旧
-- `useDailyCutinSpectatorSync.js`, `WorkCutin.jsx` — 解除 UI
-- `firestore.rules` — `dailyCutinStaleClearValid()`（**rules deploy 必須**）
+---
 
-### スマホ UI（768px 未満 = Tailwind `md`）
+## ver1.0.3 上の commit 列（拡張性 + 大家）
 
-| 対応済 | ファイル |
-|--------|----------|
-| ヘッダー簡略（HUD・ルームID・コピー・退室・プレイヤー名非表示） | `App.jsx` |
-| 1〜7日目キャラ右寄せ・ボタンと非重なり | `DailyActionPhase.jsx` |
-| **8日目すごろく SP レイアウト定数**（駒縮小・名前追従・横ダイス・POT inline） | `constants/sugorokuMobileLayout.js` |
-| すごろく盤面 SP 実装 | `BoardViewport.jsx`, `PieceNearbyStack.jsx`, `BoardCharacterSideDice.jsx`, `BoardGamePhase.jsx` |
-| 盤面フレーム高さ SP 低め | `gameAnimationsCss.js` → `BOARD_VIEWPORT_FRAME_SIZE_CLASS` |
-| POT：すごろく中は fixed 非表示・ヘッダー inline | `App.jsx`, `BoardGamePhase.jsx` |
+| commit | 内容 |
+|--------|------|
+| `0f0279f` | Phase 1: characterEffects API |
+| `85c7453`〜`3317cdb` | Phase 2: dailyActions（work/shrine/stream/dailySlot） |
+| `89d60dc`, `388f877`, `b95f2c5` | Phase 3: gamePhases |
+| `a29483c` | Phase 4: gameLogic 分割 |
+| `3f7c6d7` | Phase 5: landlord 本体 |
+| `82eba4a` | ooya 画像 + 家賃ターン開始 + UI |
+| `ccb2936` | 引き継ぎ doc + rules / roadmap 同期 |
 
-**SP すごろく調整時:** 数値・Tailwind クラスは `sugorokuMobileLayout.js` を正本に。コンポーネントに直書きしない。
+---
 
-### 変更ファイル一覧（tracked 改修）
+## 8日目・その他（main からの継続機能）
 
-`App.jsx`, `gameLogic.js`, `BoardGamePhase.jsx`, `SlotMachine.jsx`, `sidebarLogDailyTiles.js`, `ghostPlayerAutomation.js`, `DailyActionPhase.jsx`, `dailyCutinSync*`, `WorkCutin.jsx`, `firestore.rules`, 各種 test
+**8日目15ラウンド・手番ごと3スピン・資産グラフ** — [day8-guide.md](../references/day8-guide.md)
 
-## アーキテクチャメモ（8日目アイテム）
+**8日目アイテム Phase 1** — dash / lucky / gold、`Day8ItemBar.jsx`
 
-```
-constants/day8Items.js     定義・applyScope
-lib/day8Items.js           使用可否・消費・prependItemLogs
-lib/day8ItemEffects.js     純粋効果（gameLogic 循環 import 回避）
-App.jsx                    handleUseDay8Item, commitDay8ItemGate
-gameLogic.js               スロット結果 applyDay8SlotPayoutBonus フック
-BoardGamePhase / SlotMachine  Day8ItemBar 配置
-```
+**ルール正本:** [references/game-rules.md](../references/game-rules.md)
+
+---
 
 ## テスト
 
 ```bash
-npm run test:run              # 最終確認時 ~171 passed
-npm run test:rules:emulator     # rules 変更後
+npm run test:run              # 231 passed（2026-07-29）
+npm run test:rules:emulator   # rules 変更後
+npm run dev                   # localhost:5173
 ```
 
-## 未デプロイ
+---
 
-- [ ] Hosting 検証（`npm run deploy`）— ローカル未 commit のため未反映
-- [ ] Hosting 本番（`deploy:prod`）— **明示依頼まで出さない**
-- [ ] Firestore rules — stale cutin 用ルール
+## 未デプロイ / 未確認
+
+- [ ] Firestore rules deploy（stale cutin 等）
+- [ ] Hosting 検証 `npm run deploy`
+- [ ] **大家マルチ実機**（2人以上・家賃表示・日跨ぎ・ゴースト）
+- [ ] Hosting 本番 `deploy:prod` — **明示依頼まで出さない**
+
+---
 
 ## 既知・回収予定
 
 | 優先 | 内容 |
 |------|------|
-| 高 | タクシー行ログ**二重**（同一ターン2行）— 原因調査未 |
-| 高 | `🎒 …アイテムを使わずに手番開始` — 旧 gate 残骸 or 古い Firestore 状態の可能性 |
-| 中 | SP: スロット HUD 折りたたみ |
-| 中 | SP: サイドバー → ボトムタブ / ログシート |
-| 中 | hover ツールチップ（カード・コンビニ・タクシー）→ タップ説明 |
+| 高 | タクシー行ログ**二重**（同一ターン2行） |
+| 高 | `🎒 …アイテムを使わずに手番開始` — 旧 gate 残骸 or 古い Firestore |
+| 中 | SP: スロット HUD 折りたたみ / サイドバー → ボトムタブ |
 | 低 | `.agents/` を `.gitignore` に |
 
-## ロードマップ（合意方向）
+---
 
-1. **Phase 1（今）** — 自己バフ 3 カード + インライン UI → **実装済・commit 待ち**
-2. **Phase 2** — 1〜7日目成績に応じた配布、SE/toast、サイドバー在庫
-3. **Phase 3** — 他プレイヤーデバフ（mudTrap 等）、ゴースト自動使用、rules テスト拡充
-4. **目押し** — Phase 1 安定後
-5. **リリース** — commit → rules deploy → 検証 `deploy` で確認 → 本番は明示依頼時 `deploy:prod`
+## 次にやること（優先順）
 
-## 次にやること（提案）
+1. **マルチ実機** — 大家選択・家賃ターン開始・日付変更・2人/3人/4人
+2. **Phase 0** — `firestore.rules` deploy → 検証 `npm run deploy`
+3. タクシーログ二重・旧 gate ログの再現調査
+4. （任意）gameLogic の slot/day8 追加分割
 
-1. 未 commit を機能単位で commit（8日目アイテム / ログ / cutin+rules / SP UI）
-2. `firestore.rules` deploy
-3. 検証環境 `npm run deploy` で実機確認（本番は依頼があるまで）
-3. 実機 SP でヘッダー・行動選択・8日目ログを確認
-4. タクシーログ二重・旧 gate ログの再現調査
+---
 
-## 前セッションからの引き継ぎチェックリスト
+## 引き継ぎチェックリスト（新チャット用）
 
-新しいウィンドウで作業再開するとき:
+```
+git checkout ver1.0.3 && git pull && git status
+```
 
-- [ ] `git checkout ver1.0.3 && git status`
-- [ ] このファイルを読む
-- [ ] `npm run dev` で local 確認
-- [ ] マルチテスト時は rules emulator 済みか確認
+- [ ] 本ファイル（`branches/ver1.0.3.md`）を読んだ
+- [ ] [extensibility-roadmap.md](../references/extensibility-roadmap.md) — Phase 0 残と DoD
+- [ ] [game-rules.md](../references/game-rules.md) — 大家・家賃タイミング
+- [ ] `npm run test:run` が green
+- [ ] マルチ作業なら rules emulator / 検証 deploy の要否を確認
+
+### 会話コンテキストの要約（2026-07-29 終了時点）
+
+- ユーザーは拡張性 Phase 1〜5 を**順番に commit**し、大家を追加した
+- 家賃は当初「日常行動後」だったが **ターン開始・毎日1回** に修正済（UI も `家賃：＋550` 表示）
+- ooya 画像を `public/images/` に追加し wire 済
+- パワーバランスは**現状維持**で OK
+- commit + push + doc 更新を依頼（本セッション）
+
+---
+
+## アーキテクチャ（キャラ拡張）
+
+```
+gameBalance.js (CHARACTERS.*)
+    ↓
+characterEffects.js (luckFixed, statGain, rent)
+    ↓
+dailyActions/* + gameLogic.js (turn/day hooks)
+    ↓
+App.jsx / DailyActionPhase / WaitingRoom (データ駆動、キャラ名分岐なし)
+```

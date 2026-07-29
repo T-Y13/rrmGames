@@ -106,9 +106,10 @@
 ## Phase 5 完了内容（2026-07-29）
 
 - `CHARACTERS.landlord` — luckFixed 3 / skill -20 / virtue +10 / 家賃70% / ステ0.8
-- `applyDailyRentIncome` — 日常行動後（App + ghost）
-- ロビー `multiplayerOnly` — 2人未満で選択不可
-- テスト +227
+- 家賃 — **ターン開始・1日1回**（`applyTurnStartRentToPlayer`, `lastRentCollectedDay`）。行動後の `applyDailyRentIncome` は廃止
+- ロビー `multiplayerOnly` — 2人未満で選択不可（`WaitingRoom.jsx`）
+- ooya 立ち絵・カットイン画像
+- テスト 231 passed
 
 ---
 
@@ -125,11 +126,11 @@
 
 ## 大家 Definition of Done
 
-- [ ] Phase 2 完了
-- [ ] `CHARACTERS.landlord` は data + `characterEffects` のみ
-- [ ] App に `if (landlord)` なし
-- [ ] ghost も同じ daily / rent 関数
-- [ ] `game-rules.md` 更新
+- [x] Phase 2 完了
+- [x] `CHARACTERS.landlord` は data + `characterEffects` のみ
+- [x] App に `if (landlord)` なし
+- [x] ghost も同じ daily / rent 関数（`gameLogic` 経由で日次家賃）
+- [x] `game-rules.md` 更新
 - [ ] マルチ実機確認
 
 ---

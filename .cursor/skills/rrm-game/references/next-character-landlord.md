@@ -48,7 +48,7 @@
 | 項目 | 値 |
 |------|-----|
 | 計算 | **生存中の他プレイヤーの `stats.livingCost` 合計 × 70%** |
-| タイミング | 1〜7日目・自分の日常行動後（生活費徴収と同タイミングが自然） |
+| タイミング | 1〜7日目・**自分のターン開始時・1日1回**（行動前。`lastRentCollectedDay` で重複防止） |
 | 対象 | 自分以外の生存プレイヤー（脱落者・ゴースト扱いは実装時に明記） |
 | ログ例 | `🏠 家賃収入 +560G（他プレイヤー生活費合計の70%）` |
 
@@ -107,7 +107,9 @@
 - [x] 家賃計算 — `computePassiveRentIncome`（Phase 1、未接続）
 - [x] ステ debuff API — `applyCharacterStatGain`（Phase 1、App 未接続）
 - [x] Phase 2 完了（daily + ghost 統合）
-- [x] 日常行動後に家賃を `applyDailyRentIncome` から配布
+- [x] ターン開始時に家賃 — `applyTurnStartRentToPlayer` / `applyDailyRentForAllEligible`（`gameLogic.js`）
+- [x] UI — `DailyActionPhase` に `家賃：＋{amount}G`（`previewTurnStartRentAmount`）
+- [x] ooya 画像 — `assets.js` / `assetLoader.js`（`icon_ooya`, `ooya`, `stumble_gambling_ooya`, `fell_down_ooya`）
 - [x] 配信／神社／デイリースロット — `applyCharacterStatGain` 接続済
 - [x] `ghostPlayerAutomation.js` — `resolveWorkDailyAction` 経由で家賃同期
 - [x] ソロ — `multiplayerOnly` でロビー選択不可
