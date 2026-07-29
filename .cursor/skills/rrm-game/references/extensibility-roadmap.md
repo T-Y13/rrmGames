@@ -13,7 +13,7 @@
 | **0** | テストゲート・rules deploy 手順・既知バグ整理 | 進行中 |
 | **1** | `lib/characterEffects.js` 土台 | **完了（2026-07-29）** |
 | **2** | `lib/dailyActions/` + ghost 統合 | **完了（2026-07-29）** |
-| **3** | `constants/gamePhases.js` 定数化 | **着手済（2026-07-29）** |
+| **3** | `constants/gamePhases.js` 定数化 | **完了（2026-07-29）** |
 | **4** | `gameLogic.js` ドメイン分割（継続） | 未着手 |
 | **5** | 大家実装 | Phase 2 後 |
 
@@ -74,9 +74,16 @@
 - `GAME_PHASE` / `SUB_PHASE` / `MOVE_PHASE` 定数
 - `isDailySubPhase` / `isDay8SubPhase` / `isFinalBattlePhase` 等ヘルパ
 
-**接続:** `gameLogic.js`（initialGameState・遷移）、`dailyActions/`、`ghostPlayerAutomation.js`
+**接続:** `gameLogic.js`（initialGameState・遷移）、`dailyActions/`、`ghostPlayerAutomation.js`、**`App.jsx`（全面置換済）**
 
-**残:** `App.jsx` の文字列リテラル置換（段階的）
+---
+
+## Phase 3 完了内容（2026-07-29）
+
+- `src/constants/gamePhases.js` — 定数 + ヘルパ
+- 上記ファイル群で `"daily"` / `"day8"` / `"moving"` 等の直書きを排除
+
+**次:** Phase 4（`gameLogic.js` ドメイン分割）
 
 ---
 
