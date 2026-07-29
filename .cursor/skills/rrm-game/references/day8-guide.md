@@ -226,7 +226,7 @@ Day8ItemBar.jsx            行動ボタン直下 UI
 
 | 内容 | メモ |
 |------|------|
-| タクシーログ二重 | 同一ターン2行 — 原因調査中 |
+| タクシーログ二重 | **修正済** — `animStartGs` で書いたログを `applyDay8ActorMoveCommit` が再 prepend しない（`logsAlreadyWritten`） |
 | SP 盤面高さ | `min(720px,80vh)` 縮小候補 |
 | SP スロット HUD | 折りたたみ候補 |
 

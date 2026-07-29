@@ -1586,7 +1586,7 @@ export function resolveDay8SlotBurstAdvance(liveGs) {
 /**
  * 8日目移動確定（タクシー drive 完了等）：最新 liveGs に移動結果を載せて手番を1つ進める。
  * @param {object} liveGs
- * @param {{ actorId: string, newPlayers: object[], actionLogs: string[], gsWithDice?: object, arrived?: boolean, isMultiplayerRoom?: boolean }} commit
+ * @param {{ actorId: string, newPlayers: object[], actionLogs: string[], logsAlreadyWritten?: boolean, gsWithDice?: object, arrived?: boolean, isMultiplayerRoom?: boolean }} commit
  * @returns {object|null}
  */
 export function applyDay8ActorMoveCommit(liveGs, commit) {
@@ -1596,7 +1596,12 @@ export function applyDay8ActorMoveCommit(liveGs, commit) {
   const mergedPlayers = liveGs.players.map((pl, i) =>
     i === idx ? { ...pl, ...commit.newPlayers[idx] } : pl,
   );
-  const actionLogs = Array.isArray(commit.actionLogs) ? commit.actionLogs : [];
+  const actionLogs =
+    commit.logsAlreadyWritten === true
+      ? []
+      : Array.isArray(commit.actionLogs)
+        ? commit.actionLogs
+        : [];
   const withDice = {
     ...liveGs,
     players: mergedPlayers,
@@ -1620,7 +1625,7 @@ export function applyDay8ActorMoveCommit(liveGs, commit) {
 /**
  * タクシー＋マス効果スライドの中間地点（1区画目 drive 完了時）。
  * @param {object} liveGs
- * @param {{ actorId: string, newPlayers: object[], actionLogs: string[], gsWithDice?: object, tileSlide?: { landedDice: number } }} commit
+ * @param {{ actorId: string, newPlayers: object[], actionLogs: string[], logsAlreadyWritten?: boolean, gsWithDice?: object, tileSlide?: { landedDice: number } }} commit
  * @returns {object|null}
  */
 export function applyDay8TaxiIntermediateCommit(liveGs, commit) {
@@ -1640,11 +1645,17 @@ export function applyDay8TaxiIntermediateCommit(liveGs, commit) {
         }
       : pl,
   );
+  const actionLogs =
+    commit.logsAlreadyWritten === true
+      ? []
+      : Array.isArray(commit.actionLogs)
+        ? commit.actionLogs
+        : [];
   return {
     ...liveGs,
     players: mergedPlayers,
     movementFx: null,
-    log: prependLogs(commit.actionLogs ?? [], liveGs.log),
+    log: prependLogs(actionLogs, liveGs.log),
     ...(commit.gsWithDice?.lastDiceRolls != null
       ? { lastDiceRolls: commit.gsWithDice.lastDiceRolls }
       : {}),
@@ -1869,7 +1880,12 @@ export function applyDay8LandingStateToLive(liveGs, commit) {
   const mergedPlayers = liveGs.players.map((pl, i) =>
     i === idx ? { ...pl, ...commit.newPlayers[idx] } : pl,
   );
-  const actionLogs = Array.isArray(commit.actionLogs) ? commit.actionLogs : [];
+  const actionLogs =
+    commit.logsAlreadyWritten === true
+      ? []
+      : Array.isArray(commit.actionLogs)
+        ? commit.actionLogs
+        : [];
   return {
     ...liveGs,
     players: mergedPlayers,

@@ -4637,6 +4637,7 @@ export default function App() {
         newPlayers,
         gsWithDice: { lastDiceRolls: diceRolls },
         actionLogs: logs,
+        logsAlreadyWritten: true,
       };
       movementFxPendingCommitRef.current = {
         fxId: movementFx.id,
@@ -4663,6 +4664,7 @@ export default function App() {
         gsWithDice: { lastDiceRolls: diceRolls },
         newPlayers,
         actionLogs: logs,
+        logsAlreadyWritten: true,
         ...(needsSugorokuTileSlide ? { tileSlide: { landedDice } } : {}),
       };
 

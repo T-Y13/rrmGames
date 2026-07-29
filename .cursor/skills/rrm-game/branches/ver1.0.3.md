@@ -17,7 +17,7 @@
 | 大家（landlord） | **実装済** — バランスは現状 OK（変更なし合意） |
 | 家賃タイミング | **ターン開始・1日1回**（`lastRentCollectedDay`）— 行動後徴収は廃止 |
 | ooya 画像 | **追加・wire 済** |
-| テスト | `npm run test:run` → **231 passed** |
+| テスト | `npm run test:run` → **232 passed** |
 | マルチ実機 | **未** |
 | deploy | **未**（明示依頼まで `deploy:prod` 禁止） |
 
@@ -98,7 +98,7 @@
 ## テスト
 
 ```bash
-npm run test:run              # 231 passed（2026-07-29）
+npm run test:run              # 232 passed（2026-07-29）
 npm run test:rules:emulator   # rules 変更後
 npm run dev                   # localhost:5173
 ```
@@ -118,8 +118,8 @@ npm run dev                   # localhost:5173
 
 | 優先 | 内容 |
 |------|------|
-| 高 | タクシー行ログ**二重**（同一ターン2行） |
-| 高 | `🎒 …アイテムを使わずに手番開始` — 旧 gate 残骸 or 古い Firestore |
+| 高 | ~~タクシー行ログ**二重**（同一ターン2行）~~ → **修正済**（`logsAlreadyWritten`） |
+| 高 | `🎒 …アイテムを使わずに手番開始` — **旧 gate 廃止済**。新規ゲームでは出ない（既存 Firestore ルームの履歴のみ） |
 | 中 | SP: スロット HUD 折りたたみ / サイドバー → ボトムタブ |
 | 低 | `.agents/` を `.gitignore` に |
 
@@ -129,7 +129,7 @@ npm run dev                   # localhost:5173
 
 1. **マルチ実機** — 大家選択・家賃ターン開始・日付変更・2人/3人/4人
 2. **Phase 0** — `firestore.rules` deploy → 検証 `npm run deploy`
-3. タクシーログ二重・旧 gate ログの再現調査
+3. ~~タクシーログ二重・旧 gate ログの再現調査~~ → **完了**（タクシー修正・gate は廃止済みで新規発生なし）
 4. （任意）gameLogic の slot/day8 追加分割
 
 ---

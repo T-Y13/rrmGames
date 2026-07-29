@@ -722,6 +722,35 @@ describe("dead player ghost turn selection", () => {
     expect(next?.log[0]).toContain("A");
     expect(next?.log[0]).toContain("T2");
   });
+
+  it("applyDay8ActorMoveCommit skips actionLogs when logsAlreadyWritten", () => {
+    const stats = { money: 1000, pon: 0, luck: 50, skill: 50, virtue: 50 };
+    const players = [
+      { id: "a", name: "A", alive: true, movePhase: "moving", moveTurns: 1, position: 3, stats },
+      { id: "b", name: "B", alive: true, movePhase: "moving", moveTurns: 1, position: 11, stats },
+      { id: "c", name: "C", alive: true, movePhase: "moving", moveTurns: 0, position: 0, stats },
+    ];
+    const taxiLine = "C T1: タクシー！15マス予定 / 資金-600G → 15/50マス / PON0+15→15";
+    const liveGs = {
+      gamePhase: "playing",
+      subPhase: "day8",
+      currentPlayerIdx: 2,
+      log: [taxiLine, "older"],
+      players,
+    };
+    const newPlayers = players.map((pl, i) =>
+      i === 2 ? { ...pl, moveTurns: 1, position: 15, stats: { ...stats, money: 400 } } : pl,
+    );
+    const next = applyDay8ActorMoveCommit(liveGs, {
+      actorId: "c",
+      newPlayers,
+      actionLogs: [taxiLine],
+      logsAlreadyWritten: true,
+      gsWithDice: { lastDiceRolls: [15] },
+    });
+    expect(next?.log.filter((line) => line === taxiLine)).toHaveLength(1);
+    expect(next?.log).toContain(taxiLine);
+  });
 });
 
 describe("verify death test tile map", () => {
