@@ -1,6 +1,6 @@
 # 次期キャラクター案：大家（おばあちゃん／おじいちゃん）
 
-**ステータス:** 設計合意・**未実装**（ver1.0.3 以降）
+**ステータス:** **実装済**（ver1.0.3 / Phase 5）
 
 正本の数値・既存キャラ定義: `src/constants/gameBalance.js` → `CHARACTERS`
 
@@ -106,13 +106,13 @@
 - [x] `luckFixed` — `resolveInitialLuck`（Phase 1、`characterEffects.js`）
 - [x] 家賃計算 — `computePassiveRentIncome`（Phase 1、未接続）
 - [x] ステ debuff API — `applyCharacterStatGain`（Phase 1、App 未接続）
-- [ ] Phase 2 完了（daily + ghost 統合）
-- [ ] 日常行動後に家賃を `resolveDailyAction` から配布
-- [ ] 配信／神社／デイリースロット — App から `applyCharacterStatGain` 呼び出し
-- [ ] `ghostPlayerAutomation.js` — 家賃・ステ debuff の同期
-- [ ] ソロ／2人 — 選択不可 or 最低保証（要否は実装前に再確認）
-- [ ] `game-rules.md` 更新
-- [ ] 大家本体の E2E / マルチ実機
+- [x] Phase 2 完了（daily + ghost 統合）
+- [x] 日常行動後に家賃を `applyDailyRentIncome` から配布
+- [x] 配信／神社／デイリースロット — `applyCharacterStatGain` 接続済
+- [x] `ghostPlayerAutomation.js` — `resolveWorkDailyAction` 経由で家賃同期
+- [x] ソロ — `multiplayerOnly` でロビー選択不可
+- [x] `game-rules.md` 更新
+- [ ] マルチ実機確認
 
 **Phase 1 詳細:** [extensibility-roadmap.md](./extensibility-roadmap.md)
 

@@ -87,6 +87,7 @@ import {
 } from "./lib/inviteDiscovery";
 import useSugorokuMovementFx from "./hooks/useSugorokuMovementFx";
 import { applyWorkIncomeToStats } from "./lib/dailyActions/work";
+import { applyDailyRentIncome } from "./lib/dailyActions/shared";
 import {
   GAME_PHASE,
   MOVE_PHASE,
@@ -107,6 +108,7 @@ import {
   buildDailyActionLogEntry,
   legacyExtrasLine,
   livingExpenseLines,
+  rentIncomeLines,
   ponFireLines,
   ponGainLine,
   ponNoFireLine,
@@ -3626,6 +3628,22 @@ export default function App() {
         const moneyBeforeLiving = s.money;
         s.money = clampMoney(s.money - lc);
         statusLines.push(...livingExpenseLines(moneyBeforeLiving, s.money, lc, s.money < 0));
+
+        const rent = applyDailyRentIncome(s, p, char, g);
+        s = rent.stats;
+        if (rent.rentIncome > 0 && rent.rentMeta) {
+          const moneyBeforeRent = moneyBeforeLiving - lc;
+          const ratePct = Math.round((char.rentIncomeRate ?? 0) * 100);
+          statusLines.push(
+            ...rentIncomeLines(
+              moneyBeforeRent,
+              s.money,
+              rent.rentIncome,
+              rent.rentMeta.sourceLivingCostSum,
+              ratePct,
+            ),
+          );
+        }
       }
 
       const ponGain = Math.ceil(BAL.pon.dailyGain * ponMultiplier);
@@ -3929,6 +3947,22 @@ export default function App() {
       s.money = clampMoney(s.money - lc);
       statusLines.push(...livingExpenseLines(moneyBeforeLiving, s.money, lc, s.money < 0));
       if (actionType === "work") livingCostForHud = lc;
+
+      const rent = applyDailyRentIncome(s, p, char, gs);
+      s = rent.stats;
+      if (rent.rentIncome > 0 && rent.rentMeta) {
+        const moneyBeforeRent = moneyBeforeLiving - lc;
+        const ratePct = Math.round((char.rentIncomeRate ?? 0) * 100);
+        statusLines.push(
+          ...rentIncomeLines(
+            moneyBeforeRent,
+            s.money,
+            rent.rentIncome,
+            rent.rentMeta.sourceLivingCostSum,
+            ratePct,
+          ),
+        );
+      }
     }
 
     const ponGain = Math.ceil(BAL.pon.dailyGain * ponMultiplier);

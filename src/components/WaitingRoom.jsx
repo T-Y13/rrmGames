@@ -9,6 +9,7 @@ import {
   SECRET_RIRIMU_CHARACTER_KEY,
   isSecretRirimuUnlockedByTrimmedPlayerName,
 } from "../constants/gameBalance";
+import { isCharacterSelectableInLobby } from "../lib/characterEffects";
 import {
   computeFinalStatsFromInitialRolls,
   initialStatGaugeRanges,
@@ -301,9 +302,11 @@ function CharacterLobbyPrep({
   const visibleCharacters = useMemo(
     () =>
       Object.values(CHARACTERS).filter(
-        (c) => c.key !== SECRET_RIRIMU_CHARACTER_KEY || secretUnlockActive,
+        (c) =>
+          (c.key !== SECRET_RIRIMU_CHARACTER_KEY || secretUnlockActive) &&
+          isCharacterSelectableInLobby(c, playerSlots.length),
       ),
-    [secretUnlockActive],
+    [secretUnlockActive, playerSlots.length],
   );
 
   /** Firestore へ書いた raw（locked） */

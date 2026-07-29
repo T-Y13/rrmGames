@@ -15,7 +15,7 @@
 | **2** | `lib/dailyActions/` + ghost 統合 | **完了（2026-07-29）** |
 | **3** | `constants/gamePhases.js` 定数化 | **完了（2026-07-29）** |
 | **4** | `gameLogic.js` ドメイン分割（継続） | **完了（第1弾 2026-07-29）** |
-| **5** | 大家実装 | 未着手 |
+| **5** | 大家実装 | **完了（2026-07-29）** |
 
 ---
 
@@ -100,6 +100,15 @@
 `gameLogic.js` は re-export ハブ + day8/slot/sugoroku 本体。既存 import パスは不変。
 
 **将来（任意）:** slot / day8 / sugoroku の追加分割
+
+---
+
+## Phase 5 完了内容（2026-07-29）
+
+- `CHARACTERS.landlord` — luckFixed 3 / skill -20 / virtue +10 / 家賃70% / ステ0.8
+- `applyDailyRentIncome` — 日常行動後（App + ghost）
+- ロビー `multiplayerOnly` — 2人未満で選択不可
+- テスト +227
 
 ---
 

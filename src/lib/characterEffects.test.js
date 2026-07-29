@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyCharacterStatGain,
   computePassiveRentIncome,
+  isCharacterSelectableInLobby,
   luckGaugeRangeForCharacter,
   resolveInitialLuck,
 } from "./characterEffects";
@@ -50,6 +51,12 @@ describe("computePassiveRentIncome", () => {
       sourceLivingCostSum: 0,
       otherCount: 0,
     });
+  });
+
+  it("isCharacterSelectableInLobby blocks multiplayerOnly when solo", () => {
+    expect(isCharacterSelectableInLobby(CHARACTERS.landlord, 1)).toBe(false);
+    expect(isCharacterSelectableInLobby(CHARACTERS.landlord, 2)).toBe(true);
+    expect(isCharacterSelectableInLobby(CHARACTERS.salaryman, 1)).toBe(true);
   });
 
   it("sums other alive players living cost and applies rate", () => {

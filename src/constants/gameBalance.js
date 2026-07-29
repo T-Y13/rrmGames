@@ -238,6 +238,23 @@ export const CHARACTERS = {
     ponMultiplier: 1.2,
     dailyLivingCost: 300,
   },
+  landlord: {
+    key: "landlord",
+    label: "大家",
+    emoji: "🏠",
+    desc: "マルチ特化・資産型。運3固定・技量-20。他プレイヤーの生活費70%を家賃収入。配信・神社・スロットのステ上昇は0.8倍。",
+    color: "text-amber-200",
+    border: "border-amber-500/55 bg-amber-500/10",
+    skillBonus: -20,
+    luckFixed: 3,
+    virtueBonus: 10,
+    dailyLivingCost: 150,
+    statGainMultiplier: 0.8,
+    rentIncomeRate: 0.7,
+    multiplayerOnly: true,
+    streamMultiplier: 1.0,
+    ponMultiplier: 1.0,
+  },
 };
 
 /** 待機室のシークレットキャラ：プレイヤー名（前後空白除去後）が完全一致すると vtuber が選択肢に現れる */

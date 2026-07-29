@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { CHARACTERS } from "../constants/gameBalance";
 import {
   VIRTUE_BY_INITIAL_ROLL,
   virtueMinRoll,
@@ -63,6 +64,13 @@ describe("initial rolls → final virtue", () => {
     const rolls = { luck: 1, skill: 0, virtue: 0, pon: 0 };
     const { luck } = computeFinalStatsFromInitialRolls(rolls, "student");
     expect(luck).toBe(2 + 20);
+  });
+
+  it("landlord uses luckFixed regardless of roll", () => {
+    const rolls = { luck: 5, skill: 0, virtue: 0, pon: 0 };
+    const { luck, skill } = computeFinalStatsFromInitialRolls(rolls, "landlord");
+    expect(luck).toBe(3);
+    expect(skill).toBe(30 + CHARACTERS.landlord.skillBonus);
   });
 });
 

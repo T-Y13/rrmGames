@@ -164,6 +164,21 @@ export function livingExpenseLines(moneyBefore, moneyAfter, amount, inDebt) {
   ];
 }
 
+export function rentIncomeLines(moneyBefore, moneyAfter, amount, sourceLivingCostSum, ratePct) {
+  return [
+    {
+      cat: "rent",
+      icon: "🏠",
+      text: `家賃収入 +${amount}G（他プレイヤー生活費合計${sourceLivingCostSum}Gの${ratePct}%）`,
+    },
+    {
+      cat: "money",
+      icon: LOG_ICONS.money,
+      text: formatStatBrief(moneyBefore, moneyAfter, { label: "資金", unit: "G" }),
+    },
+  ];
+}
+
 export function ponGainLine(ponBefore, ponAfter) {
   return {
     cat: "pon",

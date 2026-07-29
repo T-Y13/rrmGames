@@ -79,3 +79,9 @@ export function luckGaugeRangeForCharacter(char) {
   const lb = char?.luckBonus ?? 0;
   return { min: lb, max: 10 + lb };
 }
+
+/** ロビー：人数不足時に multiplayerOnly キャラを選べない */
+export function isCharacterSelectableInLobby(char, playerCount) {
+  if (char?.multiplayerOnly && (Number(playerCount) || 0) < 2) return false;
+  return true;
+}
