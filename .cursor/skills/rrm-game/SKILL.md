@@ -22,8 +22,10 @@ React 19 + Vite + Tailwind + Firebase（匿名 Auth / Firestore / Hosting）の�
 | ブランチ | 記録 |
 |----------|------|
 | `main` | [branches/main.md](branches/main.md) |
+| `develop` | [branches/develop.md](branches/develop.md) |
 | `ver1.0.2` | [branches/ver1.0.2.md](branches/ver1.0.2.md) |
-| **`ver1.0.3`（作業中）** | **[branches/ver1.0.3.md](branches/ver1.0.3.md)** |
+| `ver1.0.3` | [branches/ver1.0.3.md](branches/ver1.0.3.md) |
+| **`ver1.0.4`（作業中）** | **[branches/ver1.0.4.md](branches/ver1.0.4.md)** |
 
 ## 作業終了時 — ゲームルール正本の更新（必須）
 

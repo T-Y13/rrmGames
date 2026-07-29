@@ -1,4 +1,4 @@
-# ver1.0.3（作業中 — 引き継ぎ正本）
+# ver1.0.3（完了 — develop に取り込み済）
 
 - **ブランチ:** `ver1.0.3`
 - **リモート:** `origin/ver1.0.3`（push 済み想定 — 作業再開時は `git fetch && git status`）

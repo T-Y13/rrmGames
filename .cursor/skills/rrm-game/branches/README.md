@@ -9,7 +9,8 @@
 | [main.md](main.md) | 本番 baseline（`main` / デプロイ済みの基準） |
 | **[develop.md](develop.md)** | **検証・次期本番の控え**（`main` に未反映の最新） |
 | [ver1.0.2.md](ver1.0.2.md) | v1.0.2 タグ時点 |
-| [ver1.0.3.md](ver1.0.3.md) | ver1.0.3 作業記録（現状 `develop` と同一 tip） |
+| [ver1.0.3.md](ver1.0.3.md) | ver1.0.3 作業記録（**完了** → develop に取り込み済） |
+| **[ver1.0.4.md](ver1.0.4.md)** | **作業中** — `develop` から切り出し |
 
 **詳細リファレンス（Skill 内）:** [references/](../references/) — マルチ同期 / 8日目 / テスト / デプロイ
 
@@ -63,19 +64,19 @@ npx -y firebase-tools@latest deploy --only firestore:rules
 
 1. リポジトリを開く（同じ `RRM-game` フォルダ）
 2. Agent に「`.cursor/skills/rrm-game` を読んでから作業して」と伝えるか、Skill が自動適用されるのを待つ
-3. ターミナル: `git branch --show-current` → 例: `ver1.0.3`
-4. **`.cursor/skills/rrm-game/branches/ver1.0.3.md`** を開く（WIP・回収・次の一手がここに集約）
+3. ターミナル: `git branch --show-current` → 例: `ver1.0.4`
+4. **`.cursor/skills/rrm-game/branches/ver1.0.4.md`** を開く（WIP・回収・次の一手がここに集約）
 5. `git status -sb` で未 commit の有無を照合
 
 **バージョン差分を見る:**
 
 | 比較 | コマンド |
 |------|----------|
-| ブランチ vs main（commit 差） | `git log main..ver1.0.3 --oneline` |
+| ブランチ vs main（commit 差） | `git log main..ver1.0.4 --oneline` |
 | 未 commit の中身 | `git diff --stat` |
-| main に無い機能の説明 | `branches/main.md` の「含まれないもの」↔ `ver1.0.3.md` |
+| main に無い機能の説明 | `branches/main.md` の「含まれないもの」↔ `ver1.0.4.md` |
 
-現状 `ver1.0.3` は **main と同じ tip** のため、差分はほぼ **作業ツリー（未 commit）** と **`branches/ver1.0.3.md` の記述** で追う。
+現状 `ver1.0.4` は **develop と同一 tip** で開始。差分は **ver1.0.4 上の commit** と **作業ツリー** で追う。
 
 ## 更新日
 
