@@ -7,12 +7,21 @@
 | ファイル | 内容 |
 |----------|------|
 | [main.md](main.md) | 本番 baseline（`main` / デプロイ済みの基準） |
-| [ver1.0.2.md](ver1.0.2.md) | v1.0.2 タグ時点（現状 `main` と同一 tip） |
-| [ver1.0.3.md](ver1.0.3.md) | **作業中** — 8日目アイテム・ログ・SP UI 等 |
+| **[develop.md](develop.md)** | **検証・次期本番の控え**（`main` に未反映の最新） |
+| [ver1.0.2.md](ver1.0.2.md) | v1.0.2 タグ時点 |
+| [ver1.0.3.md](ver1.0.3.md) | ver1.0.3 作業記録（現状 `develop` と同一 tip） |
 
 **詳細リファレンス（Skill 内）:** [references/](../references/) — マルチ同期 / 8日目 / テスト / デプロイ
 
 古いブランチ: `ver1.0.0`, `ver1.0.1` は remote のみ。詳細は `git log ver1.0.0..ver1.0.1` を参照。
+
+## ブランチ役割（2026-07-29〜）
+
+| ブランチ | 役割 |
+|----------|------|
+| `main` | 本番（`deploy:prod`） |
+| `develop` | 検証・次期本番の控え（`npm run deploy`） |
+| `ver1.0.x` | 機能単位の作業（完了後 `develop` へ） |
 
 ## Agent 向けルール
 
