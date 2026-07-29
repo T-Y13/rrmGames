@@ -134,8 +134,15 @@ export const BAL = {
     heatWeightBig: 3 / 15,
     heatWeightMid: 5 / 15,
     heatWeightAtari: 6 / 15,
-    nearMissReachChance: 0.12,
+    nearMissReachChance: 0.18,
     slipSymbolChance: 0.1,
+    /**
+     * 目押し（ver1.0.4 Phase B/C）— ガセリーチ演出時に「停止位置が配当に効く」チャンスを付与する確率。
+     * 対象: tier=miss かつ 1・2リール目同絵柄・3リール目だけ外れ（reachTease / 当たり風ガセ）。
+     * Phase A では未使用（手動停止のみ・結果は spinSlot 確定のまま）。
+     * 体感目安（miss≈85%）: 約10.7%/スピン・約29%/3スピン席（ver1.0.4 合意）。
+     */
+    gaseReachSkillStopChance: 0.7,
   },
   shrine: {
     cost: 300,

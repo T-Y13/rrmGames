@@ -31,7 +31,7 @@ ver1.0.4（作業） → develop（検証） → main（本番）
 | 家賃タイミング | ターン開始・1日1回 |
 | 8日目アイテム Phase 1 | **実装済** |
 | タクシーログ二重 | **修正済**（`logsAlreadyWritten`） |
-| テスト | `npm run test:run` → **232 passed** |
+| テスト | `npm run test:run` → **237 passed** |
 
 ---
 
@@ -95,12 +95,31 @@ ver1.0.4（作業） → develop（検証） → main（本番）
 
 #### Phase 0（先にやる — 実装と並行可）
 
-- [ ] 「チャンスタイミング」の定義（例: スピンごと X%、リーチ時のみ、技量閾値以上で Y% など）
-- [ ] `gameBalance.js` に定数置き場（`slotStopMode`, チャンス率, 目押し許容窓 ms）
-- [ ] `lib/slotReelStop.js`（仮）— 純関数: 停止位置 ↔ tier 判定（DOM なし・テスト可能）
-- [ ] Firestore フィールド案: `slotStopMode`, `slotSkillChance`, `slotReelStopAt[]` 等（rules 要否をメモ）
-- [ ] ゴースト／代理スロット: チャンス時は自動停止 or スキップの方針
-- [ ] **8日目のみ**か、デイリースロット練習も対象か（推奨: **8日目先行**、共通 lib は共通化）
+**チャンスタイミング（確定 2026-07-29、数値更新）**
+
+| 項目 | 内容 |
+|------|------|
+| **ガセリーチ発生** | ハズレの **18%**（`BAL.slot.nearMissReachChance`、旧 12%） |
+| **目押し付与** | ガセリーチ成立スピンの **70%**（`BAL.slot.gaseReachSkillStopChance`、旧 30%） |
+| **対象演出** | `tier=miss` かつ 1・2リール同絵柄・3リール目だけ外れ（当たり／小当たり**風**） |
+| **それ以外** | 従来どおり（結果は `spinSlot` 確定・自動停止） |
+
+**体感頻度（目安・デフォルト stats、miss≈85%）**
+
+| 単位 | 確率 | 間隔の目安 |
+|------|------|------------|
+| 1スピン（目押し） | **約 10.7%** | 約 **9〜10回に1回** |
+| 1スロット席（3スピン） | **約 29%** | 約 **3.5席に1回**（≈4席に1回のイメージ） |
+| ガセリーチ（目押し前） | 約 15.3% | 約 6〜7回に1回 |
+
+計算: `0.85 × 0.18 × 0.70 ≈ 0.107` / スピン
+
+- [x] `gameBalance.js` — `nearMissReachChance: 0.18`, `gaseReachSkillStopChance: 0.7`
+- [x] `lib/slotReelStop.js` — `isGaseReachVisual`, `resolveSlotSkillStopContext`, `buildSlotSpinVisualPlan`
+- [x] 単体テスト `slotReelStop.test.js`
+- [ ] Firestore フィールド実装: `slotSkillStopActive`, `slotSkillStopMode`（Phase A/B で書き込み）
+- [ ] ゴースト／代理スロット: チャンス時は **自動停止（ランダム窓内）** — Phase B 前に実装
+- [x] **8日目先行**（デイリースロットは `buildDailySlotSpinVisualPlan` 経由で同じ判定を返すのみ・UI は後回し）
 
 #### Phase A — 停止ボタン + 手動停止（旧 1+2 統合推奨）
 
@@ -182,7 +201,7 @@ ver1.0.4（作業） → develop（検証） → main（本番）
 
 ## ver1.0.4 での作業ログ
 
-（ここに commit や完了項目を追記）
+- **Phase 0（目押し設計）** — ガセ **18%** × 目押し **70%**（`nearMissReachChance` / `gaseReachSkillStopChance`）、`lib/slotReelStop.js` + テスト。約10.7%/スピン・約29%/席（Phase B まで UI/Firestore 未接続）
 
 ---
 

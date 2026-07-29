@@ -237,6 +237,14 @@ Day8ItemBar.jsx            行動ボタン直下 UI
 3. **Phase 3** — 他者デバフ、ゴースト自動使用
 4. **目押し** — ver1.0.4 で段階実装（→ [ver1.0.4.md](../branches/ver1.0.4.md)）
 
+### 目押し（ver1.0.4 Phase 0 設計メモ）
+
+- **ガセリーチ:** ハズレの **18%**（`nearMissReachChance`）
+- **目押しチャンス:** ガセ成立時 **70%**（`gaseReachSkillStopChance`）
+- **体感:** 約 **10.7%/スピン**、約 **29%/3スピン席**（miss≈85% 想定）
+- **純関数:** `lib/slotReelStop.js` — `resolveSlotSkillStopContext`, `buildSlotSpinVisualPlan`
+- **Phase A 以降:** Firestore `slotSkillStopActive` / `slotSkillStopMode`、停止ボタン UI
+
 ## 関連テスト
 
 `gameLogic.test.js`, `day8Items.test.js`, `day8RoundTracking.test.js`, `day8SlotReloadRecovery.test.js`, `slotPotJackpot.test.js`, `sugorokuMovementFx*.test.js`, `assetHistoryFromGameState.test.js`

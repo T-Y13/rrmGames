@@ -30,6 +30,7 @@ import {
   grantDay8StartInventoryToPlayers,
   resetDay8ItemSeatForPlayer,
 } from "../lib/day8Items";
+import { buildSlotSpinVisualPlan } from "../lib/slotReelStop.js";
 import {
   createEmptyAssetHistory,
   finalizeDay8AssetHistory,
@@ -182,25 +183,7 @@ export const DAILY_SLOT_SYNC_DEFAULTS = {
 
 /** デイリースロット1回分の演出用リール（near-miss 加工込み） */
 export function buildDailySlotSpinVisualPlan(res, machineKey = "standard") {
-  const machine = SLOT_MACHINES[machineKey] ?? SLOT_MACHINES.standard;
-  let visualReels = [...(res?.reels ?? ["?", "?", "?"])];
-  if (res?.tier === "miss") {
-    const sym = machine.symbols;
-    const nm = BAL.slot.nearMissReachChance;
-    const sp = BAL.slot.slipSymbolChance;
-    const u = Math.random();
-    if (sym.length >= 2 && u < nm) {
-      const a = sym[rand(0, sym.length - 1)];
-      const diff = sym.filter((s) => s !== a);
-      const b = diff[rand(0, diff.length - 1)];
-      visualReels = [a, a, b];
-    } else if (u < nm + sp) {
-      const slipPos = rand(0, 2);
-      visualReels[slipPos] = sym[1];
-    }
-  }
-  const { reachPossible } = getSlotReachAnimationState(visualReels, res?.tier);
-  return { visualReels, reachPossible, machine };
+  return buildSlotSpinVisualPlan(res, machineKey);
 }
 
 /** @deprecated 手番継続時はリール停止直後に idle へ。バースト終了時は SLOT_RESULT_END_BURST_GRACE_MS */
