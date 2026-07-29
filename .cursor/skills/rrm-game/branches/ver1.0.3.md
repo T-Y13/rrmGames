@@ -2,7 +2,7 @@
 
 - **ブランチ:** `ver1.0.3`
 - **リモート:** `origin/ver1.0.3`（push 済み想定 — 作業再開時は `git fetch && git status`）
-- **Git tip:** `cf9235e`（`git log -1 --oneline` で確認）
+- **Git tip:** `git log -1 --oneline` on `ver1.0.3`
 - **記録更新:** 2026-07-29
 
 > **新しいチャットで作業再開するとき:** このファイル → [extensibility-roadmap.md](../references/extensibility-roadmap.md) → [game-rules.md](../references/game-rules.md) の順に読む。
