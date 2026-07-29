@@ -19,6 +19,7 @@ import {
 import { DAILY_CUTIN_SYNC_DEFAULTS } from "../lib/dailyCutinSync";
 import { canSelectAsProxySlotTarget, canContinueAsProxySlotTarget, canProxySlotBetAt, computeProxySlotMaxBet } from "../lib/slotProxyTarget";
 import { applyDay8SlotPayoutBonus } from "../lib/day8ItemEffects";
+import { applyDailyRentForAllEligible, applyTurnStartRentToPlayer } from "../lib/characterEffects";
 import {
   GAME_PHASE,
   MOVE_PHASE,
@@ -1963,8 +1964,11 @@ export function initialGameState(playerSlots) {
       return `${p.name}(${c?.emoji ?? ""}${c?.label ?? ""}): PON=${p.stats.pon} 運=${p.stats.luck} 技量=${p.stats.skill} 善行=${p.stats.virtue} 生活費=${lc}G`;
     }),
   ];
+  const rentStart = applyDailyRentForAllEligible(players, 1, SUB_PHASE.daily);
+  const playersWithRent = rentStart.players;
+  if (rentStart.rentLogs.length) logs.push(...rentStart.rentLogs);
   return {
-    players,
+    players: playersWithRent,
     currentDay: 1,
     currentPlayerIdx: 0,
     subPhase: SUB_PHASE.daily,
@@ -2024,11 +2028,34 @@ export function computeAdvanceDaily(gs, newPlayers, extraLogs) {
     patch = { currentPlayerIdx: nextIdx };
   }
 
+  const incomingIdx = patch.currentPlayerIdx ?? gs.currentPlayerIdx;
+  const effectiveDay = patch.currentDay ?? gs.currentDay;
+  const effectiveSubPhase = patch.subPhase ?? gs.subPhase;
+  let playersAfterRent = newPlayers;
+  const rentLogs = [];
+  const dayRolled = patch.currentDay != null && patch.currentDay !== gs.currentDay;
+
+  if (
+    effectiveSubPhase === SUB_PHASE.daily &&
+    effectiveDay >= 1 &&
+    effectiveDay <= LAST_DAILY_DAY
+  ) {
+    if (dayRolled) {
+      const batch = applyDailyRentForAllEligible(newPlayers, patch.currentDay, SUB_PHASE.daily);
+      playersAfterRent = batch.players;
+      rentLogs.push(...batch.rentLogs);
+    } else if (incomingIdx != null && incomingIdx !== gs.currentPlayerIdx) {
+      const rent = applyTurnStartRentToPlayer(newPlayers, incomingIdx, SUB_PHASE.daily, gs.currentDay);
+      playersAfterRent = rent.players;
+      if (rent.rentLog) rentLogs.push(rent.rentLog);
+    }
+  }
+
   return {
     ...nextGs,
     ...patch,
-    players: newPlayers,
-    log: prependLogs([...extraLogs, ...moreLogs], gs.log),
+    players: playersAfterRent,
+    log: prependLogs([...extraLogs, ...moreLogs, ...rentLogs], gs.log),
   };
 }
 

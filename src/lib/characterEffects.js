@@ -1,4 +1,9 @@
-import { CHARACTERS } from "../constants/gameBalance";
+import { CHARACTERS, LAST_DAILY_DAY } from "../constants/gameBalance";
+import { SUB_PHASE } from "../constants/gamePhases";
+
+function clampMoney(v) {
+  return Math.round(Math.max(-999999999, Math.min(999999999, Number(v) || 0)));
+}
 
 /** @typedef {"luck" | "skill" | "virtue" | "pon"} CharacterStatKey */
 
@@ -65,6 +70,80 @@ export function computePassiveRentIncome(players, playerId, char) {
     amount: Math.max(0, amount),
     sourceLivingCostSum,
     otherCount: others.length,
+  };
+}
+
+/** UI 用：ターン開始時の家賃見込み（1〜7日目） */
+export function previewTurnStartRentAmount(players, player, char, subPhase) {
+  if (subPhase !== SUB_PHASE.daily || !player?.id) return 0;
+  return computePassiveRentIncome(players, player.id, char).amount;
+}
+
+/**
+ * 1〜7日目：その日まだ未徴収の大家に家賃を加算（日付更新時は全員分）。
+ * @returns {{ players: object[], rentLogs: string[] }}
+ */
+export function applyDailyRentForAllEligible(players, currentDay, subPhase) {
+  if (
+    subPhase !== SUB_PHASE.daily ||
+    !Number.isFinite(currentDay) ||
+    currentDay < 1 ||
+    currentDay > LAST_DAILY_DAY
+  ) {
+    return { players, rentLogs: [] };
+  }
+  let next = players;
+  const rentLogs = [];
+  for (let i = 0; i < next.length; i++) {
+    const r = applyTurnStartRentToPlayer(next, i, subPhase, currentDay);
+    if (r.rentIncome > 0) {
+      next = r.players;
+      if (r.rentLog) rentLogs.push(r.rentLog);
+    }
+  }
+  return { players: next, rentLogs };
+}
+
+/**
+ * 1〜7日目ターン開始時に家賃を加算（大家等）。同一日付では1回のみ。
+ * @returns {{ players: object[], rentIncome: number, rentLog: string|null, rentMeta: object|null }}
+ */
+export function applyTurnStartRentToPlayer(players, playerIdx, subPhase, currentDay) {
+  if (
+    subPhase !== SUB_PHASE.daily ||
+    !Number.isFinite(currentDay) ||
+    currentDay < 1 ||
+    currentDay > LAST_DAILY_DAY
+  ) {
+    return { players, rentIncome: 0, rentLog: null, rentMeta: null };
+  }
+  const p = players?.[playerIdx];
+  if (!p) return { players, rentIncome: 0, rentLog: null, rentMeta: null };
+  if (p.lastRentCollectedDay === currentDay) {
+    return { players, rentIncome: 0, rentLog: null, rentMeta: null };
+  }
+
+  const char = CHARACTERS[p.characterType] ?? CHARACTERS.salaryman;
+  const rentMeta = computePassiveRentIncome(players, p.id, char);
+  if (rentMeta.amount <= 0) {
+    return { players, rentIncome: 0, rentLog: null, rentMeta };
+  }
+
+  const nextPlayers = players.map((pl, i) =>
+    i === playerIdx
+      ? {
+          ...pl,
+          lastRentCollectedDay: currentDay,
+          stats: { ...pl.stats, money: clampMoney(pl.stats.money + rentMeta.amount) },
+        }
+      : pl,
+  );
+
+  return {
+    players: nextPlayers,
+    rentIncome: rentMeta.amount,
+    rentMeta,
+    rentLog: `  🏠 ${p.name}: ${currentDay}日目・家賃 +${rentMeta.amount}G`,
   };
 }
 

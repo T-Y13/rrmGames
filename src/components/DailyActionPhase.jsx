@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Briefcase, Tv, Dice5 } from "lucide-react";
 import { BAL, CHARACTERS, FINAL_GAME_DAY, LAST_DAILY_DAY } from "../constants/gameBalance";
+import { previewTurnStartRentAmount } from "../lib/characterEffects";
 import { computeWorkPayout } from "../lib/dailyActions/work";
 import { computeStreamFailRate } from "../lib/dailyActions/stream";
 import { livingCostForPlayer } from "../utils/gameLogic";
@@ -31,6 +32,11 @@ export default function DailyActionPhase({
   const workPayShown = computeWorkPayout(char, cpGs.stats.virtue).workTotal;
 
   const streamFailRate = computeStreamFailRate(cpGs.stats);
+
+  const turnStartRent = useMemo(
+    () => previewTurnStartRentAmount(gs.players, cpGs, char, gs.subPhase),
+    [gs.players, gs.subPhase, cpGs, char],
+  );
 
   const auraShadows = [];
   const auraTextShadows = [];
@@ -77,6 +83,12 @@ export default function DailyActionPhase({
       <h2 className="font-semibold">
         {gs.currentDay}日目 行動選択 — {cpGs.name}
       </h2>
+
+      {turnStartRent > 0 && (
+        <p className="text-lg font-black tabular-nums tracking-tight text-amber-300">
+          家賃：＋{turnStartRent}
+        </p>
+      )}
 
       <div className="rounded-xl border border-cyan-600/45 bg-gradient-to-br from-cyan-950/50 to-slate-900/90 px-3 py-2.5 space-y-2">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">

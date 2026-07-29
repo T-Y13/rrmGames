@@ -14,7 +14,7 @@ export function applyAmuletLuckBoost(stats, amuletCount) {
   };
 }
 
-/** 大家等：日常行動後の家賃収入（生活費徴収の直後） */
+/** 大家等：家賃収入（stats 単体・テスト／互換用。本番はターン開始時 applyTurnStartRentToPlayer） */
 export function applyDailyRentIncome(stats, player, char, gs) {
   const rate = Number(char?.rentIncomeRate);
   if (!Number.isFinite(rate) || rate <= 0 || gs?.subPhase !== SUB_PHASE.daily) {
@@ -33,7 +33,7 @@ export function applyDailyRentIncome(stats, player, char, gs) {
   };
 }
 
-/** 1〜7日目：生活費控除 + 家賃 + 日常 PON 加算（ゴースト自動仕事と同じ） */
+/** 1〜7日目：生活費控除 + 日常 PON 加算（ゴースト自動仕事と同じ。家賃はターン開始時） */
 export function applyDailyLivingCostAndPon(stats, player, char, gs) {
   const logs = [];
   let s = stats;
@@ -43,16 +43,12 @@ export function applyDailyLivingCostAndPon(stats, player, char, gs) {
     s = { ...s, money: clampMoney(s.money - lc) };
     logs.push(`  生活費 -${lc}G → 資金 ${s.money}G`);
 
-    const rent = applyDailyRentIncome(s, player, char, gs);
-    s = rent.stats;
-    if (rent.rentLog) logs.push(rent.rentLog);
-
     const ponMultiplier = char?.ponMultiplier ?? 1;
     const ponGain = Math.ceil(BAL.pon.dailyGain * ponMultiplier);
     s = { ...s, pon: clamp(s.pon + ponGain) };
     logs.push(`  PON: +${ponGain} → ${s.pon}`);
 
-    return { stats: s, logs, livingCost: lc, ponGain, rentIncome: rent.rentIncome };
+    return { stats: s, logs, livingCost: lc, ponGain, rentIncome: 0 };
   }
 
   return { stats: s, logs, livingCost: 0, ponGain: 0, rentIncome: 0 };

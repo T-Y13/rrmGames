@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   applyCharacterStatGain,
+  applyDailyRentForAllEligible,
+  applyTurnStartRentToPlayer,
   computePassiveRentIncome,
   isCharacterSelectableInLobby,
   luckGaugeRangeForCharacter,
   resolveInitialLuck,
 } from "./characterEffects";
 import { CHARACTERS } from "../constants/gameBalance";
+import { SUB_PHASE } from "../constants/gamePhases";
 
 describe("resolveInitialLuck", () => {
   it("salaryman uses roll*2 without bonus", () => {
@@ -76,5 +79,51 @@ describe("luckGaugeRangeForCharacter", () => {
 
   it("uses bonus spread for normal characters", () => {
     expect(luckGaugeRangeForCharacter(CHARACTERS.student)).toEqual({ min: 20, max: 30 });
+  });
+});
+
+describe("applyTurnStartRentToPlayer", () => {
+  const players = [
+    { id: "p0", characterType: "salaryman", stats: { money: 1000, livingCost: 500 } },
+    {
+      id: "p1",
+      characterType: "landlord",
+      stats: { money: 2000, livingCost: 150 },
+    },
+  ];
+
+  it("collects rent once per in-game day", () => {
+    const first = applyTurnStartRentToPlayer(players, 1, SUB_PHASE.daily, 1);
+    expect(first.rentIncome).toBe(Math.floor(500 * 0.7));
+    expect(first.players[1].lastRentCollectedDay).toBe(1);
+
+    const second = applyTurnStartRentToPlayer(first.players, 1, SUB_PHASE.daily, 1);
+    expect(second.rentIncome).toBe(0);
+    expect(second.players[1].stats.money).toBe(first.players[1].stats.money);
+  });
+
+  it("collects again on the next day", () => {
+    const day1 = applyTurnStartRentToPlayer(players, 1, SUB_PHASE.daily, 1);
+    const day2 = applyTurnStartRentToPlayer(day1.players, 1, SUB_PHASE.daily, 2);
+    expect(day2.rentIncome).toBe(Math.floor(500 * 0.7));
+    expect(day2.players[1].lastRentCollectedDay).toBe(2);
+  });
+
+  it("skips rent on day 8", () => {
+    const r = applyTurnStartRentToPlayer(players, 1, SUB_PHASE.day8, 8);
+    expect(r.rentIncome).toBe(0);
+  });
+});
+
+describe("applyDailyRentForAllEligible", () => {
+  it("applies rent to every landlord at day start", () => {
+    const players = [
+      { id: "p0", characterType: "salaryman", stats: { money: 1000, livingCost: 500 } },
+      { id: "p1", characterType: "landlord", stats: { money: 2000, livingCost: 150 } },
+    ];
+    const { players: next, rentLogs } = applyDailyRentForAllEligible(players, 1, SUB_PHASE.daily);
+    expect(rentLogs).toHaveLength(1);
+    expect(next[1].stats.money).toBe(2000 + Math.floor(500 * 0.7));
+    expect(next[0].lastRentCollectedDay).toBeUndefined();
   });
 });

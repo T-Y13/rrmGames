@@ -38,6 +38,21 @@ const STANDEE_STUDENT_NOBACK = [
   "/images/beginner_university_student_noback.jpeg",
 ];
 
+/** 大家（CHARACTERS.landlord）。ファイル名プレフィックスは ooya */
+const ICON_OOYA = [
+  "/images/icon_ooya.png",
+  "/images/icon_ooya.webp",
+  "/images/icon_ooya.jpg",
+  "/images/icon_ooya.jpeg",
+];
+
+const STANDEE_OOYA_NOBACK = [
+  "/images/ooya_noback.png",
+  "/images/ooya_noback.webp",
+  "/images/ooya_noback.jpg",
+  "/images/ooya_noback.jpeg",
+];
+
 const STANDEE_RIRM = {
   normal: ["/images/rrm_noback.png"],
   fallen: ["/images/fell_down_rrm.png", "/images/fell_down_rrm.webp"],
@@ -51,6 +66,7 @@ export const ICONS = {
   student: ICON_STUDENT,
   vtuber: ICON_RRM,
   ririm: ICON_RRM,
+  landlord: ICON_OOYA,
 };
 
 /** すごろく駒・立ち絵（背景なし）。fallen は転倒・1回休みなど演出用 */
@@ -69,6 +85,12 @@ export const STANDEE = {
   },
   vtuber: STANDEE_RIRM,
   ririm: STANDEE_RIRM,
+  landlord: {
+    normal: STANDEE_OOYA_NOBACK,
+    fallen: [],
+    stumble: ["/images/stumble_gambling_ooya.png", "/images/stumble_gambling_ooya.webp"],
+    fell_down: ["/images/fell_down_ooya.png", "/images/fell_down_ooya.webp"],
+  },
 };
 
 /** すごろく全景背景（シームレス縦タイル・幅はビューポートに合わせる） */

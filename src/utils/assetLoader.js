@@ -13,6 +13,7 @@ export const GAME_ASSET_PRELOAD_PATHS = [
   "/images/icon_rrm.png",
   "/images/icon_beginner_university_student.png",
   "/images/icon_gambling_salaryman.png",
+  "/images/icon_ooya.png",
   // Actions / Events
   "/images/work.png",
   "/images/work_ririmu.png",
@@ -24,9 +25,12 @@ export const GAME_ASSET_PRELOAD_PATHS = [
   "/images/fell_down_rrm.png",
   "/images/fell_down_beginner_university_student.png",
   "/images/fell_down_gambling_salaryman.png",
+  "/images/stumble_gambling_ooya.png",
+  "/images/fell_down_ooya.png",
   // Ririmu Special
   "/images/chance_rrm.png",
   "/images/rrm_noback.png",
+  "/images/ooya_noback.png",
 ];
 
 export function preloadImages(assetPaths, onProgress) {
