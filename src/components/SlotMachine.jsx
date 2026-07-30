@@ -1330,15 +1330,15 @@ export default function SlotMachine({
                     }
                     reelStack={reelStack}
                     spinButton={{
-                      title: "SPIN（100G・筐体）",
+                      title: "スタート（100G）",
                       "aria-label": "スロットを回す（100G）",
                       disabled: spectatorMode || !canSpin,
                       spectatorMode,
                       onClick: () => handleSpin(SLOT_COST),
-                      label: `SPIN ${SLOT_COST}G`,
+                      label: "START",
                     }}
                     stopButtons={{
-                      visible: isSpinning,
+                      spinActive: isSpinning,
                       stoppedFlags: reelStoppedFlags,
                       spinStartedAt: spinStartedAtUi,
                       onStopReel: handleManualReelStop,

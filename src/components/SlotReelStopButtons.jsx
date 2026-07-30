@@ -10,7 +10,32 @@ const REEL_LEFT_VARS = [
   "var(--slot-reel-2-left)",
 ];
 
-function StopButton({ reelIdx, stopped, isActive, canPress, waiting, onStopReel, layout }) {
+function StopButton({ reelIdx, stopped, isActive, canPress, waiting, onStopReel, layout, spinActive }) {
+  if (layout === "panel") {
+    return (
+      <button
+        type="button"
+        title={`第${reelIdx + 1}リールを停止`}
+        aria-label={`第${reelIdx + 1}リールを停止`}
+        disabled={!canPress}
+        onClick={() => onStopReel?.(reelIdx)}
+        className={[
+          "slot-cabinet-vector__stop-btn",
+          stopped
+            ? "slot-cabinet-vector__stop-btn--stopped"
+            : spinActive && isActive
+              ? "slot-cabinet-vector__stop-btn--active"
+              : spinActive
+                ? "slot-cabinet-vector__stop-btn--lit"
+                : "slot-cabinet-vector__stop-btn--idle",
+          waiting ? "slot-cabinet-vector__stop-btn--waiting" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      />
+    );
+  }
+
   const baseClass =
     layout === "grid"
       ? "flex min-h-[2rem] w-full items-center justify-center rounded-md border font-black uppercase tracking-wide transition-all text-[10px] sm:text-xs"
@@ -50,10 +75,15 @@ function StopButton({ reelIdx, stopped, isActive, canPress, waiting, onStopReel,
 
 /**
  * 各リールの STOP ボタン（Phase A 手動停止）
- * @param {"overlay"|"grid"} layout overlay=PNG筐体上の絶対配置 / grid=vector 筐体の3列グリッド
+ * @param {"overlay"|"grid"|"panel"} layout
+ *   - overlay: PNG 筐体上の絶対配置
+ *   - grid: 旧 vector 3列（非推奨）
+ *   - panel: vector 操作台（常時表示・スピン中に点灯）
+ * @param {boolean} spinActive リール回転中（panel では全 STOP が点灯）
  */
 export default function SlotReelStopButtons({
   visible = false,
+  spinActive = false,
   stoppedFlags = [false, false, false],
   spinStartedAt = 0,
   onStopReel,
@@ -61,15 +91,17 @@ export default function SlotReelStopButtons({
   layout = "overlay",
   hidden = false,
 }) {
-  if (hidden || !visible || spectatorMode) return null;
+  if (hidden || spectatorMode) return null;
+  if (layout === "overlay" && !visible) return null;
 
   const activeIdx = activeManualStopReelIndex(stoppedFlags, spinStartedAt);
+  const lit = layout === "panel" ? spinActive : visible;
 
   const buttons = [0, 1, 2].map((reelIdx) => {
     const stopped = !!stoppedFlags[reelIdx];
     const isActive = activeIdx === reelIdx;
     const canPress = isActive && canManualStopReel(stoppedFlags, reelIdx);
-    const waiting = !stopped && reelIdx === 0 && activeIdx < 0;
+    const waiting = lit && !stopped && reelIdx === 0 && activeIdx < 0;
 
     return (
       <StopButton
@@ -81,9 +113,18 @@ export default function SlotReelStopButtons({
         waiting={waiting}
         onStopReel={onStopReel}
         layout={layout}
+        spinActive={lit}
       />
     );
   });
+
+  if (layout === "panel") {
+    return (
+      <div className="slot-cabinet-vector__stop-cluster" aria-live="polite">
+        {buttons}
+      </div>
+    );
+  }
 
   if (layout === "grid") {
     return (

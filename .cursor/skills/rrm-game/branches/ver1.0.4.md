@@ -16,6 +16,8 @@
 ver1.0.4（作業） → develop（検証） → main（本番）
 ```
 
+**2026-07-30:** スロット筐体の作り込みが終わるまで **develop へはマージしない**（`ver1.0.4` 上で継続）。
+
 `ver1.0.4` は **develop から切った作業ブランチ**。完了した変更は `develop` にマージして検証 deploy する。
 
 ---
@@ -145,7 +147,9 @@ SlotReelCanvasView     → 両方で共用（変更不要）
 
 - [x] `SlotCabinetShell.jsx` + `constants/slotCabinetLayout.js`
 - [x] 8日目 `variant="vector"`（`SlotMachine` + `SlotSpinBroadcastOverlay`）
-- [x] STOP / SPIN 実ボタン（grid レイアウト）
+- [x] STOP / SPIN 実ボタン（操作台レイアウト: 左 START・右 STOP×3）
+- [x] STOP は常時表示、スピン開始で点灯（`spinActive`）
+- [ ] **将来:** 停止順序を順不同に（Phase A/B — 現状は左→右のまま）
 - [x] リーチランプ・反動・オーラ（vector CSS）
 - [x] デイリーは PNG のまま（未変更）
 - [ ] develop 検証 deploy

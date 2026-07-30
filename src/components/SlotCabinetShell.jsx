@@ -92,9 +92,6 @@ function VectorCabinet({
 
         {(showStop || showSpin) && (
           <div className="slot-cabinet-vector__controls">
-            {showStop && (
-              <SlotReelStopButtons layout="grid" {...stopButtons} />
-            )}
             {showSpin && (
               <button
                 type="button"
@@ -109,9 +106,10 @@ function VectorCabinet({
                   .filter(Boolean)
                   .join(" ")}
               >
-                {spinButton.label ?? "SPIN"}
+                <span className="slot-cabinet-vector__spin-btn-label">{spinButton.label ?? "START"}</span>
               </button>
             )}
+            {showStop && <SlotReelStopButtons layout="panel" {...stopButtons} />}
           </div>
         )}
       </div>
@@ -129,7 +127,6 @@ function ImageCabinet({
   spinButton,
   stopButtons,
 }) {
-  const winBox = SLOT_IMAGE_WIN_BOX_STYLE;
   const showSpin = spinButton && !spinButton.hidden;
 
   return (
