@@ -31,6 +31,54 @@ export const SUGOROKU_PLAYER_NAME_BUBBLE_CLASS =
 /** ダイスをキャラ横に並べるときの gap */
 export const SUGOROKU_DICE_BESIDE_CHARACTER_GAP_CLASS = "gap-0.5 sm:gap-1.5";
 
+/**
+ * 手番プレイヤー：ダイス＋キャラのレイアウト
+ * - SP（md未満）: ダイスはキャラの左横
+ * - PC（md+）: ダイスはキャラの上
+ */
+export const SUGOROKU_DICE_CHARACTER_CLUSTER_CLASS = `flex flex-row items-end justify-center ${SUGOROKU_DICE_BESIDE_CHARACTER_GAP_CLASS} md:flex-col md:items-center md:gap-1`;
+
+/** Tailwind `md`（768px）— SP/PC の切り替えに使用 */
+export const SUGOROKU_PC_MEDIA_QUERY = "(min-width: 768px)";
+
+/**
+ * 手番プレイヤー：残りマス（通常歩行 or タクシー drive 区間）
+ * @param {object} p
+ * @param {string|null} p.taxiPhase
+ * @param {number|null} p.taxiDriveEndPos
+ * @param {number|null} p.taxiJamMidPos
+ * @param {number} p.smoothPos
+ * @param {number} p.viewPos
+ * @param {boolean} p.traveling
+ * @param {number} p.remainingSteps
+ */
+export function resolveSugorokuTravelStepsRemaining({
+  taxiPhase,
+  taxiDriveEndPos,
+  taxiJamMidPos,
+  smoothPos,
+  viewPos,
+  traveling,
+  remainingSteps,
+}) {
+  const isDriveLike =
+    taxiPhase === "drive" ||
+    taxiPhase === "driveBeforeJam" ||
+    taxiPhase === "driveAfterJam";
+  if (isDriveLike && taxiDriveEndPos != null) {
+    const segmentEnd =
+      taxiPhase === "driveBeforeJam" && taxiJamMidPos != null
+        ? taxiJamMidPos
+        : taxiDriveEndPos;
+    const rem = Math.ceil(Math.abs(segmentEnd - smoothPos) - 1e-9);
+    return rem > 0 ? rem : null;
+  }
+  if (traveling && remainingSteps > 0 && !taxiPhase) {
+    return remainingSteps;
+  }
+  return null;
+}
+
 /** ダイス吹き出し（SP コンパクト） */
 export const SUGOROKU_SIDE_DICE_BUBBLE_CLASS =
   "px-1.5 py-0.5 text-sm font-black tabular-nums sm:px-2 sm:py-1 sm:text-base";
