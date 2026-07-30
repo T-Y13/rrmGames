@@ -14,8 +14,9 @@ import {
   SUGOROKU_PLAYER_NAME_BUBBLE_CLASS,
   SUGOROKU_STANDEE_MOBILE_SCALE_CLASS,
   SUGOROKU_TILE_ABS_MIN_W,
-  SUGOROKU_DICE_BESIDE_CHARACTER_GAP_CLASS,
+  SUGOROKU_DICE_CHARACTER_CLUSTER_CLASS,
   SUGOROKU_NAME_ANCHOR_WITH_STANDEE,
+  resolveSugorokuTravelStepsRemaining,
   sugorokuCurrentStandeeImgStyle,
 } from "../constants/sugorokuMobileLayout";
 import { squareDeco, easeInOutCubic, computeTaxiDriveDurationMs, computeSugorokuMsPerStep, SUGOROKU_MS_PER_STEP_NORMAL, getBoardTombDisplayPosition } from "../utils/gameLogic";
@@ -688,6 +689,15 @@ export default function BoardViewport({
     !showTaxiBoardingVisual &&
     !showTaxiDock;
   const remainingSteps = Math.ceil(Math.abs(viewPos - smoothPos) - 1e-9);
+  const travelStepsRemaining = resolveSugorokuTravelStepsRemaining({
+    taxiPhase,
+    taxiDriveEndPos,
+    taxiJamMidPos,
+    smoothPos,
+    viewPos,
+    traveling,
+    remainingSteps,
+  });
 
   return (
     <div
@@ -922,11 +932,12 @@ export default function BoardViewport({
                             traveling,
                           })}
                         >
-                          <div className={`flex flex-row items-end justify-center ${SUGOROKU_DICE_BESIDE_CHARACTER_GAP_CLASS}`}>
+                          <div className={SUGOROKU_DICE_CHARACTER_CLUSTER_CLASS}>
                             <BoardCharacterSideDice
                               localDiceItems={localDiceItems}
                               localDiceShowTotal={localDiceShowTotal}
                               localDiceTotal={localDiceTotal}
+                              remainingTravelSteps={travelStepsRemaining}
                               movementFxDiceActive={movementFxDiceActive}
                               movementFxDiceRolls={movementFxDiceRolls}
                             />
@@ -938,9 +949,6 @@ export default function BoardViewport({
                                 nameFillColor={playerNameColor(players, currentPlayer.id)}
                                 tileEffectLines={tileEffectLines}
                                 tileEffectKind={tileEffectKind}
-                                remainingTravelSteps={
-                                  traveling && remainingSteps > 0 && !taxiPhase ? remainingSteps : null
-                                }
                                 congestionActive={(currentPlayer.pendingTaxiSteps ?? 0) > 0}
                               />
                             <div className="flex w-full flex-row flex-nowrap items-end justify-center gap-1 pr-0.5">
@@ -982,9 +990,6 @@ export default function BoardViewport({
                               nameFillColor={playerNameColor(players, currentPlayer.id)}
                               tileEffectLines={tileEffectLines}
                               tileEffectKind={tileEffectKind}
-                              remainingTravelSteps={
-                                traveling && remainingSteps > 0 && !taxiPhase ? remainingSteps : null
-                              }
                               congestionActive={(currentPlayer.pendingTaxiSteps ?? 0) > 0}
                             />
                           <div

@@ -29,7 +29,7 @@ const TONE_CLASS = {
 
 /**
  * すごろく盤面上の短文ラベル用・読みやすい吹き出し背景。
- * @param {"bottom"|"left"|"top"} tail しっぽの向き（吹き出し本体の反対側を指す）
+ * @param {"bottom"|"left"|"right"|"top"} tail しっぽが指す方向（キャラ側）
  */
 export default function BoardCalloutBubble({
   children,
@@ -65,9 +65,11 @@ export default function BoardCalloutBubble({
   const tailPos =
     tail === "left"
       ? "absolute -left-[5px] top-1/2 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-b border-l"
-      : tail === "top"
-        ? "absolute -top-[5px] left-1/2 h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-l border-t"
-        : "absolute -bottom-[5px] left-1/2 h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-b border-r";
+      : tail === "right"
+        ? "absolute -right-[5px] top-1/2 h-2.5 w-2.5 -translate-y-1/2 rotate-45 border-t border-r"
+        : tail === "top"
+          ? "absolute -top-[5px] left-1/2 h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-l border-t"
+          : "absolute -bottom-[5px] left-1/2 h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-b border-r";
 
   return (
     <span className={`relative inline-flex ${className}`}>
