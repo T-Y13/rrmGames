@@ -128,13 +128,12 @@ SlotReelCanvasView     → 両方で共用（変更不要）
 
 ### Phase A1 — 手動停止（操作者）
 
-- [x] `slotReelStopSequence.js` + テスト
-- [x] リールごと STOP ×3（`SlotReelStopButtons`）
-- [x] **押すまでリールは止まらない**（操作者の自動タイマー削除）
-- [x] 左→右の停止順・第1リール 380ms 待ち
-- [ ] **コミット**（すごろく SP 修正と分離推奨）
+- [x] 停止ボタン UI（PC / SP タップ領域）
+- [x] 押下で該当リールを停止（**絵柄は `targetResult` / `visualReels` 通り**）
+- [x] **押すまで自動停止しない**（操作者 UI）
 - [ ] develop マージ → 検証 deploy
-- [ ] 観戦は従来タイマーのまま（操作者の手動停止は Firestore 未同期 — 意図どおり）
+- [ ] 観戦側 `SlotSpinBroadcastOverlay` は従来タイマー同期のまま
+- [x] 単体テスト: `slotReelStopSequence`
 
 **DoD:** 操作感だけ変わり、ログ・配当・確率は bit 一致。未押下で勝手に止まらない。
 
@@ -143,6 +142,13 @@ SlotReelCanvasView     → 両方で共用（変更不要）
 ### Phase A2 — 8日目筐体ベクトル化
 
 **目的:** PNG 依存をやめ、ボタン・窓・演出をコードで自由に組める土台を作る。
+
+- [x] `SlotCabinetShell.jsx` + `constants/slotCabinetLayout.js`
+- [x] 8日目 `variant="vector"`（`SlotMachine` + `SlotSpinBroadcastOverlay`）
+- [x] STOP / SPIN 実ボタン（grid レイアウト）
+- [x] リーチランプ・反動・オーラ（vector CSS）
+- [x] デイリーは PNG のまま（未変更）
+- [ ] develop 検証 deploy
 
 #### 作るもの
 
@@ -184,8 +190,8 @@ SlotReelCanvasView     → 両方で共用（変更不要）
 A2 の vector shell に演出用スロットを足す（ロジックは既存を流用）。
 
 - [ ] リーチ時ランプ（第3リール上など）— `isReach` で点灯
-- [ ] 筐体反動 — `cabinetRecoil` を shell の transform に（margin 依存を減らす）
-- [ ] 運/技オーラ — 現 `slot-cabinet-stage--aura-*` を vector 枠へ移植
+- [x] 筐体反動 — `cabinetRecoil` を shell の transform に
+- [x] 運/技オーラ — `slot-cabinet-stage--aura-*` を vector 枠へ移植
 - [ ] カットイン・勝利 FX との z-index 整理
 - [ ] （任意）機種差の見た目フック（`slotMirrorMachineKey`）
 
@@ -298,7 +304,8 @@ flowchart LR
 ## ver1.0.4 での作業ログ
 
 - **Phase 0（目押し設計）** — ガセ **18%** × 目押し **70%**、`lib/slotReelStop.js` + テスト
-- **Phase A1（手動停止）** — STOP×3、自動タイマー削除、押すまで停止しない（ローカル確認済・未コミット）
+- **Phase A1（手動停止）** — STOP×3、自動タイマー削除（`878de67`）
+- **Phase A2（vector 筐体）** — `SlotCabinetShell`、8日目 PNG 廃止
 - **方針確定** — 8日目筐体は描画（vector）、デイリーは PNG 維持（2026-07-30）
 
 ---

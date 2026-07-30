@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import slotCabinetPng from "../assets/slot-machine.png";
 import { CharacterIcon } from "./CharacterPieces";
 import SlotReelCanvasView from "./SlotReelCanvasView";
 import { SLOT_MACHINES } from "../constants/gameBalance";
+import { SLOT_CABINET_VARIANT } from "../constants/slotCabinetLayout";
+import SlotCabinetShell from "./SlotCabinetShell";
 import SlotProxyAccountability, { useProxyVictimSting } from "./SlotProxyAccountability";
 import JackpotCelebration from "./JackpotCelebration";
 import SlotPayoutAmountLabel from "./SlotPayoutAmountLabel";
@@ -107,13 +108,6 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef, myId }) {
     },
     [buildBroadcastMarker],
   );
-
-  const winBox = {
-    top: "var(--slot-window-top)",
-    left: "var(--slot-window-left)",
-    width: "var(--slot-window-width)",
-    height: "var(--slot-window-height)",
-  };
 
   const publicAssetBase = (import.meta.env.BASE_URL || "/").replace(/\/?$/, "/");
 
@@ -616,91 +610,61 @@ export default function SlotSpinBroadcastOverlay({ gs, soundRef, myId }) {
           )}
 
           <div className="relative z-[8] flex flex-col items-center gap-2 w-full">
-            {isReachUI && (
-              <p className="pointer-events-none mb-1 text-center text-xs font-black text-red-400 animate-pulse tracking-widest">
-                🎯 REACH!!
-              </p>
-            )}
-            <div
-              className={[
-                "slot-cabinet-stage relative mx-auto w-full max-w-[min(100%,440px)]",
-                cabinetRecoil ? "slot-cabinet-recoiling" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-            >
-              {showPayoutNow && (
-                <div
-                  className="pointer-events-none absolute top-1/2 z-[42] hidden -translate-y-1/2 items-center pl-3 md:flex"
-                  style={{ left: "100%" }}
-                >
-                  <SlotPayoutAmountLabel
-                    amount={payoutAmount}
-                    onAnimationEnd={() => {
-                      setShowPayout(false);
-                      setPayoutAmount(0);
-                    }}
-                  />
-                </div>
-              )}
-
-              <div className="slot-machine-stack relative w-full min-h-[180px] sm:min-h-[200px]">
-                <div className="absolute z-0 rounded-sm bg-[#0a0d14] pointer-events-none" style={winBox} aria-hidden />
-
-                <div className="slot-reel-window absolute z-[1] overflow-hidden rounded-sm pointer-events-none" style={winBox}>
-                  <SlotReelCanvasView
-                    reelColumns={reelColumns}
-                    columnSpinning={columnSpinning}
-                    slipCols={slipAnimCols}
-                    bouncingCol={bouncingReel}
-                    paylineWinFx={paylineWinPulse}
-                    reachCol={isReachUI ? 2 : -1}
-                    machine={broadcastMachine}
-                    spinSessionActive={slotSpinActive}
-                    onReelsSettledChange={setReelsCanvasSettled}
-                    className="h-full w-full"
-                  />
-                </div>
-
-                {showPayoutNow && (
+            <SlotCabinetShell
+              variant={SLOT_CABINET_VARIANT.VECTOR}
+              cabinetRecoil={cabinetRecoil}
+              stackMinHeight="180px"
+              isReach={isReachUI}
+              payoutAside={
+                showPayoutNow ? (
                   <div
-                    className="pointer-events-none absolute z-[15] flex items-center justify-center md:hidden"
-                    style={winBox}
+                    className="pointer-events-none absolute top-1/2 z-[42] hidden -translate-y-1/2 items-center pl-3 md:flex"
+                    style={{ left: "100%" }}
                   >
                     <SlotPayoutAmountLabel
                       amount={payoutAmount}
-                      compact
                       onAnimationEnd={() => {
                         setShowPayout(false);
                         setPayoutAmount(0);
                       }}
                     />
                   </div>
-                )}
-
-                <div className="slot-cabinet-img-wrap relative z-[10] mx-auto w-full max-w-full pointer-events-none">
-                  <img
-                    src={slotCabinetPng}
-                    alt=""
-                    decoding="async"
-                    draggable={false}
-                    className="slot-cabinet-img mx-auto block h-auto w-full max-w-full select-none pointer-events-none"
-                    onError={(e) => {
-                      const el = e.currentTarget;
-                      const base = (import.meta.env.BASE_URL || "/").replace(/\/?$/, "/");
-                      const step = el.dataset.cabinetImgTry ?? "0";
-                      if (step === "0") {
-                        el.dataset.cabinetImgTry = "1";
-                        el.src = `${base}assets/images/slot-machine.png`;
-                      } else if (step === "1") {
-                        el.dataset.cabinetImgTry = "2";
-                        el.src = `${base}images/slot-machine.png`;
-                      }
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
+                ) : null
+              }
+              reelStack={
+                <>
+                  <div className="absolute inset-0 z-0 rounded-sm bg-[#0a0d14] pointer-events-none" aria-hidden />
+                  <div className="slot-reel-window absolute inset-0 z-[1] overflow-hidden rounded-sm pointer-events-none">
+                    <SlotReelCanvasView
+                      reelColumns={reelColumns}
+                      columnSpinning={columnSpinning}
+                      slipCols={slipAnimCols}
+                      bouncingCol={bouncingReel}
+                      paylineWinFx={paylineWinPulse}
+                      reachCol={isReachUI ? 2 : -1}
+                      machine={broadcastMachine}
+                      spinSessionActive={slotSpinActive}
+                      onReelsSettledChange={setReelsCanvasSettled}
+                      className="h-full w-full"
+                    />
+                  </div>
+                  {showPayoutNow && (
+                    <div className="pointer-events-none absolute inset-0 z-[15] flex items-center justify-center md:hidden">
+                      <SlotPayoutAmountLabel
+                        amount={payoutAmount}
+                        compact
+                        onAnimationEnd={() => {
+                          setShowPayout(false);
+                          setPayoutAmount(0);
+                        }}
+                      />
+                    </div>
+                  )}
+                </>
+              }
+              spinButton={{ hidden: true }}
+              stopButtons={{ hidden: true }}
+            />
           </div>
 
           <div className="relative z-[12] mt-2 flex justify-center pointer-events-none">

@@ -1,15 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, Dice5, Volume2, VolumeX } from "lucide-react";
-import slotCabinetPng from "../assets/slot-machine.png";
 import { CharacterIcon } from "./CharacterPieces";
 import SlotReelCanvasView from "./SlotReelCanvasView";
 import { BAL, SLOT_BETS, SLOT_COST, SLOT_MACHINES } from "../constants/gameBalance";
+import { SLOT_CABINET_VARIANT } from "../constants/slotCabinetLayout";
+import SlotCabinetShell from "./SlotCabinetShell";
 import SlotProxyAccountability from "./SlotProxyAccountability";
 import Day8ItemBar from "./Day8ItemBar";
 import JackpotCelebration from "./JackpotCelebration";
 import ProgressivePotDisplay from "./ProgressivePotDisplay";
 import SlotPayoutAmountLabel from "./SlotPayoutAmountLabel";
-import SlotReelStopButtons from "./SlotReelStopButtons";
 import { buildSlotSpinVisualPlan } from "../lib/slotReelStop";
 import {
   canManualStopReel,
@@ -1201,12 +1201,85 @@ export default function SlotMachine({
             const isMajorWinFx = showWinEffect === "jackpot" || showWinEffect === "potJackpot";
             const slotSpinning = isSpinning || (gs?.slotPhase ?? "idle") === "spinning";
             const isVictim = slotSpinning && isLocalPlayerProxyTarget(gs, myId);
-            const winBox = {
-              top: "var(--slot-window-top)",
-              left: "var(--slot-window-left)",
-              width: "var(--slot-window-width)",
-              height: "var(--slot-window-height)",
-            };
+            const reelStack = (
+              <>
+                <div
+                  className="absolute inset-0 z-0 rounded-sm bg-[#0a0d14] pointer-events-none slot-cabinet-vector__reel-bg"
+                  aria-hidden
+                />
+                <div className="slot-reel-window absolute inset-0 z-[1] overflow-hidden rounded-sm pointer-events-none">
+                  <SlotReelCanvasView
+                    reelColumns={reelColumns}
+                    columnSpinning={columnSpinning}
+                    slipCols={slipAnimCols}
+                    bouncingCol={bouncingReel}
+                    paylineWinFx={paylineWinPulse}
+                    reachCol={isReach ? 2 : -1}
+                    machine={reelMachineView}
+                    isSpinFrozenRef={spinFreezeCutinUntilRef}
+                    spinSessionActive={slotSpinActive}
+                    onReelsSettledChange={setReelsCanvasSettled}
+                    className="h-full w-full"
+                  />
+                </div>
+
+                {showPayoutNow && (
+                  <div
+                    className="pointer-events-none absolute inset-0 z-[15] flex items-center justify-center md:hidden"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >
+                    <SlotPayoutAmountLabel
+                      amount={payoutAmount}
+                      compact
+                      onAnimationEnd={() => {
+                        setShowPayout(false);
+                        setPayoutAmount(0);
+                      }}
+                    />
+                  </div>
+                )}
+
+                {spinAuraActive && (
+                  <div
+                    className="pointer-events-none absolute inset-0 z-[2] mix-blend-screen overflow-hidden rounded-sm"
+                    aria-hidden
+                  >
+                    {(luckTier >= 2 || comboHigh) &&
+                      Array.from({ length: comboHigh ? 14 : 10 }, (_, i) => (
+                        <span
+                          key={`cab-spark-${i}`}
+                          className="absolute text-[11px]"
+                          style={{
+                            left: `${(i * 71 + 13) % 94}%`,
+                            top: `${(i * 47 + 11) % 88}%`,
+                            opacity: comboHigh ? 0.5 : 0.45,
+                            animation: `sparkle ${0.42 + (i % 3) * 0.08}s ease-in-out ${(i % 6) * 0.06}s infinite`,
+                            filter: comboHigh ? "drop-shadow(0 0 4px #fde047)" : "drop-shadow(0 0 3px rgba(253,224,71,0.8))",
+                          }}
+                        >
+                          {comboHigh && i % 3 === 0 ? "✨" : "✦"}
+                        </span>
+                      ))}
+                    {skillTier >= 1 && !comboHigh && luckTier === 0 &&
+                      Array.from({ length: 8 }, (_, i) => (
+                        <span
+                          key={`cab-sk-${i}`}
+                          className="absolute text-[10px] text-emerald-200/90"
+                          style={{
+                            left: `${(i * 83 + 19) % 92}%`,
+                            top: `${(i * 59) % 86}%`,
+                            opacity: 0.4,
+                            animation: `auraSparkFloat ${2 + (i % 4) * 0.15}s linear ${i * 0.12}s infinite`,
+                          }}
+                        >
+                          ✦
+                        </span>
+                      ))}
+                  </div>
+                )}
+              </>
+            );
             return (
               <div
                 className={`relative rounded-xl border border-amber-400/30 bg-slate-950/60 p-4 isolate overflow-visible ${outerClass} ${showWinFxNow && isMajorWinFx ? "anim-jp-rainbow" : ""} ${isVictim ? "anim-slot-victim-frame" : ""}`}
@@ -1232,164 +1305,46 @@ export default function SlotMachine({
 
                 <div className="relative z-[8] flex flex-col items-center gap-3 w-full">
                   <SlotProxyAccountability gs={gs} myId={myId} isSpinning={isSpinning} variant="inline" />
-                  <div
-                    className={[
-                      "slot-cabinet-stage relative mx-auto w-full max-w-[min(100%,440px)]",
-                      cabinetRecoil ? "slot-cabinet-recoiling" : "",
-                      stageAuraClass,
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                  >
-                    {showPayoutNow && (
-                      <div
-                        className="pointer-events-none absolute top-1/2 z-[42] hidden -translate-y-1/2 items-center pl-3 md:flex"
-                        style={{ left: "100%" }}
-                        aria-live="polite"
-                        aria-atomic="true"
-                      >
-                        <SlotPayoutAmountLabel
-                          amount={payoutAmount}
-                          onAnimationEnd={() => {
-                            setShowPayout(false);
-                            setPayoutAmount(0);
-                          }}
-                        />
-                      </div>
-                    )}
-                    {isReach && (
-                      <p className="pointer-events-none absolute -top-7 left-0 right-0 z-[30] text-center text-xs font-bold text-red-400 animate-pulse">
-                        🎯 REACH!!
-                      </p>
-                    )}
-
-                    <div className="slot-machine-stack relative w-full min-h-[200px]">
-                      <div className="absolute z-0 rounded-sm bg-[#0a0d14] pointer-events-none" style={winBox} aria-hidden />
-
-                      <div className="slot-reel-window absolute z-[1] overflow-hidden rounded-sm pointer-events-none" style={winBox}>
-                        <SlotReelCanvasView
-                          reelColumns={reelColumns}
-                          columnSpinning={columnSpinning}
-                          slipCols={slipAnimCols}
-                          bouncingCol={bouncingReel}
-                          paylineWinFx={paylineWinPulse}
-                          reachCol={isReach ? 2 : -1}
-                          machine={reelMachineView}
-                          isSpinFrozenRef={spinFreezeCutinUntilRef}
-                          spinSessionActive={slotSpinActive}
-                          onReelsSettledChange={setReelsCanvasSettled}
-                          className="h-full w-full"
-                        />
-                      </div>
-
-                      {showPayoutNow && (
+                  <SlotCabinetShell
+                    variant={SLOT_CABINET_VARIANT.VECTOR}
+                    cabinetRecoil={cabinetRecoil}
+                    stageAuraClass={stageAuraClass}
+                    isReach={isReach}
+                    payoutAside={
+                      showPayoutNow ? (
                         <div
-                          className="pointer-events-none absolute z-[15] flex items-center justify-center md:hidden"
-                          style={winBox}
+                          className="pointer-events-none absolute top-1/2 z-[42] hidden -translate-y-1/2 items-center pl-3 md:flex"
+                          style={{ left: "100%" }}
                           aria-live="polite"
                           aria-atomic="true"
                         >
                           <SlotPayoutAmountLabel
                             amount={payoutAmount}
-                            compact
                             onAnimationEnd={() => {
                               setShowPayout(false);
                               setPayoutAmount(0);
                             }}
                           />
                         </div>
-                      )}
-
-                      {spinAuraActive && (
-                        <div
-                          className="pointer-events-none absolute z-[2] mix-blend-screen overflow-hidden rounded-sm"
-                          style={winBox}
-                          aria-hidden
-                        >
-                          {(luckTier >= 2 || comboHigh) &&
-                            Array.from({ length: comboHigh ? 14 : 10 }, (_, i) => (
-                              <span
-                                key={`cab-spark-${i}`}
-                                className="absolute text-[11px]"
-                                style={{
-                                  left: `${(i * 71 + 13) % 94}%`,
-                                  top: `${(i * 47 + 11) % 88}%`,
-                                  opacity: comboHigh ? 0.5 : 0.45,
-                                  animation: `sparkle ${0.42 + (i % 3) * 0.08}s ease-in-out ${(i % 6) * 0.06}s infinite`,
-                                  filter: comboHigh ? "drop-shadow(0 0 4px #fde047)" : "drop-shadow(0 0 3px rgba(253,224,71,0.8))",
-                                }}
-                              >
-                                {comboHigh && i % 3 === 0 ? "✨" : "✦"}
-                              </span>
-                            ))}
-                          {skillTier >= 1 && !comboHigh && luckTier === 0 &&
-                            Array.from({ length: 8 }, (_, i) => (
-                              <span
-                                key={`cab-sk-${i}`}
-                                className="absolute text-[10px] text-emerald-200/90"
-                                style={{
-                                  left: `${(i * 83 + 19) % 92}%`,
-                                  top: `${(i * 59) % 86}%`,
-                                  opacity: 0.4,
-                                  animation: `auraSparkFloat ${2 + (i % 4) * 0.15}s linear ${i * 0.12}s infinite`,
-                                }}
-                              >
-                                ✦
-                              </span>
-                            ))}
-                        </div>
-                      )}
-
-                      <div className="slot-cabinet-img-wrap relative z-[10] mx-auto w-full max-w-full pointer-events-none">
-                        <img
-                          src={slotCabinetPng}
-                          alt=""
-                          decoding="async"
-                          draggable={false}
-                          className="slot-cabinet-img mx-auto block h-auto w-full max-w-full select-none pointer-events-none"
-                          onError={(e) => {
-                            const el = e.currentTarget;
-                            const base = (import.meta.env.BASE_URL || "/").replace(/\/?$/, "/");
-                            const step = el.dataset.cabinetImgTry ?? "0";
-                            if (step === "0") {
-                              el.dataset.cabinetImgTry = "1";
-                              el.src = `${base}assets/images/slot-machine.png`;
-                            } else if (step === "1") {
-                              el.dataset.cabinetImgTry = "2";
-                              el.src = `${base}images/slot-machine.png`;
-                            }
-                          }}
-                        />
-                      </div>
-
-                      <button
-                        type="button"
-                        title="SPIN（100G・筐体）"
-                        aria-label="スロットを回す（100G）"
-                        disabled={spectatorMode || !canSpin}
-                        className={
-                          spectatorMode
-                            ? "absolute z-[20] cursor-not-allowed rounded-full border-0 bg-transparent p-0 opacity-25"
-                            : "absolute z-[20] cursor-pointer rounded-full border-0 bg-transparent p-0 opacity-40 transition-opacity hover:opacity-70 active:translate-y-0.5 active:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
-                        }
-                        style={{
-                          top: "var(--slot-spin-top)",
-                          left: "var(--slot-spin-left)",
-                          width: "var(--slot-spin-w)",
-                          height: "var(--slot-spin-h)",
-                        }}
-                        onClick={() => handleSpin(SLOT_COST)}
-                      />
-
-                      <SlotReelStopButtons
-                        visible={isSpinning}
-                        stoppedFlags={reelStoppedFlags}
-                        spinStartedAt={spinStartedAtUi}
-                        onStopReel={handleManualReelStop}
-                        spectatorMode={spectatorMode}
-                      />
-                    </div>
-                  </div>
+                      ) : null
+                    }
+                    reelStack={reelStack}
+                    spinButton={{
+                      title: "SPIN（100G・筐体）",
+                      "aria-label": "スロットを回す（100G）",
+                      disabled: spectatorMode || !canSpin,
+                      spectatorMode,
+                      onClick: () => handleSpin(SLOT_COST),
+                      label: `SPIN ${SLOT_COST}G`,
+                    }}
+                    stopButtons={{
+                      visible: isSpinning,
+                      stoppedFlags: reelStoppedFlags,
+                      spinStartedAt: spinStartedAtUi,
+                      onStopReel: handleManualReelStop,
+                      spectatorMode,
+                    }}
+                  />
                 </div>
 
                 <div className="relative z-[12] flex justify-center pointer-events-none mt-2">
