@@ -71,84 +71,176 @@ ver1.0.4（作業） → develop（検証） → main（本番）
 
 **正本:** 本節（作業ブランチ）＋実装時は [day8-guide.md](../references/day8-guide.md) のスロット節も同期。
 
-### 現状アーキテクチャ（目押し前）
+### 現状アーキテクチャ（2026-07-30 更新）
 
 ```
 掛け金確定 → spinSlot() で tier + reels 確定（gameLogic.js）
            → Firestore: slotPhase=spinning, targetResult, slotVisualReels
-           → SlotMachine: setTimeout 連鎖で左→中→右停止（操作者）
-           → SlotSpinBroadcastOverlay: 同タイミングで観戦ミラー
+           → SlotMachine: 手動 STOP で左→中→右停止（操作者・Phase A）
+           → SlotSpinBroadcastOverlay: 従来タイマーで観戦ミラー
 ```
 
-目押し実装の**最大リスク**は UI ではなく **「停止タイミングの権威（誰がいつ止めたか）」とマルチ同期**。
+**リール絵柄は既に Canvas**（`SlotReelCanvasView`）。**筐体だけ PNG + CSS マスク + % 座標**がボトルネック（STOP/SPIN の透明ヒット領域、マスクずれ、演出の足しにくさ）。
+
+**方針（確定 2026-07-30）:** **8日目スロットは筐体を描画（DOM/SVG）に移行**。デイリースロット練習は **PNG 筐体のまま**。
+
+```
+SlotCabinetShell（新規・共通シェル）
+  ├─ variant="image"   → DailySlotTrainingModal（現状維持）
+  └─ variant="vector"  → SlotMachine + SlotSpinBroadcastOverlay（8日目）
+
+SlotReelCanvasView     → 両方で共用（変更不要）
+```
+
+目押し実装の**最大リスク**は UI ではなく **「停止タイミングの権威（誰がいつ止めたか）」とマルチ同期**（Phase B 以降）。
 
 ---
 
-### 推奨フェーズ（ユーザー案 + 整理）
+### 推奨フェーズ（目押し + 筐体描画）
 
-| Phase | 内容 | 旧案 | 配当への影響 | 規模感 |
-|-------|------|------|--------------|--------|
-| **0** | **設計・定数・テスト骨格** | （追加） | なし | 小〜中 |
-| **A** | **停止ボタン + 手動停止** | 1+2 まとめ | **なし**（`spinSlot` 結果のまま） | 中 |
-| **B** | **チャンス時の完全目押し** | 3 | **あり**（停止位置で tier 決定） | **大** |
-| **C** | **チャンス混入（確率・条件）** | 4 | チャンス時のみ B、他は従来 | 中 |
+| Phase | 内容 | 配当への影響 | 規模感 | 状態 |
+|-------|------|--------------|--------|------|
+| **0** | 設計・定数・テスト骨格 | なし | 小〜中 | **完了** |
+| **A1** | 手動停止（STOP×3・押すまで止まらない） | なし | 中 | **実装済・要コミット** |
+| **A2** | **8日目筐体ベクトル化**（`SlotCabinetShell`） | なし | 中 | 次 |
+| **A3** | 筐体演出フック（リーチランプ・反動・オーラ） | なし | 小〜中 | A2 後 |
+| **B** | チャンス時の完全目押し | **あり** | **大** | 未着手 |
+| **C** | チャンス混入（確率・条件） | チャンス時のみ B | 中 | 未着手 |
 
-#### Phase 0（先にやる — 実装と並行可）
+**旧 Phase A（1+2 統合）** → **A1（停止ロジック）+ A2（筐体 UI）** に分割。A2 を A1 の直後にやると STOP 配置の手戻りが少ない。
 
-**チャンスタイミング（確定 2026-07-29、数値更新）**
+---
+
+### Phase 0 — 設計・定数（完了）
 
 | 項目 | 内容 |
 |------|------|
-| **ガセリーチ発生** | ハズレの **18%**（`BAL.slot.nearMissReachChance`、旧 12%） |
-| **目押し付与** | ガセリーチ成立スピンの **70%**（`BAL.slot.gaseReachSkillStopChance`、旧 30%） |
-| **対象演出** | `tier=miss` かつ 1・2リール同絵柄・3リール目だけ外れ（当たり／小当たり**風**） |
-| **それ以外** | 従来どおり（結果は `spinSlot` 確定・自動停止） |
+| **ガセリーチ発生** | ハズレの **18%**（`nearMissReachChance`） |
+| **目押し付与** | ガセリーチ成立スピンの **70%**（`gaseReachSkillStopChance`） |
+| **対象演出** | `tier=miss` かつ 1・2リール同絵柄・3リール目だけ外れ |
+| **体感（目押し）** | 約 **10.7%/スピン**、1席3スピンで約 **29%** |
 
-**体感頻度（目安・デフォルト stats、miss≈85%）**
+- [x] `gameBalance.js`, `lib/slotReelStop.js`, 単体テスト
+- [ ] Firestore `slotSkillStopActive` / `slotSkillStopMode`（B 着手時）
+- [ ] ゴースト／代理のチャンス時自動停止（B 前）
 
-| 単位 | 確率 | 間隔の目安 |
-|------|------|------------|
-| 1スピン（目押し） | **約 10.7%** | 約 **9〜10回に1回** |
-| 1スロット席（3スピン） | **約 29%** | 約 **3.5席に1回**（≈4席に1回のイメージ） |
-| ガセリーチ（目押し前） | 約 15.3% | 約 6〜7回に1回 |
+---
 
-計算: `0.85 × 0.18 × 0.70 ≈ 0.107` / スピン
+### Phase A1 — 手動停止（操作者）
 
-- [x] `gameBalance.js` — `nearMissReachChance: 0.18`, `gaseReachSkillStopChance: 0.7`
-- [x] `lib/slotReelStop.js` — `isGaseReachVisual`, `resolveSlotSkillStopContext`, `buildSlotSpinVisualPlan`
-- [x] 単体テスト `slotReelStop.test.js`
-- [ ] Firestore フィールド実装: `slotSkillStopActive`, `slotSkillStopMode`（Phase A/B で書き込み）
-- [ ] ゴースト／代理スロット: チャンス時は **自動停止（ランダム窓内）** — Phase B 前に実装
-- [x] **8日目先行**（デイリースロットは `buildDailySlotSpinVisualPlan` 経由で同じ判定を返すのみ・UI は後回し）
+- [x] `slotReelStopSequence.js` + テスト
+- [x] リールごと STOP ×3（`SlotReelStopButtons`）
+- [x] **押すまでリールは止まらない**（操作者の自動タイマー削除）
+- [x] 左→右の停止順・第1リール 380ms 待ち
+- [ ] **コミット**（すごろく SP 修正と分離推奨）
+- [ ] develop マージ → 検証 deploy
+- [ ] 観戦は従来タイマーのまま（操作者の手動停止は Firestore 未同期 — 意図どおり）
 
-#### Phase A — 停止ボタン + 手動停止（旧 1+2 統合推奨）
+**DoD:** 操作感だけ変わり、ログ・配当・確率は bit 一致。未押下で勝手に止まらない。
 
-**まとめる理由:** 旧 1 単体は「ボタンが飾り」だけで、リール停止経路は触らない。旧 2 は停止経路の refactor が本体で、ボタン UI も同時に必要。**1 と 2 を分けると PR が細かすぎて、2 で 1 の UI がほぼ書き直される**。
+---
 
-- [ ] 停止ボタン UI（PC / SP タップ領域）
-- [ ] `setTimeout` 自動停止 → **未押下なら従来タイミングでフォールバック**（既存挙動維持）
-- [ ] 押下で該当リールを停止（**絵柄は `targetResult` / `visualReels` 通り**）
-- [ ] 観戦側 `SlotSpinBroadcastOverlay` は従来タイマー同期のまま
-- [ ] 単体テスト: 停止シーケンス状態機械（可能な範囲）
+### Phase A2 — 8日目筐体ベクトル化
 
-**DoD:** 操作感だけ変わり、ログ・配当・確率は bit 一致。
+**目的:** PNG 依存をやめ、ボタン・窓・演出をコードで自由に組める土台を作る。
 
-#### Phase B — チャンス時の完全目押し（旧 3）
+#### 作るもの
 
-- [ ] チャンススピンでは `spinSlot` の tier を**即確定しない**／または確定後に**停止位置で上書き可能**な設計を確定（要設計判断）
+| 成果物 | 役割 |
+|--------|------|
+| `SlotCabinetShell.jsx` | 筐体フレーム + スロット（リール窓・ボタン・ランプ枠） |
+| `constants/slotCabinetLayout.js` | 窓・ボタン・余白の論理座標（PNG % ではない） |
+| `variant="image"` | 既存 PNG + マスク（デイリー専用） |
+| `variant="vector"` | CSS/SVG 筐体（8日目専用） |
+
+#### 置き換え対象
+
+| ファイル | 変更 |
+|----------|------|
+| `SlotMachine.jsx` | PNG レイヤー → `<SlotCabinetShell variant="vector">` |
+| `SlotSpinBroadcastOverlay.jsx` | 同上（観戦も見た目を揃える） |
+| `DailySlotTrainingModal.jsx` | **触らない**（`variant="image"` 継続） |
+| `index.css` | 8日目用は layout 定数へ移行。デイリー用 `--slot-*` は残す |
+
+#### 実装の進め方（A2 内の順序）
+
+1. **骨組み** — `SlotCabinetShell` + layout 定数。vector で「枠 + 3窓 + リール Canvas 差し込み」だけ
+2. **ボタン実装** — SPIN / STOP を透明ヒット領域ではなく **実ボタン**として shell 内に配置
+3. **SlotMachine 接続** — 既存 `SlotReelStopButtons` を shell に統合 or 置換
+4. **観戦接続** — `SlotSpinBroadcastOverlay` を同じ shell に差し替え
+5. **見た目調整** — 現 PNG に近いトーンで OK（作り込みは A3）
+
+#### DoD
+
+- 8日目: PNG なしでスピン〜手動停止〜結果表示が動く（PC/SP）
+- デイリー: 従来どおり PNG 筐体
+- `npm run test:run` green
+- マスク関連のブラウザ不具合が 8日目では発生しない
+
+---
+
+### Phase A3 — 筐体演出フック（8日目）
+
+A2 の vector shell に演出用スロットを足す（ロジックは既存を流用）。
+
+- [ ] リーチ時ランプ（第3リール上など）— `isReach` で点灯
+- [ ] 筐体反動 — `cabinetRecoil` を shell の transform に（margin 依存を減らす）
+- [ ] 運/技オーラ — 現 `slot-cabinet-stage--aura-*` を vector 枠へ移植
+- [ ] カットイン・勝利 FX との z-index 整理
+- [ ] （任意）機種差の見た目フック（`slotMirrorMachineKey`）
+
+**DoD:** 現 PNG 版と同等以上の「テンション」が vector で出る。Phase B の目押し UI を載せられる余白がある。
+
+---
+
+### Phase B — チャンス時の完全目押し
+
+- [ ] 設計確定: `spinSlot` 即確定 vs 停止位置で tier 上書き
+- [ ] `slotSkillStopActive` / `slotSkillStopMode` を Firestore に書き込み
 - [ ] リール停止位置 → tier マッピング（目押し窓・許容誤差）
-- [ ] マルチ: 停止タイミングの検証 or サーバー権威（不正防止）
-- [ ] SE / カットイン（既存リーチ演出との関係）
+- [ ] マルチ: 停止タイミング検証 or サーバー権威
+- [ ] ゴースト／代理: チャンス時は自動停止（ランダム窓内）
+- [ ] vector 筐体上の目押し UI（停止位置フィードバック）
 - [ ] `game-rules.md` 更新
+
+**分割案:** B1=ソロのみ目押し / B2=マルチ同期
 
 **DoD:** チャンス時のみ、止めた位置で意図した役が出る。
 
-#### Phase C — チャンス混入（旧 4）
+---
 
-- [ ] スピン開始時に `slotSkillChance` フラグ（または tier 側メタ）
-- [ ] 非チャンス → Phase A と同じ（結果確定済み・手動停止は演出のみ）
+### Phase C — チャンス混入
+
+- [ ] スピン開始時に `slotSkillChance`（または `resolveSlotSkillStopContext` 結果を FS へ）
+- [ ] 非チャンス → A1 と同じ（結果確定済み・手動停止は演出のみ）
 - [ ] チャンス → Phase B
 - [ ] バランス調整・テスト
+
+---
+
+### 全体ロードマップ（推奨順）
+
+```mermaid
+flowchart LR
+  P0[Phase 0 設計] --> A1[A1 手動停止]
+  A1 --> A2[A2 筐体 vector 化]
+  A2 --> A3[A3 筐体演出]
+  A3 --> B[Phase B 目押し本体]
+  B --> C[Phase C 混入]
+  A1 --> D[develop 検証 deploy]
+  A2 --> D
+  C --> E[大家マルチ実機 / rules deploy]
+```
+
+| 順 | 作業 | マージ単位の目安 |
+|----|------|------------------|
+| 1 | **A1 コミット**（スロット手動停止のみ） | PR/commit 1 |
+| 2 | **A2 筐体 vector**（8日目 + 観戦） | PR/commit 2 |
+| 3 | **A3 演出**（必要なら A2 に含めても可） | PR/commit 3 or A2 に内包 |
+| 4 | develop 検証 deploy | — |
+| 5 | **Phase B**（B1 ソロ → B2 マルチ） | 1〜2 PR |
+| 6 | **Phase C** | PR 1 |
+| 7 | 大家マルチ実機・rules deploy | 目押しと切り分け |
 
 ---
 
@@ -156,52 +248,58 @@ ver1.0.4（作業） → develop（検証） → main（本番）
 
 | 判断 | 理由 |
 |------|------|
-| **1+2 → Phase A に統合** | 2 の実装が 1 を包含。1 単独リリースの価値が薄い |
-| **0 は独立** | B の前にマルチ・ゴースト方針を決めないと手戻り大 |
-| **3 と 4 は分離** | B が動かないと C の「混ぜる」がテストできない |
-| **B をさらに分割するなら** | B1=ローカルソロのみ目押し / B2=マルチ同期（検証負荷で分割） |
+| **A1 と A2 を分ける** | 手動停止はロジック、vector は UI。A1 だけ先に検証 deploy できる |
+| **A2 と A3** | 骨組みと演出。時間がなければ A3 は後回し可（B の前には推奨） |
+| **デイリーは image のまま** | スコープ抑制。共通は `SlotReelCanvasView` のみ |
+| **B を B1/B2 に分割** | マルチ同期は検証負荷が高い |
+| **3 と 4（旧）→ B と C** | B が動かないと C をテストできない |
 
 ---
 
-### 目押しと並行してやるとよいこと（ブロッカーではない）
+### 目押しと並行してやるとよいこと
 
 | 項目 | タイミング | メモ |
 |------|------------|------|
-| Firestore rules deploy | Phase A 前後 | スロット新フィールドを足すなら A 完了時に rules 更新 |
-| 大家マルチ実機 | Phase A 後 | スロット変更と同時だと切り分け困難 |
-| SP スロット HUD 折りたたみ | Phase A と一緒 | 停止ボタン配置とセットでレイアウト決定 |
-| `SlotMachine.jsx` の停止ロジック抽出 | **Phase A の一部** | 巨大ファイル回避・B の土台 |
-| ゴースト自動停止 | Phase B 前に方針 | 実装なしだとチャンス時に詰まる |
-
-**ver1.0.3 からのバックログ**（目押しと独立）: Phase 0 deploy、大家マルチ、gameLogic 分割は **目押し Phase A が動いてから**でも可。
+| Firestore rules deploy | A1 完了時 or B 着手前 | 新フィールドを足すタイミングで |
+| 大家マルチ実機 | A2 検証後 | スロット UI と同時だと切り分け困難 |
+| SP スロット HUD 折りたたみ | **A2 と一緒** | vector 筐体のレイアウトと同時決定 |
+| 長時間未操作のセーフティタイマー | A1 or A2 | 無限スピン防止（任意） |
+| ゴースト自動停止 | **B 前** | チャンス時に詰まらないように |
 
 ---
 
-### 触るファイル（想定）
+### 触るファイル（想定・更新）
 
 | 層 | ファイル |
 |----|----------|
-| 定数 | `constants/gameBalance.js` |
-| 純ロジック | `utils/gameLogic.js`（`spinSlot` 拡張）、新規 `lib/slotReelStop.js` |
-| UI 操作者 | `SlotMachine.jsx`, `SlotReelCanvasView.jsx` |
+| 定数 | `constants/gameBalance.js`, **`constants/slotCabinetLayout.js`（新規）** |
+| 純ロジック | `utils/gameLogic.js`, `lib/slotReelStop.js`, `lib/slotReelStopSequence.js` |
+| UI 筐体 | **`SlotCabinetShell.jsx`（新規）**, `SlotMachine.jsx`, `SlotReelStopButtons.jsx` |
+| リール描画 | `SlotReelCanvasView.jsx`（共用・基本そのまま） |
 | 観戦 | `SlotSpinBroadcastOverlay.jsx`, `Day8SlotSpectatorMirror.jsx` |
+| デイリー | `DailySlotTrainingModal.jsx`（image variant のみ） |
+| スタイル | `index.css`（デイリー用 legacy + vector 用を整理） |
 | ゴースト | `lib/ghostPlayerAutomation.js` |
 | ルール | `references/game-rules.md`, `day8-guide.md` |
 
 ---
 
-## 次にやること（優先順）
+## 次にやること（優先順・2026-07-30）
 
-1. **Phase 0** — チャンス定義・Firestore フィールド案・`slotReelStop` 骨格
-2. **Phase A** — 停止ボタン + 手動停止（結果は現状維持）
-3. Phase B → C（目押し本体 → 混入）
-4. （並行）大家マルチ実機、rules deploy
+1. **A1 コミット** — 手動停止（すごろく修正は別コミット推奨）
+2. **A2 着手** — `SlotCabinetShell` + `slotCabinetLayout.js`、8日目を vector 化
+3. **A3** — リーチランプ・反動・オーラ（A2 と同 PR でも可）
+4. develop 検証 deploy
+5. Phase B → C
+6. 大家マルチ実機、rules deploy
 
 ---
 
 ## ver1.0.4 での作業ログ
 
-- **Phase 0（目押し設計）** — ガセ **18%** × 目押し **70%**（`nearMissReachChance` / `gaseReachSkillStopChance`）、`lib/slotReelStop.js` + テスト。約10.7%/スピン・約29%/席（Phase B まで UI/Firestore 未接続）
+- **Phase 0（目押し設計）** — ガセ **18%** × 目押し **70%**、`lib/slotReelStop.js` + テスト
+- **Phase A1（手動停止）** — STOP×3、自動タイマー削除、押すまで停止しない（ローカル確認済・未コミット）
+- **方針確定** — 8日目筐体は描画（vector）、デイリーは PNG 維持（2026-07-30）
 
 ---
 

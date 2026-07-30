@@ -243,7 +243,8 @@ Day8ItemBar.jsx            行動ボタン直下 UI
 - **目押しチャンス:** ガセ成立時 **70%**（`gaseReachSkillStopChance`）
 - **体感:** 約 **10.7%/スピン**、約 **29%/3スピン席**（miss≈85% 想定）
 - **純関数:** `lib/slotReelStop.js` — `resolveSlotSkillStopContext`, `buildSlotSpinVisualPlan`
-- **Phase A 以降:** Firestore `slotSkillStopActive` / `slotSkillStopMode`、停止ボタン UI
+- **筐体 UI（2026-07-30）:** 8日目は `SlotCabinetShell` **vector**（描画筐体）。デイリー練習は PNG のまま。詳細 → [ver1.0.4.md](../branches/ver1.0.4.md) Phase A2
+- **Phase A1:** 手動 STOP×3（押すまで止まらない）。**Phase A2:** 筐体 vector 化。**Phase B 以降:** Firestore `slotSkillStopActive` / 目押し本体
 
 ## 関連テスト
 

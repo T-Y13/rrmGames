@@ -39,6 +39,13 @@ body,
   --slot-spin-left: 45%;
   --slot-spin-w: 10%;
   --slot-spin-h: 10%;
+  /* 各リール STOP（窓 x=19 / 40.8333 / 62.6666, w=18.3333 に合わせる） */
+  --slot-reel-0-left: 19%;
+  --slot-reel-1-left: 40.8333%;
+  --slot-reel-2-left: 62.6666%;
+  --slot-reel-stop-w: 18.3333%;
+  --slot-reel-stop-top: 79%;
+  --slot-reel-stop-h: 6.5%;
   --slot-reel-face: #141922;
   /* 3 窓帯: x=19 / 40.8333 / 62.6666, w=18.3333, y=46, h=32（slot-windows-mask.svg と同一） */
   --slot-cabinet-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' preserveAspectRatio='none'%3E%3Crect width='100' height='100' fill='%23fff'/%3E%3Crect x='19' y='46' width='18.3333' height='32' fill='%23000'/%3E%3Crect x='40.8333' y='46' width='18.3333' height='32' fill='%23000'/%3E%3Crect x='62.6666' y='46' width='18.3333' height='32' fill='%23000'/%3E%3C/svg%3E");
