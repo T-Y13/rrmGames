@@ -1,7 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { publicAssetUrl } from "../lib/publicAssetUrl";
 import { STREAM_CUTIN_CHAT, STREAM_CUTIN_GAME } from "../constants/branding";
 import { useCutinImageReady } from "../hooks/useCutinImageReady";
+
+/** 短すぎる待ちではぐるぐるを出さない（キャッシュ即表示向け） */
+const CUTIN_LOADING_SPINNER_DELAY_MS = 250;
 
 /**
  * 日常「配信」で雑談／ゲーム種別が決まった直後のカットイン（画像準備完了後に表示）
@@ -21,10 +25,20 @@ export default function StreamTypeCutin({
   const streamLabel = mode === "game" ? "ゲーム配信" : "雑談配信";
   const imgReady = useCutinImageReady(src);
   const readyNotifiedRef = useRef(false);
+  const [showSpinner, setShowSpinner] = useState(false);
 
   useEffect(() => {
     readyNotifiedRef.current = false;
   }, [src]);
+
+  useEffect(() => {
+    if (!validMode || imgReady) {
+      setShowSpinner(false);
+      return undefined;
+    }
+    const t = window.setTimeout(() => setShowSpinner(true), CUTIN_LOADING_SPINNER_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [validMode, imgReady, src]);
 
   useEffect(() => {
     if (!validMode || !imgReady || readyNotifiedRef.current) return;
@@ -45,6 +59,7 @@ export default function StreamTypeCutin({
       className="fixed inset-0 z-[210] flex cursor-default items-center justify-center overflow-hidden bg-slate-950 pointer-events-auto"
       aria-hidden
       role="presentation"
+      aria-busy={!imgReady}
     >
       {imgReady ? (
         <div className="relative z-[2] flex flex-col items-center justify-center px-5 anim-fadein">
@@ -69,6 +84,11 @@ export default function StreamTypeCutin({
               </p>
             ) : null}
           </div>
+        </div>
+      ) : showSpinner ? (
+        <div className="relative z-[2] flex flex-col items-center gap-3 text-slate-300" role="status">
+          <Loader2 size={36} className="animate-spin text-cyan-300" aria-hidden />
+          <p className="text-sm font-semibold tracking-wide">読み込み中…</p>
         </div>
       ) : null}
     </div>

@@ -1,7 +1,11 @@
+import { useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { publicAssetUrl } from "../lib/publicAssetUrl";
 import { WORK_CUTIN_IMAGE } from "../constants/branding";
 import { useCutinImageReady } from "../hooks/useCutinImageReady";
-import { useEffect, useRef } from "react";
+
+/** 短すぎる待ちではぐるぐるを出さない（キャッシュ即表示向け） */
+const CUTIN_LOADING_SPINNER_DELAY_MS = 250;
 
 /** 日常「仕事」の画像カットイン（画像準備完了後に表示。親が visible 完了を受け取る） */
 export default function WorkCutin({
@@ -17,10 +21,20 @@ export default function WorkCutin({
   const src = publicAssetUrl(isRirimu ? "/images/work_ririmu.png" : WORK_CUTIN_IMAGE);
   const imgReady = useCutinImageReady(src);
   const readyNotifiedRef = useRef(false);
+  const [showSpinner, setShowSpinner] = useState(false);
 
   useEffect(() => {
     readyNotifiedRef.current = false;
   }, [src]);
+
+  useEffect(() => {
+    if (imgReady) {
+      setShowSpinner(false);
+      return undefined;
+    }
+    const t = window.setTimeout(() => setShowSpinner(true), CUTIN_LOADING_SPINNER_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [imgReady, src]);
 
   useEffect(() => {
     if (!imgReady || readyNotifiedRef.current) return;
@@ -40,6 +54,7 @@ export default function WorkCutin({
       aria-hidden={!onDismiss}
       role={onDismiss ? "dialog" : "presentation"}
       aria-modal={onDismiss ? "true" : undefined}
+      aria-busy={!imgReady}
     >
       {imgReady ? (
         <div className="relative z-[2] flex flex-col items-center justify-center px-5 anim-fadein">
@@ -70,6 +85,11 @@ export default function WorkCutin({
               閉じる
             </button>
           ) : null}
+        </div>
+      ) : showSpinner ? (
+        <div className="relative z-[2] flex flex-col items-center gap-3 text-slate-300" role="status">
+          <Loader2 size={36} className="animate-spin text-amber-300" aria-hidden />
+          <p className="text-sm font-semibold tracking-wide">読み込み中…</p>
         </div>
       ) : null}
     </div>
