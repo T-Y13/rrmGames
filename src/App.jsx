@@ -489,6 +489,12 @@ export default function App() {
   /** マルチ日常：カットイン終了後にターン進行 writeGS を送る */
   const pendingDailyTurnWriteRef = useRef(null);
   const dailyTurnWriteTimerRef = useRef(null);
+  /**
+   * 仕事／配信カットイン画像の onReady 後に呼ぶアーム（PON連鎖・マルチ write 遅延）。
+   * setWorkCutin が先でも、画像キャッシュ即 ready でも取りこぼさない。
+   */
+  const dailyCutinImageReadyArmRef = useRef(null);
+  const dailyCutinImageReadyPendingRef = useRef(false);
   const lastSelfGhostClearAttemptRef = useRef(0);
   const [turnChangeBannerTurns, setTurnChangeBannerTurns] = useState(null);
   const [pendingTurnBannerTurns, setPendingTurnBannerTurns] = useState(null);
@@ -881,6 +887,8 @@ export default function App() {
     pendingDailyTurnWriteRef.current = null;
     dailyCutinSessionIdRef.current = null;
     pendingDailyCutinBroadcastRef.current = null;
+    dailyCutinImageReadyArmRef.current = null;
+    dailyCutinImageReadyPendingRef.current = false;
     clearDailyCutinLocalState();
   }, [clearDailyCutinLocalState]);
 
@@ -3415,6 +3423,34 @@ export default function App() {
     }
   }, [resetDailyOutgoingFxState, roomId, roomData?.isSolo, clearDailyCutinBroadcast]);
 
+  /** 仕事／配信カットイン：画像デコード完了後に PON 連鎖・マルチ write タイマーを開始 */
+  const handleDailyImageCutinReady = useCallback(() => {
+    const arm = dailyCutinImageReadyArmRef.current;
+    if (arm) {
+      dailyCutinImageReadyArmRef.current = null;
+      dailyCutinImageReadyPendingRef.current = false;
+      arm();
+      return;
+    }
+    dailyCutinImageReadyPendingRef.current = true;
+  }, []);
+
+  const handleWorkCutinVisibleComplete = useCallback(() => {
+    setWorkCutin(null);
+    if (workCutinTimerRef.current) {
+      clearTimeout(workCutinTimerRef.current);
+      workCutinTimerRef.current = null;
+    }
+  }, []);
+
+  const handleStreamCutinVisibleComplete = useCallback(() => {
+    setStreamTypeCutin(null);
+    if (streamCutinTimerRef.current) {
+      clearTimeout(streamCutinTimerRef.current);
+      streamCutinTimerRef.current = null;
+    }
+  }, []);
+
   const beginDailyCutinSession = useCallback(() => {
     const sid = buildDailyCutinSessionId();
     dailyCutinSessionIdRef.current = sid;
@@ -3833,10 +3869,7 @@ export default function App() {
         stat: workVirtueGain ? { label: "善行", delta: workVirtueGain } : null,
         characterType: p.characterType,
       });
-      workCutinTimerRef.current = window.setTimeout(() => {
-        setWorkCutin(null);
-        workCutinTimerRef.current = null;
-      }, DAILY_WORK_CUTIN_MS);
+      // 表示時間は画像 ready 後（WorkCutin onVisibleComplete）に計測
       actionLabel = "仕事";
       actionLines.push(
         ...workActionLines({
@@ -3914,10 +3947,7 @@ export default function App() {
         gold: streamCutinGold,
         stat: streamCutinStat,
       });
-      streamCutinTimerRef.current = setTimeout(() => {
-        setStreamTypeCutin(null);
-        streamCutinTimerRef.current = null;
-      }, DAILY_STREAM_CUTIN_MS);
+      // 表示時間は画像 ready 後（StreamTypeCutin onVisibleComplete）に計測
     } else {
       return;
     }
@@ -3972,12 +4002,11 @@ export default function App() {
       statusLines.push(ponNoFireLine(s.pon, BAL.pon.fireThreshold));
     }
 
-    // 配信：カットイン終了後 → PON発火（時）→ 失敗（時）の順でオーバーレイを並べる
-    if (actionType === "stream") {
+    // 配信／仕事：画像 ready 後にカットイン表示時間＋PON／失敗オーバーレイを開始
+    const scheduleStreamFxFromImageReady = () => {
       streamFxChainTimeoutsRef.current.forEach(clearTimeout);
       streamFxChainTimeoutsRef.current = [];
       let overlayCursorMs = DAILY_STREAM_CUTIN_MS;
-      let streamChainTotalMs = DAILY_STREAM_CUTIN_MS;
       if (deferStreamPonOverlay) {
         const idPon = window.setTimeout(() => {
           emitDailyCutin(DAILY_CUTIN_PHASE.streamPon, null);
@@ -3995,7 +4024,6 @@ export default function App() {
         }, overlayCursorMs);
         streamFxChainTimeoutsRef.current.push(idPon);
         overlayCursorMs += DAILY_STREAM_PON_OVERLAY_MS;
-        streamChainTotalMs += DAILY_STREAM_PON_OVERLAY_MS;
       }
       if (streamRollFailed) {
         const idFail = window.setTimeout(() => {
@@ -4011,37 +4039,38 @@ export default function App() {
           }, DAILY_STREAM_FAIL_HOLD_MS);
         }, overlayCursorMs);
         streamFxChainTimeoutsRef.current.push(idFail);
-        streamChainTotalMs += DAILY_STREAM_FAIL_HOLD_MS;
       }
-    }
+    };
 
-    if (actionType === "work") {
+    const scheduleWorkFxFromImageReady = () => {
       workFxChainTimeoutsRef.current.forEach(clearTimeout);
       workFxChainTimeoutsRef.current = [];
-      if (deferWorkPonOverlay) {
-        const turnDelta =
-          workIncomeForHud - workPenaltyForHud;
-        const hudPayload = {
-          penalty: workPenaltyForHud,
-          workIncome: workIncomeForHud,
-          balanceAfter: s.money,
-          turnDelta,
-          moneyBefore: moneyBeforeAction,
-        };
-        const idWorkPon = window.setTimeout(() => {
-          emitDailyCutin(DAILY_CUTIN_PHASE.workPon, hudPayload);
-          setWorkPonHud(hudPayload);
-          try {
-            soundRef.current?.playWorkPonPlateBreak?.();
-          } catch (_) {}
-          if (workPonFireOverlayTimerRef.current) clearTimeout(workPonFireOverlayTimerRef.current);
-          workPonFireOverlayTimerRef.current = window.setTimeout(() => {
-            setWorkPonHud(null);
-            workPonFireOverlayTimerRef.current = null;
-          }, DAILY_WORK_PON_OVERLAY_MS);
-        }, DAILY_WORK_CUTIN_MS);
-        workFxChainTimeoutsRef.current.push(idWorkPon);
-      }
+      if (!deferWorkPonOverlay) return;
+      const turnDelta = workIncomeForHud - workPenaltyForHud;
+      const hudPayload = {
+        penalty: workPenaltyForHud,
+        workIncome: workIncomeForHud,
+        balanceAfter: s.money,
+        turnDelta,
+        moneyBefore: moneyBeforeAction,
+      };
+      const idWorkPon = window.setTimeout(() => {
+        emitDailyCutin(DAILY_CUTIN_PHASE.workPon, hudPayload);
+        setWorkPonHud(hudPayload);
+        try {
+          soundRef.current?.playWorkPonPlateBreak?.();
+        } catch (_) {}
+        if (workPonFireOverlayTimerRef.current) clearTimeout(workPonFireOverlayTimerRef.current);
+        workPonFireOverlayTimerRef.current = window.setTimeout(() => {
+          setWorkPonHud(null);
+          workPonFireOverlayTimerRef.current = null;
+        }, DAILY_WORK_PON_OVERLAY_MS);
+      }, DAILY_WORK_CUTIN_MS);
+      workFxChainTimeoutsRef.current.push(idWorkPon);
+    };
+
+    if (actionType === "stream" || actionType === "work") {
+      // PON／失敗オーバーレイは画像 ready アーム（下）で開始
     }
 
     let newPlayers = gs.players.map((pl, i) =>
@@ -4102,7 +4131,19 @@ export default function App() {
         streamRollFailed,
         deferWorkPonOverlay,
       });
-      await new Promise((r) => setTimeout(r, Math.max(FINAL_BATTLE_SPLASH_MS, fxHoldMs)));
+      await new Promise((resolve) => {
+        const arm = () => {
+          if (actionType === "stream") scheduleStreamFxFromImageReady();
+          if (actionType === "work") scheduleWorkFxFromImageReady();
+          window.setTimeout(resolve, Math.max(FINAL_BATTLE_SPLASH_MS, fxHoldMs));
+        };
+        if (dailyCutinImageReadyPendingRef.current) {
+          dailyCutinImageReadyPendingRef.current = false;
+          arm();
+        } else {
+          dailyCutinImageReadyArmRef.current = arm;
+        }
+      });
       resetDailyOutgoingFxState();
       finishDailyCutinSession();
     }
@@ -4127,11 +4168,39 @@ export default function App() {
         clearTimeout(dailyTurnWriteTimerRef.current);
       }
       pendingDailyTurnWriteRef.current = { nextGsWithFx, cutinClearPatch };
-      dailyTurnWriteTimerRef.current = window.setTimeout(() => {
-        dailyTurnWriteTimerRef.current = null;
-        void flushPendingDailyTurnWrite();
-      }, holdMs);
+      const arm = () => {
+        if (actionType === "stream") scheduleStreamFxFromImageReady();
+        if (actionType === "work") scheduleWorkFxFromImageReady();
+        dailyTurnWriteTimerRef.current = window.setTimeout(() => {
+          dailyTurnWriteTimerRef.current = null;
+          void flushPendingDailyTurnWrite();
+        }, holdMs);
+      };
+      if (actionType === "work" || actionType === "stream") {
+        if (dailyCutinImageReadyPendingRef.current) {
+          dailyCutinImageReadyPendingRef.current = false;
+          arm();
+        } else {
+          dailyCutinImageReadyArmRef.current = arm;
+        }
+      } else {
+        arm();
+      }
       return;
+    }
+
+    // ソロ／即時 write：画像 ready 後に PON 連鎖のみ開始（write は下で即実行）
+    if (!advancesToSugoroku && (actionType === "work" || actionType === "stream")) {
+      const arm = () => {
+        if (actionType === "stream") scheduleStreamFxFromImageReady();
+        if (actionType === "work") scheduleWorkFxFromImageReady();
+      };
+      if (dailyCutinImageReadyPendingRef.current) {
+        dailyCutinImageReadyPendingRef.current = false;
+        arm();
+      } else {
+        dailyCutinImageReadyArmRef.current = arm;
+      }
     }
 
     const ok = await writeGS({
@@ -5226,6 +5295,9 @@ export default function App() {
           mode={streamTypeCutin.mode}
           gold={streamTypeCutin.gold}
           stat={streamTypeCutin.stat}
+          visibleMs={DAILY_STREAM_CUTIN_MS}
+          onReady={spectatorCutinSyncEnabled ? undefined : handleDailyImageCutinReady}
+          onVisibleComplete={handleStreamCutinVisibleComplete}
         />
       )}
       {workCutin && (
@@ -5234,6 +5306,9 @@ export default function App() {
           stat={workCutin.stat}
           characterType={workCutin.characterType}
           onDismiss={dismissStuckDailyCutin}
+          visibleMs={DAILY_WORK_CUTIN_MS}
+          onReady={spectatorCutinSyncEnabled ? undefined : handleDailyImageCutinReady}
+          onVisibleComplete={handleWorkCutinVisibleComplete}
         />
       )}
 

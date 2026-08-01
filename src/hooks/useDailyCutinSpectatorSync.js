@@ -119,11 +119,12 @@ export function useDailyCutinSpectatorSync({
 
     clearPhaseClearTimer();
     const phaseMs = dailyCutinPhaseDurationMs(phase);
-    if (phaseMs > 0) {
+    // 仕事／配信は画像 ready 後にコンポーネント側で visibleMs 計測するため、ここでは自動クリアしない
+    const imageGatedPhase =
+      phase === DAILY_CUTIN_PHASE.work || phase === DAILY_CUTIN_PHASE.stream;
+    if (phaseMs > 0 && !imageGatedPhase) {
       phaseClearTimerRef.current = window.setTimeout(() => {
         phaseClearTimerRef.current = null;
-        if (phase === DAILY_CUTIN_PHASE.work) setWorkCutin(null);
-        if (phase === DAILY_CUTIN_PHASE.stream) setStreamTypeCutin(null);
         if (phase === DAILY_CUTIN_PHASE.workPon) setWorkPonHud(null);
         if (phase === DAILY_CUTIN_PHASE.streamPon) setStreamPonFireOverlay(false);
         if (phase === DAILY_CUTIN_PHASE.streamFail) setStreamFailOverlay(false);
