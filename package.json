@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:rules": "vitest run tests/firestore.rules.test.js",
+    "test:rules": "vitest run --config vitest.rules.config.js",
     "test:rules:emulator": "npx -y firebase-tools@latest emulators:exec --only firestore \"npm run test:rules\"",
     "deploy": "npm run build && npx -y firebase-tools@latest deploy --only hosting:default-site --non-interactive",
     "deploy:verify": "npm run deploy",

@@ -312,6 +312,7 @@ flowchart LR
 - **Phase A2（vector 筐体）** — `SlotCabinetShell`、8日目 PNG 廃止
 - **方針確定** — 8日目筐体は描画（vector）、デイリーは PNG 維持（2026-07-30）
 - **2026-08-01** — 1〜7日目仕事／配信カットイン：画像デコード完了後に表示（空枠フラッシュ解消）
+- **2026-08-01** — 手番 `writeGS` と cutin clear: 同一 Commit 同梱は `permission-denied`（`playGameStatePatchValid` の hasOnly）→ **transaction 成功後に順次 clear**。rules に同梱許可を足すと expression limit 超過のためクライアント側で分離を維持
 
 ---
 

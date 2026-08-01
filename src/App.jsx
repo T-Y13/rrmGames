@@ -1816,6 +1816,7 @@ export default function App() {
           (authG?.subPhase === SUB_PHASE.day8 || authG?.subPhase === SUB_PHASE.daily)
         ) {
           const ref = doc(db, "rooms", roomId);
+          let clearRoomCutinAfterWrite = false;
           await runTransaction(db, async (transaction) => {
             const snap = await transaction.get(ref);
             if (!snap.exists()) throw new Error("ROOM_MISSING");
@@ -1882,21 +1883,28 @@ export default function App() {
               return;
             }
             const updates = { gameState: resolvedGS };
-            // 日常カットイン解除を gameState と同一 transaction に載せ、updateRoom との競合 (failed-precondition) を防ぐ
-            const clearsDailyCutin =
+            // ルーム直下 dailyCutin* は gameState と同一 Commit に載せない。
+            // playGameStatePatchValid は gameState(+status/pot…) のみ許可するため、同梱すると permission-denied になる。
+            // 解除は transaction 成功後に順次 updateRoom する（並列だと failed-precondition 競合）。
+            if (
               liveGs?.subPhase === SUB_PHASE.daily &&
               (resolvedGS.dailyCutinPhase ?? DAILY_CUTIN_PHASE.idle) === DAILY_CUTIN_PHASE.idle &&
-              (resolvedGS.dailyCutinSessionId ?? null) === null;
-            if (clearsDailyCutin) {
-              updates.dailyCutinPhase = DAILY_CUTIN_SYNC_DEFAULTS.dailyCutinPhase;
-              updates.dailyCutinSessionId = DAILY_CUTIN_SYNC_DEFAULTS.dailyCutinSessionId;
-              updates.dailyCutinPayload = DAILY_CUTIN_SYNC_DEFAULTS.dailyCutinPayload;
+              (resolvedGS.dailyCutinSessionId ?? null) === null
+            ) {
+              clearRoomCutinAfterWrite = true;
             }
             if (typeof setStatus === "string") updates.status = setStatus;
             else if (resolvedGS.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
             else if (resolvedGS.gamePhase === GAME_PHASE.results) updates.status = "completed";
             transaction.update(ref, updates);
           });
+          if (clearRoomCutinAfterWrite) {
+            try {
+              await updateRoom(DAILY_CUTIN_SYNC_DEFAULTS);
+            } catch (_) {
+              /* best-effort: 手番同期は成功済み */
+            }
+          }
           return true;
         }
         const pendingCutin = pickDailyCutinBroadcastFields(pendingDailyCutinBroadcastRef.current);
@@ -1908,9 +1916,6 @@ export default function App() {
             ? mergeDailyCutinFieldsIntoGameState(newGS, pendingCutin)
             : newGS;
         let updates = { gameState: mergedGS };
-        if (clearsCutinFields) {
-          updates = { ...updates, ...DAILY_CUTIN_SYNC_DEFAULTS };
-        }
         if (
           roomId &&
           mergedGS?.gamePhase === GAME_PHASE.playing &&
@@ -1929,6 +1934,14 @@ export default function App() {
         else if (mergedGS.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
         else if (mergedGS.gamePhase === GAME_PHASE.results) updates.status = "completed";
         await updateRoom(updates);
+        // gameState と dailyCutin* を同一 update に載せると rules が deny するため、解除は直後に分離
+        if (clearsCutinFields && roomId && !roomDataRef.current?.isSolo) {
+          try {
+            await updateRoom(DAILY_CUTIN_SYNC_DEFAULTS);
+          } catch (_) {
+            /* best-effort */
+          }
+        }
         return true;
       } catch (e) {
         setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
@@ -3490,7 +3503,7 @@ export default function App() {
     if (!pending) return;
     if (gsRef.current?.subPhase !== SUB_PHASE.daily) return;
     // 先に clearDailyCutinBroadcast (updateRoom) すると手番 writeGS transaction と競合して
-    // failed-precondition になる。ローカルだけ消し、ルーム直下 cutin は writeGS 側で同時更新する。
+    // failed-precondition になる。ローカルだけ消し、ルーム直下 cutin は writeGS 成功後に順次解除する。
     dailyCutinSessionIdRef.current = null;
     pendingDailyCutinBroadcastRef.current = null;
     const ok = await writeGS({

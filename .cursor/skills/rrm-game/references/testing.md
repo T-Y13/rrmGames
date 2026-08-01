@@ -23,7 +23,7 @@ npm run test:rules:emulator
 
 | | 単体テスト | Firestore rules テスト |
 |--|-----------|------------------------|
-| 設定 | `vite.config.js` → `include: ["src/**/*.{test,spec}.{js,jsx}"]` | `tests/firestore.rules.test.js`（**include 外**） |
+| 設定 | `vite.config.js` → `include: ["src/**/*.{test,spec}.{js,jsx}"]` | `vitest.rules.config.js` → `tests/**` |
 | 環境 | `environment: "node"` | Firestore エミュレータ port 8080 |
 | 対象 | 純粋関数・状態遷移 | セキュリティルールの allow/deny |
 | 実行 | `test:run` | `test:rules` / `test:rules:emulator` |
