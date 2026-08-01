@@ -3415,15 +3415,7 @@ export default function App() {
     }
   }, [roomId, roomData?.isSolo, updateRoom, writeGS]);
 
-  const dismissStuckDailyCutin = useCallback(() => {
-    resetDailyOutgoingFxState();
-    setUiError("");
-    if (roomId && !roomData?.isSolo) {
-      void clearDailyCutinBroadcast();
-    }
-  }, [resetDailyOutgoingFxState, roomId, roomData?.isSolo, clearDailyCutinBroadcast]);
-
-  /** 仕事／配信カットイン：画像デコード完了後に PON 連鎖・マルチ write タイマーを開始 */
+  /** 仕事／配信カットイン：画像デコード完了後に PON 連鎖を開始 */
   const handleDailyImageCutinReady = useCallback(() => {
     const arm = dailyCutinImageReadyArmRef.current;
     if (arm) {
@@ -3496,6 +3488,28 @@ export default function App() {
       finishDailyCutinSession();
     }
   }, [writeGS, finishDailyCutinSession, resetDailyOutgoingFxState]);
+
+  const dismissStuckDailyCutin = useCallback(() => {
+    // stale 解除時に pending の手番 write を捨てると手番が止まるため、先に flush する
+    if (pendingDailyTurnWriteRef.current) {
+      if (dailyTurnWriteTimerRef.current) {
+        clearTimeout(dailyTurnWriteTimerRef.current);
+        dailyTurnWriteTimerRef.current = null;
+      }
+      void flushPendingDailyTurnWrite();
+    }
+    resetDailyOutgoingFxState();
+    setUiError("");
+    if (roomId && !roomData?.isSolo) {
+      void clearDailyCutinBroadcast();
+    }
+  }, [
+    flushPendingDailyTurnWrite,
+    resetDailyOutgoingFxState,
+    roomId,
+    roomData?.isSolo,
+    clearDailyCutinBroadcast,
+  ]);
 
   /** 8日目以降：日常カットイン state が残ると盤面が出ず移動不能になるため強制解除 */
   useEffect(() => {
@@ -4131,19 +4145,27 @@ export default function App() {
         streamRollFailed,
         deferWorkPonOverlay,
       });
-      await new Promise((resolve) => {
-        const arm = () => {
+      // 画像待ちで手番進行が止まらないよう、演出 hold は従来どおり開始時刻から計測。
+      // PON 連鎖だけ画像 ready 後に開始する。
+      if (actionType === "work" || actionType === "stream") {
+        const armFx = () => {
           if (actionType === "stream") scheduleStreamFxFromImageReady();
           if (actionType === "work") scheduleWorkFxFromImageReady();
-          window.setTimeout(resolve, Math.max(FINAL_BATTLE_SPLASH_MS, fxHoldMs));
         };
         if (dailyCutinImageReadyPendingRef.current) {
           dailyCutinImageReadyPendingRef.current = false;
-          arm();
+          armFx();
         } else {
-          dailyCutinImageReadyArmRef.current = arm;
+          dailyCutinImageReadyArmRef.current = armFx;
+          window.setTimeout(() => {
+            if (dailyCutinImageReadyArmRef.current === armFx) {
+              dailyCutinImageReadyArmRef.current = null;
+              armFx();
+            }
+          }, 10000);
         }
-      });
+      }
+      await new Promise((r) => setTimeout(r, Math.max(FINAL_BATTLE_SPLASH_MS, fxHoldMs)));
       resetDailyOutgoingFxState();
       finishDailyCutinSession();
     }
@@ -4168,38 +4190,50 @@ export default function App() {
         clearTimeout(dailyTurnWriteTimerRef.current);
       }
       pendingDailyTurnWriteRef.current = { nextGsWithFx, cutinClearPatch };
-      const arm = () => {
-        if (actionType === "stream") scheduleStreamFxFromImageReady();
-        if (actionType === "work") scheduleWorkFxFromImageReady();
-        dailyTurnWriteTimerRef.current = window.setTimeout(() => {
-          dailyTurnWriteTimerRef.current = null;
-          void flushPendingDailyTurnWrite();
-        }, holdMs);
-      };
+      // 手番 write は画像ロードに依存させない（ロード遅延・stale clear で止まっていた）
+      dailyTurnWriteTimerRef.current = window.setTimeout(() => {
+        dailyTurnWriteTimerRef.current = null;
+        void flushPendingDailyTurnWrite();
+      }, holdMs);
+
       if (actionType === "work" || actionType === "stream") {
+        const armFx = () => {
+          if (actionType === "stream") scheduleStreamFxFromImageReady();
+          if (actionType === "work") scheduleWorkFxFromImageReady();
+        };
         if (dailyCutinImageReadyPendingRef.current) {
           dailyCutinImageReadyPendingRef.current = false;
-          arm();
+          armFx();
         } else {
-          dailyCutinImageReadyArmRef.current = arm;
+          dailyCutinImageReadyArmRef.current = armFx;
+          window.setTimeout(() => {
+            if (dailyCutinImageReadyArmRef.current === armFx) {
+              dailyCutinImageReadyArmRef.current = null;
+              armFx();
+            }
+          }, 10000);
         }
-      } else {
-        arm();
       }
       return;
     }
 
-    // ソロ／即時 write：画像 ready 後に PON 連鎖のみ開始（write は下で即実行）
+    // ソロ：write は即時。PON 連鎖のみ画像 ready 後
     if (!advancesToSugoroku && (actionType === "work" || actionType === "stream")) {
-      const arm = () => {
+      const armFx = () => {
         if (actionType === "stream") scheduleStreamFxFromImageReady();
         if (actionType === "work") scheduleWorkFxFromImageReady();
       };
       if (dailyCutinImageReadyPendingRef.current) {
         dailyCutinImageReadyPendingRef.current = false;
-        arm();
+        armFx();
       } else {
-        dailyCutinImageReadyArmRef.current = arm;
+        dailyCutinImageReadyArmRef.current = armFx;
+        window.setTimeout(() => {
+          if (dailyCutinImageReadyArmRef.current === armFx) {
+            dailyCutinImageReadyArmRef.current = null;
+            armFx();
+          }
+        }, 10000);
       }
     }
 
