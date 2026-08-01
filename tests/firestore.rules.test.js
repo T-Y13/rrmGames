@@ -306,4 +306,53 @@ describe("firestore.rules daily cutin", () => {
       }),
     );
   });
+
+  it("allows fx owner to clear dailyActionFx after turn advanced", async () => {
+    const roomId = "CUTN25";
+    const gs = {
+      ...dailyGameState("guest"),
+      currentPlayerIdx: 1,
+      dailyActionFx: {
+        id: "fx1",
+        playerId: "host",
+        actionType: "work",
+        label: "💼 仕事",
+      },
+    };
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "rooms", roomId), baseRoom({ gameState: gs }));
+    });
+
+    const { dailyActionFx: _removed, ...cleared } = gs;
+    const hostDb = testEnv.authenticatedContext("host").firestore();
+    await assertSucceeds(
+      updateDoc(doc(hostDb, "rooms", roomId), {
+        gameState: cleared,
+      }),
+    );
+  });
+
+  it("denies outsider clearing dailyActionFx", async () => {
+    const roomId = "CUTN26";
+    const gs = {
+      ...dailyGameState("host"),
+      dailyActionFx: {
+        id: "fx1",
+        playerId: "host",
+        actionType: "work",
+        label: "💼 仕事",
+      },
+    };
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "rooms", roomId), baseRoom({ gameState: gs }));
+    });
+
+    const { dailyActionFx: _removed, ...cleared } = gs;
+    const outsiderDb = testEnv.authenticatedContext("outsider").firestore();
+    await assertFails(
+      updateDoc(doc(outsiderDb, "rooms", roomId), {
+        gameState: cleared,
+      }),
+    );
+  });
 });

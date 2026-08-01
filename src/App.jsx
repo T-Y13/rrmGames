@@ -1995,6 +1995,9 @@ export default function App() {
     const mayClear = myId === fx.playerId || isHost;
     const clearFxFromLive = () => {
       if (!mayClear) return;
+      // マルチでは手番 write 後に currentPlayerIdx が進むため、旧 rules の isActorTurn だけだと 403。
+      // dailyFxClearValid 未 deploy では非手番 clear を送らず console を汚さない（次アクションで上書き）。
+      if (!isActorTurnOnGameState(gsRef.current, myId)) return;
       void commitClearDailyActionFxFromLive().catch(() => {});
     };
     if (staleDailyFx) {
@@ -4222,7 +4225,12 @@ export default function App() {
       if (dailyTurnWriteTimerRef.current) {
         clearTimeout(dailyTurnWriteTimerRef.current);
       }
-      pendingDailyTurnWriteRef.current = { nextGsWithFx, cutinClearPatch };
+      pendingDailyTurnWriteRef.current = {
+        // 手番 write 時点で currentPlayerIdx が進むため、dailyActionFx を載せると
+        // 後続の dailyFxClear が isActorTurn に弾かれて 403 になる。フロートはカットイン同期に任せる。
+        nextGsWithFx: clearDailyActionFx(nextGsWithFx),
+        cutinClearPatch,
+      };
       // 手番 write は画像ロードに依存させない（ロード遅延・stale clear で止まっていた）
       dailyTurnWriteTimerRef.current = window.setTimeout(() => {
         dailyTurnWriteTimerRef.current = null;

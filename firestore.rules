@@ -257,6 +257,40 @@ service cloud.firestore {
         && after.playerSlots == before.playerSlots;
     }
 
+    /** 日常行動フロートラベル解除：手番交代後も fx 所有者 or ホストが dailyActionFx のみ消せる */
+    function dailyFxClearValid() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let affected = after.diff(before).affectedKeys();
+      let gs0 = before.gameState;
+      let gs1 = after.gameState;
+      return before.status == 'playing'
+        && uid() in before.playerIds
+        && affected.hasOnly(['gameState'])
+        && gs0 is map
+        && gs1 is map
+        && gs0.subPhase == 'daily'
+        && gs1.subPhase == 'daily'
+        && gs1.gamePhase == gs0.gamePhase
+        && gs1.currentPlayerIdx == gs0.currentPlayerIdx
+        && gs1.currentDay == gs0.currentDay
+        && gs1.players == gs0.players
+        && gs1.log == gs0.log
+        && 'dailyActionFx' in gs0
+        && gs0.dailyActionFx is map
+        && !('dailyActionFx' in gs1)
+        && (
+          uid() == before.hostId
+          || gs0.dailyActionFx.playerId == uid()
+        )
+        && after.playerSlots == before.playerSlots
+        && after.playerIds == before.playerIds
+        && after.hostId == before.hostId
+        && after.status == before.status
+        && after.remainingTurns == before.remainingTurns
+        && after.completedPlayers == before.completedPlayers;
+    }
+
     function playGameStatePatchValid() {
       let before = resource.data;
       let after = request.resource.data;
@@ -682,7 +716,8 @@ service cloud.firestore {
           || (
             uid() in resource.data.playerIds
             && (
-              lobbyInviteValid()
+              dailyFxClearValid()
+              || lobbyInviteValid()
               || lobbyCancelInviteValid()
               || lobbySelfSlotsValid()
               || hostStartGameValid()
