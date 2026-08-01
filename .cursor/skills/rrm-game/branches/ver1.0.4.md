@@ -313,6 +313,7 @@ flowchart LR
 - **方針確定** — 8日目筐体は描画（vector）、デイリーは PNG 維持（2026-07-30）
 - **2026-08-01** — 1〜7日目仕事／配信カットイン：画像デコード完了後に表示（空枠フラッシュ解消）
 - **2026-08-01** — `dailyFxClear` 403: 手番交代後のラベル解除が `isActorTurn` に弾かれていた。マルチ遅延 write では fx を載せない + 非手番 clear 抑止。rules に `dailyFxClearValid`（**deploy 推奨**）
+- **2026-08-01** — `SlotReelCanvasView`: slot_only 方式の滑らかなリール（等速回転・SNAP 滑走停止・バウンス・subpixelSnap・円筒ワープ）。見た目デザインは既存筐体のまま
 
 ---
 
