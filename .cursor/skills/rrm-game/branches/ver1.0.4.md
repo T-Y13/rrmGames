@@ -314,6 +314,77 @@ flowchart LR
 - **2026-08-01** — 1〜7日目仕事／配信カットイン：画像デコード完了後に表示（空枠フラッシュ解消）
 - **2026-08-01** — `dailyFxClear` 403: 手番交代後のラベル解除が `isActorTurn` に弾かれていた。マルチ遅延 write では fx を載せない + 非手番 clear 抑止。rules に `dailyFxClearValid`（**deploy 推奨**）
 - **2026-08-01** — `SlotReelCanvasView`: slot_only 方式の滑らかなリール（等速回転・SNAP 滑走停止・バウンス・subpixelSnap・円筒ワープ）。見た目デザインは既存筐体のまま
+- **2026-08-01** — Cloud Agent は `slot_only` マルチルートを読めない。ローカル Agent で定数突合せが必要 → 下節「ローカル引き継ぎ」
+
+---
+
+## ローカル引き継ぎ — リール滑らかさ（slot_only 突合せ）
+
+### いまの状況（2026-08-01）
+
+| 項目 | 状態 |
+|------|------|
+| ブランチ | `ver1.0.4`（develop へ未マージ方針継続） |
+| リール描画 | `src/components/SlotReelCanvasView.jsx`（8日目・観戦・デイリー共用） |
+| 筐体 UI | 触らない（vector / PNG 現状維持） |
+| Cloud でやった移植 | 仕様メモベース（`slot_only` 実ファイル未読）。まだぎこちない可能性あり |
+| 参照元 | ローカル `slot_only`（例: `c:\Users\yu-ka\work\slot_only`）を RRM-game とマルチルートで開く |
+| 直近の他修正 | 日常 cutin 画像待ち、手番 write / `dailyFxClear` 403 対策、rules `dailyFxClearValid`（**rules deploy 推奨**） |
+
+### やること（ローカル Agent）
+
+1. `slot_only/src/App.tsx`（+ 必要なら `index.css`）を読む  
+2. `RRM-game/src/components/SlotReelCanvasView.jsx` と比較  
+3. **回転・停止・バウンスの物理だけ**を参照元に合わせて調整（見た目デザインはそのまま）  
+4. 定数を参照元の実値に寄せる（速度・ギャップ・バウンス）  
+5. `npm run test:run`  
+6. この md の作業ログを1行更新  
+
+### コピペ用プロンプト（ローカル Cursor 用）
+
+下をそのままローカル Agent に貼る（ワークスペースに `RRM-game` と `slot_only` がある前提）。
+
+```
+@.cursor/skills/rrm-game/SKILL.md
+@.cursor/skills/rrm-game/branches/ver1.0.4.md
+@slot_only/src/App.tsx
+@RRM-game/src/components/SlotReelCanvasView.jsx
+
+## 依頼
+リール回転がまだぎこちない。参照プロジェクト slot_only の「滑らかな回転・停止」を、
+今の RRM-game（PONS）の SlotReelCanvasView に正しく合わせてほしい。
+
+## 前提
+- ブランチ: ver1.0.4（作業中）。develop マージはスロット筐体/目押し完了までしない方針。
+- Cloud Agent が仕様メモだけで SlotReelCanvasView を一度移植済み。実ファイル未照合なので、
+  参照元を読んで定数・式・停止/バウンスを突合せ・修正すること。
+- 画面デザイン（筐体・色・レイアウト）は今のままでよい。ゲームロジック（当たり・配当・BGM・STOP権威）は触らない。
+- 変更は原則 SlotReelCanvasView.jsx のみ（必要なら小さな純関数を lib に分離可）。最小 diff。
+
+## 参照元で再現したい部分（slot_only/src/App.tsx）
+1. 連続スクロール座標: cellYFromStripScroll / REEL_STRIP_STEP / MIDDLE_ROW_TOP / VERTICAL_GAP
+   offsets を float のまま進め、描画時だけ subpixelSnap
+2. アニメ: rAF animate、deltaSeconds を MAX_DELTA_SECONDS でクランプ
+   回転中は等速加算、停止は stopTargets へ SNAP_SLIDE_SPEED / MAX_SNAP_SLIDE_SYMBOLS
+3. 描画: 回転中 glidingStripSlotRange、停止ロック時 Math.round(stripScroll)
+   停止直後 bounce（reelBounceTimers + bounceOffset）
+4. 任意: getCylindricalWarp / drawReelWindowLightingGradient
+   （jackpot の panoramic 合成は今のゲームに不要ならスキップ）
+
+## 成果物
+- 参照元と同じ「滑らかさ」に近づいた SlotReelCanvasView
+- 参照元から持ってきた関数・定数を短いコメントで明示（既存コメント方針を維持）
+- branches/ver1.0.4.md の作業ログに1行追記
+- npm run test:run が green
+```
+
+### ローカル起動メモ
+
+```
+cd RRM-game   # またはワークスペース内のパス
+git checkout ver1.0.4 && git pull
+npm run dev -- --host
+```
 
 ---
 
@@ -328,4 +399,5 @@ git checkout ver1.0.4 && git pull && git status
 - [ ] [extensibility-roadmap.md](../references/extensibility-roadmap.md) — Phase 0 残
 - [ ] [game-rules.md](../references/game-rules.md) — 大家・家賃タイミング
 - [ ] `npm run test:run` が green
+- [ ] **リール滑らかさ:** ローカルで `slot_only` と突合せ（上節プロンプト）
 
