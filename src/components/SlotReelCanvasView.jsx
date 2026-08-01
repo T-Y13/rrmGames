@@ -1,32 +1,70 @@
 import React, { useEffect, useRef } from "react";
 
-const EDGE_SCALE_Y = 0.7;
-const SPIN_SPEED_ROWS = 8.2;
-const STOP_SNAP_RATE = 22;
+/**
+ * リール回転の滑らかさは参照プロジェクト slot_only（App.tsx）の方式を移植:
+ * - offsets を float のまま進め、描画時だけ subpixelSnap
+ * - rAF + deltaSeconds を MAX_DELTA_SECONDS でクランプ
+ * - 回転は等速、停止は SNAP_SLIDE_SPEED で stopTarget へ滑走
+ * - 停止ロック後に bounceOffset（reelBounceTimers）
+ * - 円筒ワープ / 窓陰影は getCylindricalWarp・drawReelWindowLightingGradient 相当
+ *
+ * ゲームロジック・当たり判定は移植しない（表示物理のみ）。
+ */
+
+/** slot_only: タブ復帰時のジャンプ防止 */
+const MAX_DELTA_SECONDS = 0.05;
+/** slot_only: 回転中の帯速度（行/秒）。解像度に合わせて調整 */
+const SPIN_SPEED_ROWS = 14.5;
+/** slot_only: 停止滑走速度（行/秒） */
+const SNAP_SLIDE_SPEED = 11.5;
+/** slot_only: 停止開始時に余分に流すコマ数 */
+const MAX_SNAP_SLIDE_SYMBOLS = 2.35;
+const SETTLED_SCROLL_EPS = 0.001;
+const SETTLED_SLIP_EPS = 0.35;
+/** slot_only: 停止直後バウンス（秒）— CSS reelBounce 0.42s に合わせる */
+const BOUNCE_DURATION_SEC = 0.42;
+const BOUNCE_AMP_FRAC = 0.085;
 const WIN_PULSE_SPEED = 3.6;
-const SETTLED_SCROLL_EPS = 0.0015;
-const SETTLED_SLIP_EPS = 0.4;
 
-function rowScaleY(rowCenterY, viewH) {
-  const mid = viewH * 0.5;
-  const dist = Math.abs(rowCenterY - mid) / (viewH / 3);
-  if (dist < 0.35) return 1;
-  return EDGE_SCALE_Y;
+/** slot_only subpixelSnap — 描画座標だけ半ピクセルに丸めてシマーを抑える */
+function subpixelSnap(v) {
+  return Math.round(v * 2) / 2;
 }
 
-function rowBrightness(rowCenterY, viewH) {
-  const mid = viewH * 0.5;
-  const dist = Math.abs(rowCenterY - mid) / (viewH * 0.5);
-  return 0.42 + (1 - Math.min(1, dist)) * 0.58;
+/**
+ * slot_only cellYFromStripScroll 相当。
+ * stripScroll は「何行分スクロールしたか」。row はストリップ上の整数スロット。
+ */
+function cellYFromStripScroll(stripScroll, row, rowStep, bounceOffset = 0) {
+  return (row - stripScroll) * rowStep + bounceOffset;
 }
 
-function makeColumnState() {
-  return {
-    scrollRows: 0,
-    phase: "idle",
-    symbols: ["?", "?", "?"],
-    slipNudge: 0,
-  };
+/**
+ * slot_only getCylindricalWarp — 中央付近は等倍、端は縦につぶして円筒感。
+ * @returns {{ scaleY: number, brightness: number }}
+ */
+function getCylindricalWarp(rowCenterY, viewH) {
+  const mid = viewH * 0.5;
+  const half = viewH * 0.5;
+  const t = Math.min(1, Math.abs(rowCenterY - mid) / half);
+  // 端ほど強く潰す（EDGE 相当）
+  const scaleY = 1 - t * t * 0.32;
+  const brightness = 0.4 + (1 - t) * 0.6;
+  return { scaleY: Math.max(0.62, scaleY), brightness };
+}
+
+/** slot_only drawReelWindowLightingGradient — 窓上下のビネット */
+function drawReelWindowLightingGradient(ctx, w, h) {
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, "rgba(0,0,0,0.9)");
+  g.addColorStop(0.18, "rgba(0,0,0,0.48)");
+  g.addColorStop(0.36, "rgba(0,0,0,0.08)");
+  g.addColorStop(0.5, "rgba(0,0,0,0)");
+  g.addColorStop(0.64, "rgba(0,0,0,0.08)");
+  g.addColorStop(0.82, "rgba(0,0,0,0.48)");
+  g.addColorStop(1, "rgba(0,0,0,0.9)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
 }
 
 function normalizeScrollFrac(scrollRows) {
@@ -34,6 +72,34 @@ function normalizeScrollFrac(scrollRows) {
   if (f < 0) f += 1;
   if (f > 0.5) f -= 1;
   return f;
+}
+
+/** slot_only glidingStripSlotRange — 回転中に描くストリップ範囲 */
+function glidingStripSlotRange(stripScroll) {
+  const first = Math.floor(stripScroll) - 1;
+  const last = Math.ceil(stripScroll) + 3;
+  return { first, last };
+}
+
+function bounceOffsetY(bounceT, rowH) {
+  if (bounceT < 0 || bounceT >= BOUNCE_DURATION_SEC) return 0;
+  const u = bounceT / BOUNCE_DURATION_SEC;
+  // CSS reelBounce に近い多段オーバーシュート
+  const wave =
+    Math.sin(u * Math.PI) * (1 - u) * 1.15 - Math.sin(u * Math.PI * 2) * (1 - u) * 0.35;
+  return wave * rowH * BOUNCE_AMP_FRAC;
+}
+
+function makeColumnState() {
+  return {
+    stripScroll: 0,
+    phase: "idle",
+    symbols: ["?", "?", "?"],
+    slipNudge: 0,
+    stopTarget: 0,
+    /** slot_only reelBounceTimersRef 相当（経過秒。負 = 非アクティブ） */
+    bounceT: -1,
+  };
 }
 
 function drawSymbol(ctx, sym, cx, cy, fontSize, alpha, glow, scaleY, winScale) {
@@ -52,19 +118,6 @@ function drawSymbol(ctx, sym, cx, cy, fontSize, alpha, glow, scaleY, winScale) {
   ctx.fillStyle = "#f1f5f9";
   ctx.fillText(sym, 0, 0);
   ctx.restore();
-}
-
-function drawSpotlight(ctx, w, h) {
-  const g = ctx.createLinearGradient(0, 0, 0, h);
-  g.addColorStop(0, "rgba(0,0,0,0.88)");
-  g.addColorStop(0.22, "rgba(0,0,0,0.42)");
-  g.addColorStop(0.38, "rgba(0,0,0,0.06)");
-  g.addColorStop(0.5, "rgba(0,0,0,0)");
-  g.addColorStop(0.62, "rgba(0,0,0,0.06)");
-  g.addColorStop(0.78, "rgba(0,0,0,0.42)");
-  g.addColorStop(1, "rgba(0,0,0,0.88)");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, w, h);
 }
 
 /** 中央ライン＋◀▶マーク（Canvas 内に描画して DOM 重ねのチラつきを防ぐ） */
@@ -107,20 +160,29 @@ function drawColumn(
   colW,
   h,
   state,
-  { spinning, paylineWin, bounce, slipActive, machine, winPulse },
+  { spinning, paylineWin, parentBounce, slipActive, machine, winPulse },
 ) {
-  const rowH = h / 3;
-  const fontSize = Math.max(10, Math.min(colW * 0.52, rowH * 0.62));
+  // slot_only: REEL_STRIP_STEP ≈ rowH（VERTICAL_GAP は窓高に内包）
+  const rowStep = h / 3;
+  const fontSize = Math.max(10, Math.min(colW * 0.52, rowStep * 0.62));
   const cx = colX + colW / 2;
-  const scroll = state.scrollRows;
-  const baseSymbols = state.symbols.length === 3 ? state.symbols : ["?", "?", "?"];
   const lockedStrip = state.phase === "stopped" || state.phase === "stopping";
+  // slot_only: 停止ロック時は Math.round(stripScroll) でピクセル安定
+  const stripScroll = lockedStrip && state.phase === "stopped"
+    ? Math.round(state.stripScroll)
+    : state.stripScroll;
+
+  const bounceFromTimer =
+    state.bounceT >= 0 ? bounceOffsetY(state.bounceT, rowStep) : 0;
+  const bounceOffset = bounceFromTimer + (parentBounce ? rowStep * 0.04 : 0);
+
+  const baseSymbols = state.symbols.length === 3 ? state.symbols : ["?", "?", "?"];
 
   const symAt = (rowIdx) => {
     if (lockedStrip && rowIdx >= 0 && rowIdx <= 2) return baseSymbols[rowIdx];
     if (spinning && machine?.symbols?.length) {
       const pool = machine.symbols;
-      const seed = Math.floor(scroll + rowIdx + colX * 0.17);
+      const seed = Math.floor(stripScroll + rowIdx + colX * 0.17);
       return pool[((seed % pool.length) + pool.length) % pool.length];
     }
     if (rowIdx >= 0 && rowIdx <= 2) return baseSymbols[rowIdx];
@@ -130,18 +192,20 @@ function drawColumn(
     return "?";
   };
 
-  const firstRow = Math.floor(scroll) - 1;
-  const lastRow = Math.ceil(scroll) + 3;
+  const { first, last } = lockedStrip && state.phase === "stopped"
+    ? { first: -1, last: 3 }
+    : glidingStripSlotRange(stripScroll);
 
-  for (let ri = firstRow; ri <= lastRow; ri += 1) {
-    const y = (ri - scroll) * rowH + state.slipNudge;
-    if (y + rowH < -2 || y > h + 2) continue;
+  for (let ri = first; ri <= last; ri += 1) {
+    let y = cellYFromStripScroll(stripScroll, ri, rowStep, bounceOffset + state.slipNudge);
+    // 回転中は subpixelSnap、完全停止は整数ピクセル寄り
+    y = state.phase === "stopped" ? Math.round(y) : subpixelSnap(y);
+    if (y + rowStep < -2 || y > h + 2) continue;
 
     const sym = symAt(ri);
-    const rowCenterY = y + rowH / 2;
-    const scaleY = rowScaleY(rowCenterY, h);
-    const bright = rowBrightness(rowCenterY, h);
-    const isPayline = Math.abs(rowCenterY - h / 2) < rowH * 0.34;
+    const rowCenterY = y + rowStep / 2;
+    const { scaleY, brightness } = getCylindricalWarp(rowCenterY, h);
+    const isPayline = Math.abs(rowCenterY - h / 2) < rowStep * 0.34;
     let winScale = 1;
     let glow = 0;
     if (paylineWin && isPayline && lockedStrip) {
@@ -154,11 +218,21 @@ function drawColumn(
     ctx.beginPath();
     ctx.rect(colX + 1, 0, colW - 2, h);
     ctx.clip();
-    drawSymbol(ctx, sym, cx, rowCenterY, fontSize, bright, glow, scaleY, winScale);
+    drawSymbol(
+      ctx,
+      sym,
+      subpixelSnap(cx),
+      rowCenterY,
+      fontSize,
+      brightness,
+      glow,
+      scaleY,
+      winScale,
+    );
     ctx.restore();
   }
 
-  if (bounce) {
+  if (parentBounce || state.bounceT >= 0) {
     ctx.save();
     ctx.strokeStyle = "rgba(251, 191, 36, 0.55)";
     ctx.lineWidth = 2;
@@ -178,8 +252,9 @@ function drawColumn(
 function columnIsSettled(st) {
   return (
     st.phase === "stopped" &&
-    Math.abs(st.scrollRows) < SETTLED_SCROLL_EPS &&
-    Math.abs(st.slipNudge) < SETTLED_SLIP_EPS
+    Math.abs(st.stripScroll) < SETTLED_SCROLL_EPS &&
+    Math.abs(st.slipNudge) < SETTLED_SLIP_EPS &&
+    st.bounceT < 0
   );
 }
 
@@ -244,9 +319,13 @@ export default function SlotReelCanvasView({
 
       if (nowSpinning && !wasSpinning) {
         st.phase = "spin";
+        st.bounceT = -1;
       } else if (!nowSpinning && (wasSpinning || st.phase === "spin")) {
+        // slot_only: stopTargetsRef — 等速滑走で 0 に着地するよう余分に流す
         st.phase = "stopping";
-        st.scrollRows = normalizeScrollFrac(st.scrollRows);
+        const frac = normalizeScrollFrac(st.stripScroll);
+        st.stripScroll = frac - MAX_SNAP_SLIDE_SYMBOLS;
+        st.stopTarget = 0;
       }
 
       if (!nowSpinning && colChanged && slipCols?.[i]) {
@@ -269,15 +348,17 @@ export default function SlotReelCanvasView({
       onSettledRef.current?.(next);
     };
 
+    // slot_only animate() — rAF + deltaSeconds クランプ
     const tick = (ts) => {
       if (!lastTsRef.current) lastTsRef.current = ts;
-      const dt = Math.min(0.032, (ts - lastTsRef.current) / 1000);
+      const deltaSeconds = Math.min(MAX_DELTA_SECONDS, (ts - lastTsRef.current) / 1000);
       lastTsRef.current = ts;
-      winPulseRef.current += dt;
+      winPulseRef.current += deltaSeconds;
 
-      const frozen = typeof isSpinFrozenRef?.current === "number" && performance.now() < isSpinFrozenRef.current;
+      const frozen =
+        typeof isSpinFrozenRef?.current === "number" && performance.now() < isSpinFrozenRef.current;
       const columnSpinningLive = columnSpinningRef.current;
-      const anyColumnSpinning = columnSpinningLive?.some((s, i) => s && !frozen) ?? false;
+      const anyColumnSpinning = columnSpinningLive?.some((s) => s && !frozen) ?? false;
 
       colStatesRef.current.forEach((st, i) => {
         const wantsSpin = Boolean(columnSpinningLive?.[i]);
@@ -285,25 +366,35 @@ export default function SlotReelCanvasView({
 
         if (spinning) {
           st.phase = "spin";
-          st.scrollRows -= SPIN_SPEED_ROWS * dt;
+          // slot_only: offsetsRef[i] += speed * dt（ここでは上→下流れのため減算）
+          st.stripScroll -= SPIN_SPEED_ROWS * deltaSeconds;
+          st.bounceT = -1;
         } else if (frozen && wantsSpin && st.phase === "spin") {
           /* リーチカットイン等：回転列は止めずスクロール位置を保持 */
         } else if (st.phase === "stopping") {
-          const k = 1 - Math.exp(-STOP_SNAP_RATE * dt);
-          st.scrollRows += (0 - st.scrollRows) * k;
-          if (Math.abs(st.scrollRows) < SETTLED_SCROLL_EPS) {
-            st.scrollRows = 0;
+          // slot_only: stopTargetsRef へ SNAP_SLIDE_SPEED で等速接近
+          const dist = st.stopTarget - st.stripScroll;
+          const maxStep = SNAP_SLIDE_SPEED * deltaSeconds;
+          if (Math.abs(dist) <= maxStep) {
+            st.stripScroll = st.stopTarget;
             st.phase = "stopped";
+            st.bounceT = 0;
+          } else {
+            st.stripScroll += Math.sign(dist) * maxStep;
           }
         } else if (st.phase === "stopped") {
-          st.scrollRows = 0;
+          st.stripScroll = 0;
+          if (st.bounceT >= 0) {
+            st.bounceT += deltaSeconds;
+            if (st.bounceT >= BOUNCE_DURATION_SEC) st.bounceT = -1;
+          }
         } else if (!wantsSpin) {
           st.phase = "stopped";
-          st.scrollRows = 0;
+          st.stripScroll = 0;
         }
 
         if (st.slipNudge > SETTLED_SLIP_EPS) {
-          const k = 1 - Math.exp(-28 * dt);
+          const k = 1 - Math.exp(-28 * deltaSeconds);
           st.slipNudge += (0 - st.slipNudge) * k;
           if (st.slipNudge < SETTLED_SLIP_EPS) st.slipNudge = 0;
         }
@@ -350,7 +441,7 @@ export default function SlotReelCanvasView({
         drawColumn(ctx, colX, colW, h, colStatesRef.current[ci], {
           spinning: columnSpinningLive?.[ci] && !frozen,
           paylineWin,
-          bounce: bounceCol === ci,
+          parentBounce: bounceCol === ci,
           slipActive: slipLive?.[ci],
           machine: machineLive,
           winPulse: winPulseRef.current,
@@ -364,7 +455,7 @@ export default function SlotReelCanvasView({
         }
       }
 
-      drawSpotlight(ctx, w, h);
+      drawReelWindowLightingGradient(ctx, w, h);
       drawPaylineOverlay(ctx, w, h);
       rafRef.current = requestAnimationFrame(tick);
     };
