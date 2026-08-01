@@ -1882,6 +1882,16 @@ export default function App() {
               return;
             }
             const updates = { gameState: resolvedGS };
+            // 日常カットイン解除を gameState と同一 transaction に載せ、updateRoom との競合 (failed-precondition) を防ぐ
+            const clearsDailyCutin =
+              liveGs?.subPhase === SUB_PHASE.daily &&
+              (resolvedGS.dailyCutinPhase ?? DAILY_CUTIN_PHASE.idle) === DAILY_CUTIN_PHASE.idle &&
+              (resolvedGS.dailyCutinSessionId ?? null) === null;
+            if (clearsDailyCutin) {
+              updates.dailyCutinPhase = DAILY_CUTIN_SYNC_DEFAULTS.dailyCutinPhase;
+              updates.dailyCutinSessionId = DAILY_CUTIN_SYNC_DEFAULTS.dailyCutinSessionId;
+              updates.dailyCutinPayload = DAILY_CUTIN_SYNC_DEFAULTS.dailyCutinPayload;
+            }
             if (typeof setStatus === "string") updates.status = setStatus;
             else if (resolvedGS.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
             else if (resolvedGS.gamePhase === GAME_PHASE.results) updates.status = "completed";
@@ -1898,6 +1908,9 @@ export default function App() {
             ? mergeDailyCutinFieldsIntoGameState(newGS, pendingCutin)
             : newGS;
         let updates = { gameState: mergedGS };
+        if (clearsCutinFields) {
+          updates = { ...updates, ...DAILY_CUTIN_SYNC_DEFAULTS };
+        }
         if (
           roomId &&
           mergedGS?.gamePhase === GAME_PHASE.playing &&
@@ -3476,7 +3489,10 @@ export default function App() {
     pendingDailyTurnWriteRef.current = null;
     if (!pending) return;
     if (gsRef.current?.subPhase !== SUB_PHASE.daily) return;
-    finishDailyCutinSession();
+    // 先に clearDailyCutinBroadcast (updateRoom) すると手番 writeGS transaction と競合して
+    // failed-precondition になる。ローカルだけ消し、ルーム直下 cutin は writeGS 側で同時更新する。
+    dailyCutinSessionIdRef.current = null;
+    pendingDailyCutinBroadcastRef.current = null;
     const ok = await writeGS({
       ...pending.nextGsWithFx,
       ...pending.cutinClearPatch,
@@ -3485,9 +3501,9 @@ export default function App() {
     if (!ok) {
       setDay7DailyOptimisticGs(null);
       resetDailyOutgoingFxState();
-      finishDailyCutinSession();
+      if (isMultiplayerRoom) void clearDailyCutinBroadcast();
     }
-  }, [writeGS, finishDailyCutinSession, resetDailyOutgoingFxState]);
+  }, [writeGS, resetDailyOutgoingFxState, isMultiplayerRoom, clearDailyCutinBroadcast]);
 
   const dismissStuckDailyCutin = useCallback(() => {
     // stale 解除時に pending の手番 write を捨てると手番が止まるため、先に flush する
@@ -3496,7 +3512,11 @@ export default function App() {
         clearTimeout(dailyTurnWriteTimerRef.current);
         dailyTurnWriteTimerRef.current = null;
       }
-      void flushPendingDailyTurnWrite();
+      void flushPendingDailyTurnWrite().finally(() => {
+        resetDailyOutgoingFxState();
+        setUiError("");
+      });
+      return;
     }
     resetDailyOutgoingFxState();
     setUiError("");
