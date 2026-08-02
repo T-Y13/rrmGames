@@ -1,37 +1,22 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { motion } from "framer-motion";
 import BoardCalloutBubble from "./BoardCalloutBubble";
 import BoardDiceRollOverlay from "./BoardDiceRollOverlay";
 import { MOVEMENT_FX_DICE_SHUFFLE_MS } from "../lib/sugorokuMovementFx";
 import {
-  SUGOROKU_PC_MEDIA_QUERY,
+  SUGOROKU_DICE_BUBBLE_INNER_CLASS,
+  SUGOROKU_DICE_INLINE_ROW_CLASS,
   SUGOROKU_SIDE_DICE_BUBBLE_CLASS,
 } from "../constants/sugorokuMobileLayout";
 
 const FILL_DICE = "#1e293b";
 const FILL_TRAVEL = "#059669";
 
-function usePcViewport() {
-  const [isPc, setIsPc] = useState(
-    () => typeof window !== "undefined" && window.matchMedia(SUGOROKU_PC_MEDIA_QUERY).matches,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia(SUGOROKU_PC_MEDIA_QUERY);
-    const onChange = () => setIsPc(mq.matches);
-    onChange();
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return isPc;
-}
-
-/** SP: ダイスはキャラ左 → しっぽ右向き / PC: ダイスはキャラ上 → しっぽ下向き */
-function diceBubbleTail(isPc) {
-  return isPc ? "bottom" : "right";
-}
+/** ダイス吹き出しのしっぽは常に下（キャラ頭上配置） */
+const DICE_CALLOUT_TAIL = "bottom";
 
 /**
- * キャラクター横（SP）または上（PC）に表示するダイス＋残りマス
+ * キャラクター頭上に表示するダイス＋残りマス（全 viewport 共通）
  */
 export default function BoardCharacterSideDice({
   localDiceItems = null,
@@ -41,20 +26,18 @@ export default function BoardCharacterSideDice({
   movementFxDiceActive = false,
   movementFxDiceRolls = [],
 }) {
-  const isPc = usePcViewport();
-  const tail = diceBubbleTail(isPc);
   const hasLocalDice = (localDiceItems?.length ?? 0) > 0;
   const showRemaining = remainingTravelSteps != null && remainingTravelSteps > 0;
 
   if (movementFxDiceActive) {
     return (
-      <div className="pointer-events-none shrink-0 self-center pb-1 sm:pb-2">
+      <div className={`pointer-events-none ${SUGOROKU_DICE_INLINE_ROW_CLASS}`}>
         <BoardDiceRollOverlay
           embedded
           active={movementFxDiceActive}
           diceRolls={movementFxDiceRolls}
           shuffleMs={MOVEMENT_FX_DICE_SHUFFLE_MS}
-          tail={tail}
+          tail={DICE_CALLOUT_TAIL}
           remainingTravelSteps={remainingTravelSteps}
         />
       </div>
@@ -69,33 +52,39 @@ export default function BoardCharacterSideDice({
       initial={{ opacity: 0, scale: 0.6 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.8 }}
-      className="pointer-events-none flex shrink-0 flex-row flex-wrap items-center justify-center gap-1 self-center pb-1 sm:pb-2"
+      className={`pointer-events-none shrink-0 self-center ${SUGOROKU_DICE_INLINE_ROW_CLASS}`}
     >
       {hasLocalDice &&
         localDiceItems.map(({ value, confirmed, isGolden }, i) => (
           <BoardCalloutBubble
             key={`d-${i}-${value}-${confirmed ? "c" : "u"}`}
-            tail={tail}
+            tail={DICE_CALLOUT_TAIL}
             fillColor={isGolden && confirmed ? "#b45309" : FILL_DICE}
-            bodyClassName={`${SUGOROKU_SIDE_DICE_BUBBLE_CLASS} ${
+            bodyClassName={`${SUGOROKU_SIDE_DICE_BUBBLE_CLASS} whitespace-nowrap ${
               !confirmed ? "animate-pulse" : ""
             }`}
           >
-            🎲 {value}
+            <span className={SUGOROKU_DICE_BUBBLE_INNER_CLASS}>
+              <span aria-hidden>🎲</span>
+              <span>{value}</span>
+            </span>
           </BoardCalloutBubble>
         ))}
       {hasLocalDice && localDiceShowTotal && localDiceItems.length > 1 && (
-        <BoardCalloutBubble tail={tail} fillColor={FILL_DICE} bodyClassName="px-2 py-0.5 text-[10px] font-bold sm:text-xs">
+        <BoardCalloutBubble tail={DICE_CALLOUT_TAIL} fillColor={FILL_DICE} bodyClassName="px-2 py-0.5 text-[10px] font-bold sm:text-xs">
           計 {localDiceTotal} マス
         </BoardCalloutBubble>
       )}
       {showRemaining && (
         <BoardCalloutBubble
-          tail={tail}
+          tail={DICE_CALLOUT_TAIL}
           fillColor={FILL_TRAVEL}
-          bodyClassName="whitespace-nowrap px-2 py-0.5 text-[10px] font-bold sm:text-xs"
+          bodyClassName="whitespace-nowrap px-2 py-0.5 text-sm font-black sm:text-base"
         >
-          残り{remainingTravelSteps}マス…
+          <span className={SUGOROKU_DICE_BUBBLE_INNER_CLASS}>
+            <span aria-hidden>🎲</span>
+            <span>{remainingTravelSteps}</span>
+          </span>
         </BoardCalloutBubble>
       )}
     </motion.div>

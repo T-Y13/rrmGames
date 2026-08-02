@@ -3,6 +3,7 @@
  *
  * ブレークポイントは Tailwind 既定（`sm` 640px / `md` 768px）。
  * SP 調整を変えるときはここを正本にし、BoardViewport / PieceNearbyStack 等から参照する。
+ * ダイスは全 viewport でキャラ頭上（2026-08-01）。
  *
  * 関連（別ファイル）:
  * - 盤面フレーム高さ → `constants/gameAnimationsCss.js` の BOARD_VIEWPORT_FRAME_SIZE_CLASS
@@ -28,15 +29,25 @@ export const SUGOROKU_CURRENT_STANDEE_MAX_WIDTH_VW = 48;
 export const SUGOROKU_PLAYER_NAME_BUBBLE_CLASS =
   "inline-flex w-max max-w-[min(calc(100vw-2.5rem),148px)] sm:max-w-[min(calc(100vw-2rem),200px)] justify-center text-center text-[9px] leading-tight px-1.5 py-0.5 drop-shadow-sm whitespace-normal sm:whitespace-nowrap sm:text-[10px] sm:px-2";
 
-/** ダイスをキャラ横に並べるときの gap */
-export const SUGOROKU_DICE_BESIDE_CHARACTER_GAP_CLASS = "gap-0.5 sm:gap-1.5";
+/** ダイスをキャラ上に並べるときの gap（横並び廃止・全 viewport 頭上） */
+export const SUGOROKU_DICE_ABOVE_CHARACTER_GAP_CLASS = "gap-0.5 sm:gap-1";
 
 /**
  * 手番プレイヤー：ダイス＋キャラのレイアウト
- * - SP（md未満）: ダイスはキャラの左横
- * - PC（md+）: ダイスはキャラの上
+ * 全 viewport でダイスはキャラの上（SP の左横配置は廃止）
  */
-export const SUGOROKU_DICE_CHARACTER_CLUSTER_CLASS = `flex flex-row items-end justify-center ${SUGOROKU_DICE_BESIDE_CHARACTER_GAP_CLASS} md:flex-col md:items-center md:gap-1`;
+export const SUGOROKU_DICE_CHARACTER_CLUSTER_CLASS = `flex flex-col items-center justify-end ${SUGOROKU_DICE_ABOVE_CHARACTER_GAP_CLASS}`;
+
+/** タクシー中も頭上（旧: 左横 fixed） */
+export const SUGOROKU_DICE_CHARACTER_CLUSTER_TAXI_CLASS = SUGOROKU_DICE_CHARACTER_CLUSTER_CLASS;
+
+/** ダイス面・合計・残りマスを横一列に（折り返し禁止） */
+export const SUGOROKU_DICE_INLINE_ROW_CLASS =
+  "flex w-max max-w-none flex-row flex-nowrap items-center justify-center gap-1 self-center";
+
+/** 吹き出し内：🎲 と出目／残りマスを横並び（改行で縦積みにならない） */
+export const SUGOROKU_DICE_BUBBLE_INNER_CLASS =
+  "inline-flex flex-row flex-nowrap items-center gap-0.5 whitespace-nowrap leading-none tabular-nums";
 
 /** Tailwind `md`（768px）— SP/PC の切り替えに使用 */
 export const SUGOROKU_PC_MEDIA_QUERY = "(min-width: 768px)";

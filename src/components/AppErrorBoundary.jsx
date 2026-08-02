@@ -43,6 +43,11 @@ export class AppErrorBoundary extends React.Component {
             <p className="text-sm text-slate-400 leading-relaxed">
               データの読み込みや画面の描画中に予期しないエラーが起きました。再読み込みで改善することがあります。
             </p>
+            {import.meta.env.DEV && this.state.error?.message ? (
+              <pre className="max-h-40 overflow-auto rounded-lg border border-rose-500/40 bg-rose-950/40 p-3 text-left text-xs text-rose-100 whitespace-pre-wrap break-words">
+                {this.state.error.message}
+              </pre>
+            ) : null}
             <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
               <button
                 type="button"

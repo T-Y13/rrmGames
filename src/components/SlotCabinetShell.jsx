@@ -38,6 +38,7 @@ function VectorCabinet({
   cabinetRecoil,
   stageAuraClass,
   isReach,
+  skillStopHint = false,
   stackMinHeight,
   payoutAside,
   reelStack,
@@ -76,6 +77,12 @@ function VectorCabinet({
         {isReach && (
           <p className="slot-cabinet-vector__reach-banner" aria-live="polite">
             🎯 REACH!!
+          </p>
+        )}
+
+        {skillStopHint && (
+          <p className="slot-cabinet-vector__skill-banner" aria-live="polite">
+            👁 目押しチャンス！
           </p>
         )}
 
@@ -198,6 +205,7 @@ export default function SlotCabinetShell({
   cabinetRecoil = false,
   stageAuraClass = "",
   isReach = false,
+  skillStopHint = false,
   stackMinHeight = "200px",
   payoutAside = null,
   reelStack = null,
@@ -208,6 +216,7 @@ export default function SlotCabinetShell({
     cabinetRecoil,
     stageAuraClass,
     isReach,
+    skillStopHint,
     stackMinHeight,
     payoutAside,
     reelStack,

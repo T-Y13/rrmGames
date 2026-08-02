@@ -2,6 +2,10 @@ import React, { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import BoardCalloutBubble from "./BoardCalloutBubble";
 import { MOVEMENT_FX_DICE_SHUFFLE_MS } from "../lib/sugorokuMovementFx";
+import {
+  SUGOROKU_DICE_BUBBLE_INNER_CLASS,
+  SUGOROKU_DICE_INLINE_ROW_CLASS,
+} from "../constants/sugorokuMobileLayout";
 
 const FILL_DICE = "#1e293b";
 
@@ -43,7 +47,6 @@ export default function BoardDiceRollOverlay({
   const showTotal = revealed && diceRolls.length > 1;
   const showRemaining = remainingTravelSteps != null && remainingTravelSteps > 0;
   const faces = revealed ? diceRolls : [shuffleFace];
-  const rowLayout = embedded;
 
   return (
     <AnimatePresence>
@@ -51,7 +54,7 @@ export default function BoardDiceRollOverlay({
         <motion.div
           className={
             embedded
-              ? `pointer-events-none flex items-center gap-1 ${rowLayout ? "flex-row flex-wrap justify-center" : "flex-col"}`
+              ? `pointer-events-none ${SUGOROKU_DICE_INLINE_ROW_CLASS}`
               : "pointer-events-none absolute left-1/2 z-[44] flex -translate-x-1/2 flex-col items-center gap-1"
           }
           style={embedded ? undefined : { bottom: "calc(100% + 0.5rem)" }}
@@ -61,33 +64,51 @@ export default function BoardDiceRollOverlay({
           transition={{ duration: 0.35, ease: "easeOut" }}
           aria-hidden
         >
-          <div className="flex flex-wrap items-center justify-center gap-1.5">
+          <div className={embedded ? SUGOROKU_DICE_INLINE_ROW_CLASS : "flex flex-row flex-nowrap items-center justify-center gap-1.5"}>
             {faces.map((face, i) => (
               <motion.span
                 key={`${revealed ? "r" : "s"}-${i}-${face}`}
+                className="inline-flex shrink-0"
                 animate={revealed ? { scale: [1, 1.12, 1] } : { rotate: [0, 14, -14, 0] }}
                 transition={{ duration: revealed ? 0.25 : 0.18, repeat: revealed ? 0 : Infinity }}
               >
                 <BoardCalloutBubble
                   tail={tail}
                   fillColor={FILL_DICE}
-                  bodyClassName="px-2 py-1 text-lg font-black tabular-nums"
+                  bodyClassName="px-2 py-1 text-lg font-black whitespace-nowrap"
                 >
-                  🎲 {face}
+                  <span className={SUGOROKU_DICE_BUBBLE_INNER_CLASS}>
+                    <span aria-hidden>🎲</span>
+                    <span>{face}</span>
+                  </span>
                 </BoardCalloutBubble>
               </motion.span>
             ))}
             {showTotal && (
-              <motion.span initial={{ opacity: 0, x: rowLayout ? -4 : 0, y: rowLayout ? 0 : 4 }} animate={{ opacity: 1, x: 0, y: 0 }}>
-                <BoardCalloutBubble tail={tail} fillColor={FILL_DICE} bodyClassName="px-2 py-0.5 text-xs font-bold">
-                  計 {total}
+              <motion.span
+                className="inline-flex shrink-0"
+                initial={{ opacity: 0, x: embedded ? -4 : 0, y: embedded ? 0 : 4 }}
+                animate={{ opacity: 1, x: 0, y: 0 }}
+              >
+                <BoardCalloutBubble tail={tail} fillColor={FILL_DICE} bodyClassName="px-2 py-0.5 text-xs font-bold whitespace-nowrap">
+                  <span className={SUGOROKU_DICE_BUBBLE_INNER_CLASS}>
+                    <span>計</span>
+                    <span>{total}</span>
+                  </span>
                 </BoardCalloutBubble>
               </motion.span>
             )}
             {showRemaining && (
-              <motion.span initial={{ opacity: 0, x: rowLayout ? -4 : 0, y: rowLayout ? 0 : 4 }} animate={{ opacity: 1, x: 0, y: 0 }}>
-                <BoardCalloutBubble tail={tail} fillColor="#059669" bodyClassName="px-2 py-0.5 text-[10px] font-bold">
-                  残り{remainingTravelSteps}マス…
+              <motion.span
+                className="inline-flex shrink-0"
+                initial={{ opacity: 0, x: embedded ? -4 : 0, y: embedded ? 0 : 4 }}
+                animate={{ opacity: 1, x: 0, y: 0 }}
+              >
+                <BoardCalloutBubble tail={tail} fillColor="#059669" bodyClassName="px-2 py-0.5 text-sm font-black whitespace-nowrap">
+                  <span className={SUGOROKU_DICE_BUBBLE_INNER_CLASS}>
+                    <span aria-hidden>🎲</span>
+                    <span>{remainingTravelSteps}</span>
+                  </span>
                 </BoardCalloutBubble>
               </motion.span>
             )}

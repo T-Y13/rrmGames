@@ -31,6 +31,7 @@ import {
   buildProxySlotSpinStats,
   getProxySlotAllowedBets,
 } from "./slotProxyTarget";
+import { buildGhostSlotSpinResultCtx } from "./ghostSlotSkillStop";
 import { isTurnAutomatable } from "./playerPresence";
 
 const GHOST_SLOT_MACHINE_KEY = "standard";
@@ -281,19 +282,29 @@ function buildGhostSlotSpinCtx(gs) {
   });
   const machine = SLOT_MACHINES[GHOST_SLOT_MACHINE_KEY] ?? SLOT_MACHINES.standard;
   const reelMachine = slotMachineForReels(machine, gs.players.length > 1);
+  const spinOutcome = buildGhostSlotSpinResultCtx({
+    res,
+    machineKey: GHOST_SLOT_MACHINE_KEY,
+    reelMachine,
+    bet,
+  });
   const newLeft = p.slotTurnsLeft - 1;
   const newPullsSeat = (p.slotPullsThisSeat ?? 0) + 1;
   return {
     actorIdx: idx,
     proxyTargetIdx: proxyIdx,
     bet,
-    res,
+    res: spinOutcome.res,
+    spinStartRes: spinOutcome.baseRes,
     newLeft,
     newPullsSeat,
     newSpins: p.spinCount + 1,
     newHeat: heat + 1,
-    pityAfter: res.pityCounterAfter,
-    visualReels: res.reels,
+    pityAfter: spinOutcome.res.pityCounterAfter ?? res.pityCounterAfter,
+    visualReels: spinOutcome.commitVisualReels,
+    spinStartVisualReels: spinOutcome.visualReels,
+    skillStop: spinOutcome.skillStop,
+    skillStopScrollRows: spinOutcome.skillStopScrollRows ?? null,
     emotionLine: null,
     machine,
     reelMachine,

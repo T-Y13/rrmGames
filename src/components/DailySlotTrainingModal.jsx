@@ -11,6 +11,8 @@ import {
   DAILY_SLOT_SYNC_DEFAULTS,
   pickWrongSymbol,
   randomStripTriple,
+  buildColumnReelStrips,
+  mergeColumnScrollStrips,
   SLOT_SYNC_REACH_SHOW_DELAY,
   SLOT_SYNC_T0,
   SLOT_SYNC_T1,
@@ -68,6 +70,7 @@ export default function DailySlotTrainingModal({
   const [completedSpins, setCompletedSpins] = useState(0);
   const [committing, setCommitting] = useState(false);
   const [outcomeBanner, setOutcomeBanner] = useState(null);
+  const [spinColumnStrips, setSpinColumnStrips] = useState(null);
 
   const shuffleIntervalRef = useRef(null);
   const stoppedReelsRef = useRef([false, false, false]);
@@ -125,6 +128,7 @@ export default function DailySlotTrainingModal({
     setBouncingReel(-1);
     setSlipAnimCols([false, false, false]);
     stoppedReelsRef.current = [false, false, false];
+    setSpinColumnStrips(null);
     setReelColumns(idleReelColumnsForMachine(machine));
     if (shuffleIntervalRef.current) {
       clearInterval(shuffleIntervalRef.current);
@@ -210,7 +214,11 @@ export default function DailySlotTrainingModal({
         const lkEx = Math.max(0, (baseStats?.luck ?? 0) - BAL.slot.luckBaseline);
         const skEx = Math.max(0, (baseStats?.skill ?? 0) - BAL.slot.skillBaseline);
         const slipEligible = res.tier !== "miss" && (lkEx >= 10 || skEx >= 10);
-        const finalStrips = visualReels.map((mid, ci) => stripTripleForMiddleColumn(mid, planMachine, ci));
+        const columnStrips = buildColumnReelStrips(planMachine, 3);
+        setSpinColumnStrips(columnStrips);
+        const finalStrips = visualReels.map((mid, ci) =>
+          stripTripleForMiddleColumn(mid, planMachine, ci, columnStrips[ci]),
+        );
 
         setCabinetRecoil(true);
         setTimeout(() => setCabinetRecoil(false), 340);
@@ -322,6 +330,7 @@ export default function DailySlotTrainingModal({
           }
 
           setIsSpinning(false);
+          setSpinColumnStrips(null);
           resolve();
         }, t2);
       });
@@ -472,8 +481,12 @@ export default function DailySlotTrainingModal({
         Array.isArray(targetIndices) && targetIndices.length === 3
           ? slotTargetIndicesToPaylineMiddles(targetIndices, machineKey)
           : visualReels;
-      const visualStrips = visualReels.map((mid, ci) => stripTripleForMiddleColumn(mid, machine, ci));
-      const realStrip2 = stripTripleForMiddleColumn(realMids[2], machine, 2);
+      const columnStrips = buildColumnReelStrips(machine, 3);
+      setSpinColumnStrips(columnStrips);
+      const visualStrips = visualReels.map((mid, ci) =>
+        stripTripleForMiddleColumn(mid, machine, ci, columnStrips[ci]),
+      );
+      const realStrip2 = stripTripleForMiddleColumn(realMids[2], machine, 2, columnStrips[2]);
       const reachPossible = Boolean(bg?.dailySlotIsReach);
       const reel3StopMs = reachPossible ? SLOT_SYNC_T2_REACH_NOCUTIN : SLOT_SYNC_T2_NOREACH;
 
@@ -553,6 +566,7 @@ export default function DailySlotTrainingModal({
             stopReel(2, realStrip2);
             setIsReach(false);
             setIsSpinning(false);
+            setSpinColumnStrips(null);
             resolve();
           }, reel3StopMs),
         );
@@ -815,6 +829,7 @@ export default function DailySlotTrainingModal({
                   <div className="slot-reel-window absolute z-[1] overflow-hidden rounded-sm pointer-events-none" style={winBox}>
                     <SlotReelCanvasView
                       reelColumns={reelColumns}
+                      columnScrollStrips={spinColumnStrips}
                       columnSpinning={columnSpinning}
                       slipCols={slipAnimCols}
                       bouncingCol={bouncingReel}

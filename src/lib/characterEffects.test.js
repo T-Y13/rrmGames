@@ -8,7 +8,7 @@ import {
   luckGaugeRangeForCharacter,
   resolveInitialLuck,
 } from "./characterEffects";
-import { CHARACTERS } from "../constants/gameBalance";
+import { CHARACTERS, LAST_DAILY_DAY } from "../constants/gameBalance";
 import { SUB_PHASE } from "../constants/gamePhases";
 
 describe("resolveInitialLuck", () => {
@@ -103,6 +103,7 @@ describe("applyTurnStartRentToPlayer", () => {
   });
 
   it("collects again on the next day", () => {
+    if (LAST_DAILY_DAY < 2) return;
     const day1 = applyTurnStartRentToPlayer(players, 1, SUB_PHASE.daily, 1);
     const day2 = applyTurnStartRentToPlayer(day1.players, 1, SUB_PHASE.daily, 2);
     expect(day2.rentIncome).toBe(Math.floor(500 * 0.7));

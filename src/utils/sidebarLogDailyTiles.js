@@ -36,7 +36,7 @@ export function isDay8ContextEntry(entry) {
   if (parsed?.t === "dailyBlock") return false;
   if (!entry || typeof entry !== "string") return false;
   if (extractExplicitDayFromEntry(entry) != null) return false;
-  return /T\d+:|のスロットターン|の移動ターン|スロット開始|\d回目\s+\d+G\s*→|スロット\d+回|ゴール到着|ゴール済|代理スロット|👻|渋滞|タクシー|🎲|🚗|タイムアップ|タイムアウト|全員がゴール|Spectating|すごろく|8日目終了|プログレッシブポット|POT JP|ポット全額/.test(
+  return /T\d+:|のスロットターン|の移動ターン|スロット開始|\d回目\s+\d+G\s*→|スロット\d+回|ゴール到着|ゴール済|代理スロット|👻|渋滞|タクシー|🎲|🚗|タイムアップ|タイムアウト|全員がゴール|Spectating|すごろく|8日目終了|ジャックポット/.test(
     entry,
   );
 }

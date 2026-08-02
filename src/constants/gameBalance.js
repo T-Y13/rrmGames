@@ -13,7 +13,7 @@ export const QUICK_NAMES = [
   "錬金術師",
 ];
 
-export const BOARD_GOAL = 50;
+export const BOARD_GOAL = 10;
 /** 検証用: マス1〜N を借金トラップ固定（0 で通常生成に戻す） */
 export const SUGOROKU_VERIFY_DEATH_TEST_TRAP_FIRST_N = 12;
 /** すごろく効果マス種別（8日目盤のみ） */
@@ -26,7 +26,7 @@ export const TILE_EFFECT_KIND = Object.freeze({
   INCREASE_PON: "INCREASE_PON",
   DEBT_TRAP: "DEBT_TRAP",
 });
-export const LAST_DAILY_DAY = 7;
+export const LAST_DAILY_DAY = 1;
 export const FINAL_GAME_DAY = 8;
 
 /** 「決戦の日」文言表示（ms）。終了後 preDay8 では中間マップを出さず本番へ */
@@ -45,7 +45,7 @@ export const SLOT_COST = 100;
 /** 各スピンのベットに対するプログレッシブポット拠出率（マルチ8日目） */
 export const PROGRESSIVE_POT_RATE = 0.3;
 /** ルーム作成時のプログレッシブポット初期値（8日目開始時も同値） */
-export const INITIAL_PROGRESSGRESSIVE_POT = 17500;
+export const INITIAL_PROGRESSGRESSIVE_POT = 15000;
 export const SLOT_BETS = [100, 300, 500, 1000];
 /** 代理スロット：標的の所持金に対する最大掛け金率（端数切捨て） */
 export const PROXY_SLOT_MAX_BET_RATE = 0.3;
@@ -143,6 +143,10 @@ export const BAL = {
      * 体感目安（miss≈85%）: 約10.7%/スピン・約29%/3スピン席（ver1.0.4 合意）。
      */
     gaseReachSkillStopChance: 0.7,
+    /** 目押し成功で当たり昇格できる絵柄（🍒=小 / ⭐=中 / 🔔=当たり） */
+    skillStopMatchSymbols: ["🍒", "⭐", "🔔"],
+    /** Phase B: 第3リール目押し成功窓（scrollRows 小数部が 0 に近いほど成功） */
+    skillStopWinWindowHalf: 0.14,
   },
   shrine: {
     cost: 300,

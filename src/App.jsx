@@ -74,6 +74,7 @@ import {
   readDailyCutinBroadcast,
   isDailyCutinBroadcastStale,
   isDailyCutinPhaseOverdue,
+  shouldEnableDailyCutinSpectatorSync,
 } from "./lib/dailyCutinSync";
 import {
   backfillInvitedAuthUids,
@@ -492,6 +493,8 @@ export default function App() {
   const lastSelfGhostClearAttemptRef = useRef(0);
   const [turnChangeBannerTurns, setTurnChangeBannerTurns] = useState(null);
   const [pendingTurnBannerTurns, setPendingTurnBannerTurns] = useState(null);
+  const [dailySlotOpen, setDailySlotOpen] = useState(false);
+  const [dailySlotSyncSessionId, setDailySlotSyncSessionId] = useState(null);
   /** 8日目：残りラウンド（room.remainingTurns）が減ったときにターン変更カットインを予約（ソロ・マルチ共通） */
   const prevDay8RemainingTurnsRef = useRef(null);
   const turnChangeBannerTimerRef = useRef(null);
@@ -799,9 +802,16 @@ export default function App() {
   /** 1〜7日目：他プレイヤーのデイリースロット筐体を同期表示 */
   const showDailySlotSpectatorMirror =
     isDailyPhase && isMultiplayerRoom && !isMyTurn && !!cpGs && dailySlotPhase !== "idle";
-  /** 観戦フックは Firestore idle と local state の競合で enabled が落ちないよう固定条件にする */
-  const spectatorCutinSyncEnabled =
-    isDailyPhase && isMultiplayerRoom && !isMyTurn && !showDailySlotSpectatorMirror;
+  /** 最終育成日の楽観 write 待ち中は操作者側の観戦同期を止める（idle がローカル cutin を消す） */
+  const operatorPendingDailyCutinSession =
+    day7DailyWritePending && dailyCutinSessionIdRef.current != null;
+  const spectatorCutinSyncEnabled = shouldEnableDailyCutinSpectatorSync({
+    isDailyPhase,
+    isMultiplayerRoom,
+    isMyTurn,
+    showDailySlotSpectatorMirror,
+    operatorPendingDailyCutinSession,
+  });
   /** 1〜7日目：仕事・配信・神社カットイン観戦 */
   const spectatorDailyCutinUiActive =
     isDailyPhase &&
@@ -3084,7 +3094,12 @@ export default function App() {
       ghostAutomationBusyRef.current = true;
       try {
         if (step.type === "slotSpin") {
-          const spinningGs = await commitDay8SlotSpinStart(step.ctx, "ghostAutomation");
+          const spinStartCtx = {
+            ...step.ctx,
+            res: step.ctx.spinStartRes ?? step.ctx.res,
+            visualReels: step.ctx.spinStartVisualReels ?? step.ctx.visualReels,
+          };
+          const spinningGs = await commitDay8SlotSpinStart(spinStartCtx, "ghostAutomation");
           if (!spinningGs) return;
           const waitMs = slotSyncReel3StopMs(!!spinningGs.isReach, false);
           await new Promise((resolve) => setTimeout(resolve, waitMs));
@@ -3361,9 +3376,6 @@ export default function App() {
     return s;
   }, [cpGs]);
 
-  const [dailySlotOpen, setDailySlotOpen] = useState(false);
-  const [dailySlotSyncSessionId, setDailySlotSyncSessionId] = useState(null);
-
   const patchDailyCutinBroadcast = useCallback(
     async (patch) => {
       if (!roomId || roomData?.isSolo) return false;
@@ -3534,7 +3546,8 @@ export default function App() {
     )
       return;
     const p = roomGs.players[roomGs.currentPlayerIdx];
-    if (!p || p.stats.money < BAL.dailySlot.spinBet * BAL.dailySlot.spins) return;
+    const money = p?.stats?.money;
+    if (!p || typeof money !== "number" || money < BAL.dailySlot.spinBet * BAL.dailySlot.spins) return;
     const sid = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
     setDailySlotSyncSessionId(sid);
     setDailySlotOpen(true);

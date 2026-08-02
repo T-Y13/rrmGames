@@ -7,6 +7,7 @@ import {
   dailyCutinSpectatorStatusLabel,
   isDailyCutinBroadcastStale,
   readDailyCutinBroadcast,
+  shouldEnableDailyCutinSpectatorSync,
 } from "./dailyCutinSync";
 
 describe("dailyCutinSync", () => {
@@ -75,6 +76,27 @@ describe("dailyCutinSync", () => {
     };
     const gs = { subPhase: "day8" };
     expect(readDailyCutinBroadcast(room, gs).phase).toBe("idle");
+  });
+
+  it("keeps cutin spectator sync off while operator awaits optimistic daily write", () => {
+    expect(
+      shouldEnableDailyCutinSpectatorSync({
+        isDailyPhase: true,
+        isMultiplayerRoom: true,
+        isMyTurn: false,
+        showDailySlotSpectatorMirror: false,
+        operatorPendingDailyCutinSession: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldEnableDailyCutinSpectatorSync({
+        isDailyPhase: true,
+        isMultiplayerRoom: true,
+        isMyTurn: false,
+        showDailySlotSpectatorMirror: false,
+        operatorPendingDailyCutinSession: false,
+      }),
+    ).toBe(true);
   });
 
   it("detects stale cutin sessions by timestamp prefix", () => {

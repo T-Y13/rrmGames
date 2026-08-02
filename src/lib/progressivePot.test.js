@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   POT_INIT_MIN,
-  POT_INIT_MAX,
   POT_TURN_STACK_TOTAL,
   computeProgressivePotDelta,
   potFromTurnGrowthOnly,
@@ -14,10 +13,9 @@ import {
 import { BAL } from "../constants/gameBalance.js";
 
 describe("rollInitialProgressivePot", () => {
-  it("rolls within 15,000–20,000", () => {
-    const randomFn = vi.fn().mockReturnValue(0);
-    expect(rollInitialProgressivePot(randomFn)).toBe(15000);
-    expect(rollInitialProgressivePot(() => 0.9999)).toBe(20000);
+  it("returns fixed 15,000", () => {
+    expect(rollInitialProgressivePot()).toBe(15000);
+    expect(rollInitialProgressivePot(() => 0.9999)).toBe(15000);
   });
 });
 
@@ -40,19 +38,17 @@ describe("computeProgressivePotDelta", () => {
     });
   });
 
-  it("pays pool plus this spin contribution on pot jackpot and resets randomly", () => {
+  it("pays pool plus this spin contribution on pot jackpot and resets to 15,000", () => {
     const randomFn = vi.fn().mockReturnValue(0.5);
     const result = computeProgressivePotDelta(22000, 1000, true, randomFn);
     expect(result.potPayout).toBe(22300);
     expect(result.contribution).toBe(300);
-    expect(result.totalPot).toBeGreaterThanOrEqual(POT_INIT_MIN);
-    expect(result.totalPot).toBeLessThanOrEqual(POT_INIT_MAX);
+    expect(result.totalPot).toBe(POT_INIT_MIN);
   });
 });
 
 describe("resolveTotalPotAfterRoomTracking", () => {
-  it("sets random initial pot when entering day 8", () => {
-    const randomFn = vi.fn().mockReturnValue(0.25);
+  it("sets fixed initial pot when entering day 8", () => {
     expect(
       resolveTotalPotAfterRoomTracking({
         prevRemaining: BAL.dice.maxTurns,
@@ -60,9 +56,8 @@ describe("resolveTotalPotAfterRoomTracking", () => {
         prevGs: { gamePhase: "playing", subPhase: "daily" },
         nextGs: { gamePhase: "playing", subPhase: "day8" },
         prevTotalPot: 25000,
-        randomFn,
       }),
-    ).toBe(16250);
+    ).toBe(15000);
   });
 
   it("adds turn increment on each completed round (stacks with prior bet growth)", () => {
@@ -141,8 +136,8 @@ describe("readRoomTotalPot", () => {
 });
 
 describe("rollPotJackpotResetPool", () => {
-  it("uses same range as initial pot", () => {
+  it("always returns 15,000", () => {
     expect(rollPotJackpotResetPool(() => 0)).toBe(POT_INIT_MIN);
-    expect(rollPotJackpotResetPool(() => 0.9999)).toBe(POT_INIT_MAX);
+    expect(rollPotJackpotResetPool(() => 0.9999)).toBe(POT_INIT_MIN);
   });
 });

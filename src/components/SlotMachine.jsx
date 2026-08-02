@@ -10,7 +10,9 @@ import Day8ItemBar from "./Day8ItemBar";
 import JackpotCelebration from "./JackpotCelebration";
 import ProgressivePotDisplay from "./ProgressivePotDisplay";
 import SlotPayoutAmountLabel from "./SlotPayoutAmountLabel";
-import { buildSlotSpinVisualPlan } from "../lib/slotReelStop";
+import { buildSlotSpinVisualPlan, SLOT_SKILL_STOP_MODE } from "../lib/slotReelStop";
+import { resolveSkillStopSpin } from "../lib/slotSkillStopResolve";
+import { pickSlotSpinBaseSnapshot } from "../lib/slotSkillStopAuthority";
 import {
   canManualStopReel,
   isFirstReelManualStopReady,
@@ -29,10 +31,11 @@ import {
   advanceDay8AfterSlotSpinShow,
   applyDay8SlotSpinToFreshGameState,
   buildDay8SlotReloadRecoveryPatch,
-  isDay8SlotBurstFinishedOnGameState,
+  buildColumnReelStrips,
   calcSlotRates,
   day8SlotMajorWinCelebrationHoldMs,
   getSlotTierReelSymbols,
+  isDay8SlotBurstFinishedOnGameState,
   mergeDay8SlotIdleSync,
   pickDisplayReelsFromGameState,
   pickWrongSymbol,
@@ -140,6 +143,10 @@ export default function SlotMachine({
   const [reelStoppedFlags, setReelStoppedFlags] = useState([false, false, false]);
   const [manualStopUiEpoch, setManualStopUiEpoch] = useState(0);
   const [spinStartedAtUi, setSpinStartedAtUi] = useState(0);
+  const [selectedBet, setSelectedBet] = useState(SLOT_COST);
+  const [skillStopChanseActive, setSkillStopChanseActive] = useState(false);
+  const [spinColumnStrips, setSpinColumnStrips] = useState(null);
+  const spinColumnStripsRef = useRef(null);
 
   const shuffleIntervalRef = useRef(null);
   const pendingWinFxRef = useRef(null);
@@ -161,6 +168,7 @@ export default function SlotMachine({
   const slotReloadRecoveryKeyRef = useRef(null);
   const slotReloadRecoveryBusyRef = useRef(false);
   const slotMajorWinDeferTimerRef = useRef(null);
+  const reelCanvasRef = useRef(null);
 
   const clearSpinTimers = useCallback(() => {
     for (const id of spinTimersRef.current) {
@@ -186,6 +194,8 @@ export default function SlotMachine({
       reachCutInTimerRef.current = null;
     }
     activeSpinSessionRef.current = null;
+    spinColumnStripsRef.current = null;
+    setSpinColumnStrips(null);
     spinCompletingRef.current = false;
     reachCutinShownRef.current = false;
     setReelStoppedFlags([false, false, false]);
@@ -355,6 +365,27 @@ export default function SlotMachine({
     finalizePostSpinResult(postSpinResultRef.current);
   }, [reelsCanvasSettled, finalizePostSpinResult]);
 
+  /** Firestore は completed なのにローカル isSpinning が残ったときの復旧（completeAfterReel3 中断など） */
+  useEffect(() => {
+    if (spectatorMode || !isMyTurn || !gs || !cpIsSlot) return;
+    if ((gs.slotPhase ?? "idle") !== "completed") return;
+    if (!isSpinning) return;
+    setIsSpinning(false);
+    spinCompletingRef.current = false;
+    if (!postSpinPending && !postSpinResultRef.current) {
+      schedulePostSpinResult(gs);
+    }
+  }, [
+    spectatorMode,
+    isMyTurn,
+    gs,
+    cpIsSlot,
+    gs?.slotPhase,
+    isSpinning,
+    postSpinPending,
+    schedulePostSpinResult,
+  ]);
+
   const slotPhaseIdle = (gs?.slotPhase ?? "idle") === "idle";
 
   const canSpin =
@@ -366,6 +397,26 @@ export default function SlotMachine({
     !isSpinning &&
     !awaitingConfirm &&
     slotPhaseIdle;
+
+  const canSelectBet =
+    !spectatorMode &&
+    isMyTurn &&
+    cpIsSlot &&
+    !!(cpGs?.slotTurnsLeft > 0) &&
+    !interactionLocked &&
+    !isSpinning &&
+    !awaitingConfirm &&
+    slotPhaseIdle;
+
+  const canSpinWithSelectedBet =
+    canSpin && (isProxyPull ? betsForUi.includes(selectedBet) : true);
+
+  useEffect(() => {
+    if (betsForUi.length === 0) return;
+    if (!betsForUi.includes(selectedBet)) {
+      setSelectedBet(betsForUi.includes(SLOT_COST) ? SLOT_COST : betsForUi[betsForUi.length - 1]);
+    }
+  }, [betsForUi, selectedBet]);
 
   useEffect(() => {
     if (!cpIsSlot || isSpinning) return;
@@ -557,13 +608,29 @@ export default function SlotMachine({
 
     const visualPlan = buildSlotSpinVisualPlan(res, selectedMachineKey);
     const visualReels = visualPlan.visualReels;
-    const { reachPossible } = visualPlan;
+    const { reachPossible, skillStop } = visualPlan;
+    const columnStrips = buildColumnReelStrips(reelMachine, 3);
+    spinColumnStripsRef.current = columnStrips;
+    const skillScrollStripForSpin =
+      skillStop.active && skillStop.mode === SLOT_SKILL_STOP_MODE.full ? columnStrips[2] : null;
+    const spinState = {
+      res,
+      visualReels,
+      skillStop,
+      skillScrollStrip: skillScrollStripForSpin,
+      columnScrollStrips: columnStrips,
+      bet,
+      machineKey: selectedMachineKey,
+      reelMachine,
+    };
     const shouldShowReachCutin = reachPossible && rollReachCutInDisplay();
 
     const lkEx = Math.max(0, statsForSpin.luck - BAL.slot.luckBaseline);
     const skEx = Math.max(0, statsForSpin.skill - BAL.slot.skillBaseline);
     const slipEligible = res.tier !== "miss" && (lkEx >= 10 || skEx >= 10);
-    const finalStrips = visualReels.map((mid, ci) => stripTripleForMiddleColumn(mid, reelMachine, ci));
+    const finalStrips = visualReels.map((mid, ci) =>
+      stripTripleForMiddleColumn(mid, reelMachine, ci, spinColumnStripsRef.current?.[ci]),
+    );
 
     clearSpinTimers();
 
@@ -582,6 +649,11 @@ export default function SlotMachine({
           isReach: reachPossible,
           slotReachCutin: shouldShowReachCutin,
           slotVisualReels: visualReels,
+          slotSkillStopActive: skillStop.active,
+          slotSkillStopMode: skillStop.mode,
+          slotSpinBaseResult: pickSlotSpinBaseSnapshot(res),
+          slotSkillStopScrollRows: null,
+          slotColumnScrollStrips: skillStop.active ? columnStrips : null,
         }),
       );
       if (spinningOk === false) {
@@ -611,6 +683,8 @@ export default function SlotMachine({
     setPayoutAmount(0);
     setShowJackpotCelebration(false);
     setCharReaction("spinning");
+    setSkillStopChanseActive(skillStop.active);
+    setSpinColumnStrips(columnStrips);
     stoppedReelsRef.current = [false, false, false];
     setReelStoppedFlags([false, false, false]);
     spinCompletingRef.current = false;
@@ -662,6 +736,9 @@ export default function SlotMachine({
           scheduleSpinTimer(() => setReachCutinFlash(false), 110);
           reachCutinShownRef.current = true;
           setShowReachCutin(true);
+          scheduleSpinTimer(() => {
+            setShowReachCutin(false);
+          }, REACH_CUTIN_ON_SCREEN_MS);
         }, 400);
       }
     };
@@ -671,6 +748,7 @@ export default function SlotMachine({
       if (doSlip) {
         const wm = pickWrongSymbol(targetStrip[1], reelMachine);
         const faux = [targetStrip[0], wm, targetStrip[2]];
+        reelCanvasRef.current?.requestColumnStop?.(idx, faux);
         markReelStopped(idx);
         onReelStoppedEffects(idx);
         setReelColumns((prev) => {
@@ -687,6 +765,7 @@ export default function SlotMachine({
             n[idx] = targetStrip;
             return n;
           });
+          reelCanvasRef.current?.requestColumnStop?.(idx, targetStrip);
           setSlipAnimCols((prev) => {
             const n = [...prev];
             n[idx] = true;
@@ -701,6 +780,7 @@ export default function SlotMachine({
           }, 560);
         }, 380);
       } else {
+        reelCanvasRef.current?.requestColumnStop?.(idx, targetStrip);
         markReelStopped(idx);
         onReelStoppedEffects(idx);
         setReelColumns((prev) => {
@@ -722,7 +802,7 @@ export default function SlotMachine({
           resolve();
           return;
         }
-        if (res.tier === "miss") {
+        if (spinState.res.tier === "miss") {
           setReachCutinGasing(true);
           sm?.playReachGaseSting();
           scheduleSpinTimer(() => {
@@ -753,19 +833,43 @@ export default function SlotMachine({
         reachCutInTimerRef.current = null;
       }
 
+      let reel3AllowSlip = true;
+      if (!stoppedReelsRef.current[2]) {
+        const { skillStop: skillCtx } = spinState;
+        if (skillCtx?.active && skillCtx.mode === SLOT_SKILL_STOP_MODE.full) {
+          const scrollRows = reelCanvasRef.current?.getColumnScrollRows?.(2);
+          spinState.skillStopScrollRows = scrollRows;
+          const resolved = resolveSkillStopSpin({
+            scrollRows,
+            visualReels: spinState.visualReels,
+            baseRes: spinState.res,
+            reelMachine: spinState.reelMachine,
+            bet: spinState.bet,
+            machineKey: spinState.machineKey,
+            scrollStrip: spinState.skillScrollStrip,
+          });
+          spinState.res = resolved.res;
+          spinState.visualReels = resolved.visualReels;
+          finalStrips[2] = resolved.reel3Strip;
+          reel3AllowSlip = false;
+          if (resolved.won) {
+            setCharReaction("win");
+          }
+        }
+      }
+
       if (shouldShowReachCutin && reachCutinShownRef.current) {
-        await dismissReachCutin();
-        await new Promise((r) => setTimeout(r, REACH_CUTIN_AFTER_DISMISS_MS));
+        setShowReachCutin(false);
+        setReachCutinGasing(false);
       }
 
       clearInterval(shuffleIntervalRef.current);
       shuffleIntervalRef.current = null;
       sm?.stopSpin();
       if (!stoppedReelsRef.current[2]) {
-        finalizeColumn(2, finalStrips[2], true);
+        finalizeColumn(2, finalStrips[2], reel3AllowSlip);
       }
       setIsReach(false);
-      setReelColumns(finalStrips);
 
       const newLeft = p.slotTurnsLeft - 1;
       const newPullsSeat = (p.slotPullsThisSeat ?? 0) + 1;
@@ -775,7 +879,7 @@ export default function SlotMachine({
       const emotionLine = buildSlotReachEmotionLine(
         p.characterType,
         shouldShowReachCutin && reachCutinShownRef.current,
-        res.tier !== "miss",
+        spinState.res.tier !== "miss",
       );
       const usePotTx =
         !!roomId && gs.players.length > 1 && typeof commitDay8SlotSpin === "function";
@@ -789,23 +893,24 @@ export default function SlotMachine({
         actorIdx: gs.currentPlayerIdx,
         proxyTargetIdx: proxyIdx,
         bet,
-        res,
+        res: spinState.res,
         newLeft,
         newPullsSeat,
         newSpins,
         newHeat,
-        pityAfter: res.pityCounterAfter,
-        visualReels,
+        pityAfter: spinState.res.pityCounterAfter,
+        visualReels: spinState.visualReels,
         emotionLine,
         machine,
         reelMachine,
         slotTurnsBefore,
+        skillStopScrollRows: spinState.skillStopScrollRows ?? null,
       };
 
       let resultGS = null;
       if (usePotTx) {
         resultGS = await commitDay8SlotSpin(ctx);
-        if (!resultGS && res.tier === "potJackpot") {
+        if (!resultGS && spinState.res.tier === "potJackpot") {
           resultGS = await commitDay8SlotSpin(ctx);
         }
       } else if (useMoneyTx) {
@@ -815,10 +920,10 @@ export default function SlotMachine({
         if (resultGS) await writeGS(resultGS);
       }
 
-      if (res.tier !== "miss") {
+      if (spinState.res.tier !== "miss") {
         const grossPayout =
-          resultGS?.players?.[gs.currentPlayerIdx]?.lastSpinResult?.grossPayout ?? res.payout;
-        pendingWinFxRef.current = { tier: res.tier, payout: grossPayout };
+          resultGS?.players?.[gs.currentPlayerIdx]?.lastSpinResult?.grossPayout ?? spinState.res.payout;
+        pendingWinFxRef.current = { tier: spinState.res.tier, payout: grossPayout };
       } else {
         pendingWinFxRef.current = null;
         setCharReaction("miss");
@@ -834,7 +939,11 @@ export default function SlotMachine({
             await writeGS(mergeDay8SlotIdleSync(gs));
           }
         }
+        setSkillStopChanseActive(false);
+        spinColumnStripsRef.current = null;
+        setSpinColumnStrips(null);
         setIsSpinning(false);
+        spinCompletingRef.current = false;
         return;
       }
 
@@ -842,14 +951,19 @@ export default function SlotMachine({
         clearTimeout(slotPostResultGraceTimerRef.current);
         slotPostResultGraceTimerRef.current = null;
       }
-      spinDisplayLockRef.current = visualReels;
+      spinDisplayLockRef.current = spinState.visualReels;
+      setSkillStopChanseActive(false);
+      spinColumnStripsRef.current = null;
+      setSpinColumnStrips(null);
       setIsSpinning(false);
-      setLocalReels(res.reels);
+      setLocalReels(spinState.res.reels);
       schedulePostSpinResult(resultGS);
+      spinCompletingRef.current = false;
     };
 
     activeSpinSessionRef.current = {
       startedAt: spinStartedAt,
+      spinState,
       finalizeColumn,
       finalStrips,
       completeAfterReel3,
@@ -860,7 +974,7 @@ export default function SlotMachine({
 
   const handleManualReelStop = useCallback(
     (reelIdx) => {
-      if (!isSpinning || spectatorMode) return;
+      if (!isSpinning || spectatorMode || showReachCutin) return;
       const session = activeSpinSessionRef.current;
       if (!session) return;
       if (!canManualStopReel(stoppedReelsRef.current, reelIdx)) return;
@@ -880,7 +994,7 @@ export default function SlotMachine({
 
       void session.completeAfterReel3();
     },
-    [isSpinning, spectatorMode],
+    [isSpinning, spectatorMode, showReachCutin],
   );
 
   void manualStopUiEpoch;
@@ -1201,6 +1315,15 @@ export default function SlotMachine({
             const isMajorWinFx = showWinEffect === "jackpot" || showWinEffect === "potJackpot";
             const slotSpinning = isSpinning || (gs?.slotPhase ?? "idle") === "spinning";
             const isVictim = slotSpinning && isLocalPlayerProxyTarget(gs, myId);
+            const skillStopHint =
+              (skillStopChanseActive || gs?.slotSkillStopActive) &&
+              isSpinning &&
+              reelStoppedFlags[0] &&
+              reelStoppedFlags[1] &&
+              !reelStoppedFlags[2];
+            const skillAimSymbol = skillStopHint
+              ? localReels?.[0] ?? gs?.slotVisualReels?.[0] ?? null
+              : null;
             const reelStack = (
               <>
                 <div
@@ -1209,7 +1332,12 @@ export default function SlotMachine({
                 />
                 <div className="slot-reel-window absolute inset-0 z-[1] overflow-hidden rounded-sm pointer-events-none">
                   <SlotReelCanvasView
+                    ref={reelCanvasRef}
                     reelColumns={reelColumns}
+                    columnScrollStrips={spinColumnStrips}
+                    columnSkillAimSymbols={
+                      skillAimSymbol ? [null, null, skillAimSymbol] : null
+                    }
                     columnSpinning={columnSpinning}
                     slipCols={slipAnimCols}
                     bouncingCol={bouncingReel}
@@ -1225,7 +1353,7 @@ export default function SlotMachine({
 
                 {showPayoutNow && (
                   <div
-                    className="pointer-events-none absolute inset-0 z-[15] flex items-center justify-center md:hidden"
+                    className="pointer-events-none absolute inset-x-0 top-2 z-[15] flex justify-center px-2"
                     aria-live="polite"
                     aria-atomic="true"
                   >
@@ -1310,31 +1438,14 @@ export default function SlotMachine({
                     cabinetRecoil={cabinetRecoil}
                     stageAuraClass={stageAuraClass}
                     isReach={isReach}
-                    payoutAside={
-                      showPayoutNow ? (
-                        <div
-                          className="pointer-events-none absolute top-1/2 z-[42] hidden -translate-y-1/2 items-center pl-3 md:flex"
-                          style={{ left: "100%" }}
-                          aria-live="polite"
-                          aria-atomic="true"
-                        >
-                          <SlotPayoutAmountLabel
-                            amount={payoutAmount}
-                            onAnimationEnd={() => {
-                              setShowPayout(false);
-                              setPayoutAmount(0);
-                            }}
-                          />
-                        </div>
-                      ) : null
-                    }
+                    skillStopHint={skillStopHint}
                     reelStack={reelStack}
                     spinButton={{
-                      title: "スタート（100G）",
-                      "aria-label": "スロットを回す（100G）",
-                      disabled: spectatorMode || !canSpin,
+                      title: `スタート（${selectedBet}G）`,
+                      "aria-label": `スロットを回す（${selectedBet}G）`,
+                      disabled: spectatorMode || !canSpinWithSelectedBet,
                       spectatorMode,
-                      onClick: () => handleSpin(SLOT_COST),
+                      onClick: () => handleSpin(selectedBet),
                       label: "START",
                     }}
                     stopButtons={{
@@ -1343,6 +1454,7 @@ export default function SlotMachine({
                       spinStartedAt: spinStartedAtUi,
                       onStopReel: handleManualReelStop,
                       spectatorMode,
+                      buttonsLocked: showReachCutin,
                     }}
                   />
                 </div>
@@ -1401,7 +1513,8 @@ export default function SlotMachine({
               <>
                 {SLOT_BETS.map((bet) => {
                   const overProxyCap = isProxyPull && !betsForUi.includes(bet);
-                  const disabled = spectatorMode || !canSpin || overProxyCap;
+                  const isSelected = selectedBet === bet;
+                  const disabled = !canSelectBet || overProxyCap;
                   const colors = spectatorMode
                     ? spectatorBtn
                     : bet === 100
@@ -1411,33 +1524,37 @@ export default function SlotMachine({
                         : bet === 500
                           ? "bg-amber-500 hover:bg-amber-400"
                           : "bg-rose-600 hover:bg-rose-500";
+                  const brightnessClass = spectatorMode
+                    ? ""
+                    : isSelected
+                      ? "slot-bet-btn slot-bet-btn--selected opacity-100 brightness-110"
+                      : "slot-bet-btn opacity-50 brightness-[0.72] hover:opacity-65 hover:brightness-[0.85]";
                   return (
                     <button
                       key={bet}
                       type="button"
-                      onClick={() => handleSpin(bet)}
+                      aria-pressed={isSelected}
+                      onClick={() => setSelectedBet(bet)}
                       disabled={disabled}
                       title={
                         overProxyCap && proxyMaxBet != null
                           ? `最大掛け金${proxyMaxBet}Gを超えるため不可`
-                          : undefined
+                          : isSelected
+                            ? `掛け金 ${bet}G（選択中）`
+                            : `掛け金 ${bet}G に設定`
                       }
-                      className={`inline-flex items-center gap-1.5 rounded-xl ${colors} px-4 py-2.5 font-semibold text-white transition-colors ${spectatorMode ? "" : "disabled:opacity-40"}`}
+                      className={`inline-flex items-center gap-1.5 rounded-xl ${colors} px-4 py-2.5 font-semibold text-white transition-all duration-150 ${brightnessClass} ${spectatorMode ? "" : "disabled:opacity-35"}`}
                     >
                       <Dice5 size={16} />
-                      {isSpinning ? (
-                        "…"
-                      ) : (
-                        <span className="flex flex-col items-start leading-tight">
-                          <span>{bet}G</span>
-                          {overProxyCap && (
-                            <span className="text-[9px] font-normal opacity-80">上限超過</span>
-                          )}
-                          {!isProxyPull && moneyGs.stats.money < bet && (
-                            <span className="text-[9px] font-normal opacity-80">←借金プレイ</span>
-                          )}
-                        </span>
-                      )}
+                      <span className="flex flex-col items-start leading-tight">
+                        <span>{bet}G</span>
+                        {overProxyCap && (
+                          <span className="text-[9px] font-normal opacity-80">上限超過</span>
+                        )}
+                        {!isProxyPull && moneyGs.stats.money < bet && (
+                          <span className="text-[9px] font-normal opacity-80">←借金プレイ</span>
+                        )}
+                      </span>
                     </button>
                   );
                 })}

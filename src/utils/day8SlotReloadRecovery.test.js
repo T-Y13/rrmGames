@@ -9,6 +9,7 @@ import {
   defaultIdleDisplayReels,
   pickDisplayReelsFromGameState,
   stripTripleForMiddleColumn,
+  buildColumnReelStrips,
   shouldDeferDay8SlotTurnAdvanceForMajorWin,
   day8SlotMajorWinCelebrationHoldMs,
 } from "./gameLogic.js";
@@ -304,5 +305,17 @@ describe("idle display reels", () => {
     const strip = stripTripleForMiddleColumn("?", machine, 0);
     expect(strip).toHaveLength(3);
     expect(strip.every((s) => s !== "?")).toBe(true);
+  });
+
+  it("buildColumnReelStrips shuffles symbol order per column", () => {
+    const machine = { symbols: ["7", "BAR", "🍒", "⭐", "🔔"] };
+    const strips = buildColumnReelStrips(machine, 3);
+    expect(strips).toHaveLength(3);
+    const sortedBase = machine.symbols.slice().sort().join(",");
+    strips.forEach((strip) => {
+      expect(strip.slice().sort().join(",")).toBe(sortedBase);
+    });
+    expect(strips[0].join()).not.toBe(strips[1].join());
+    expect(strips[1].join()).not.toBe(strips[2].join());
   });
 });

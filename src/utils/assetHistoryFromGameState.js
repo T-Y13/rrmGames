@@ -93,7 +93,7 @@ function buildDay8TurnMoneyRow(turn, players, playerKeys, day7End, day8ByTurn) {
   return row;
 }
 
-/** 8日目 T1–15：ターン終了時の記録のみ（1ターン1点） */
+/** 8日目 T1–DAY8_MAX_TURNS：ターン終了時の記録のみ（1ターン1点） */
 function buildDay8Rows(players, playerKeys, day7End, day8ByTurn, lastValues) {
   /** @type {Array<Record<string, string|number>>} */
   const rows = [];

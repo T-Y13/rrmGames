@@ -395,7 +395,7 @@ describe("applyDay8RoundTracking dead player handoff", () => {
 describe("applyDay8RoundTracking explicit mark", () => {
   it("only marks when markTurnCompleteFor is set", () => {
     const room = {
-      remainingTurns: 15,
+      remainingTurns: BAL.dice.maxTurns,
       completedPlayers: [],
       gameState: {
         gamePhase: "playing",
@@ -409,12 +409,12 @@ describe("applyDay8RoundTracking explicit mark", () => {
     };
     const nextGs = { ...room.gameState, lastDiceRolls: [3] };
     const noMark = applyDay8RoundTracking(room, nextGs, {});
-    expect(noMark.remainingTurns).toBe(15);
+    expect(noMark.remainingTurns).toBe(BAL.dice.maxTurns);
     expect(noMark.completedPlayers).toEqual([]);
 
     const marked = applyDay8RoundTracking(room, nextGs, { markTurnCompleteFor: "a" });
     expect(marked.completedPlayers).toEqual(["a"]);
-    expect(marked.remainingTurns).toBe(15);
+    expect(marked.remainingTurns).toBe(BAL.dice.maxTurns);
   });
 
   it("solo: remainingTurns 0 after last round finalizes to results when still moving", () => {
@@ -431,7 +431,7 @@ describe("applyDay8RoundTracking explicit mark", () => {
             id: "solo",
             name: "Solo",
             alive: true,
-            moveTurns: 14,
+            moveTurns: BAL.dice.maxTurns - 1,
             movePhase: "moving",
             stats: { money: 1000, pon: 0, luck: 50, skill: 50, virtue: 50 },
             slotTurnsLeft: 0,
@@ -443,7 +443,7 @@ describe("applyDay8RoundTracking explicit mark", () => {
     };
     const nextGs = {
       ...room.gameState,
-      players: [{ ...room.gameState.players[0], moveTurns: 15 }],
+      players: [{ ...room.gameState.players[0], moveTurns: BAL.dice.maxTurns }],
     };
     const tracked = applyDay8RoundTracking(room, nextGs, { markTurnCompleteFor: "solo" });
     expect(tracked.remainingTurns).toBe(0);
@@ -465,7 +465,7 @@ describe("applyDay8RoundTracking explicit mark", () => {
             id: "solo",
             name: "Solo",
             alive: true,
-            moveTurns: 15,
+            moveTurns: BAL.dice.maxTurns,
             movePhase: "missed",
             stats: { money: 1000 },
           },

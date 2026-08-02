@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { CHARACTERS } from "../constants/gameBalance";
+import { CHARACTERS, DAY8_MAX_TURNS, BOARD_GOAL } from "../constants/gameBalance";
 import {
   VIRTUE_BY_INITIAL_ROLL,
   virtueMinRoll,
@@ -25,6 +25,7 @@ import {
   skipGhostTurnAllPlayersArrived,
   skipGhostTurnNoPickableProxy,
   buildDay8SlotSpinningGs,
+  applyDay8SlotSpinToFreshGameState,
   isLobbyMemberReady,
   allLobbyMembersReady,
   livingRollFromInitialRolls,
@@ -33,6 +34,7 @@ import {
   SUGOROKU_MS_PER_STEP_NORMAL,
   SUGOROKU_MS_PER_STEP_MIN,
 } from "./gameLogic.js";
+import { SLOT_SKILL_STOP_MODE } from "../lib/slotReelStop.js";
 import { SUGOROKU_VERIFY_DEATH_TEST_TRAP_FIRST_N, TILE_EFFECT_KIND } from "../constants/gameBalance";
 
 describe("virtueMinRoll", () => {
@@ -92,7 +94,7 @@ describe("day8 slot seat helpers", () => {
       beginDay8SlotSeatForPlayer({
         id: "a",
         movePhase: "waitingSlot",
-        moveTurns: 15,
+        moveTurns: DAY8_MAX_TURNS,
       }),
     ).toBeNull();
   });
@@ -112,7 +114,7 @@ describe("day8 slot seat helpers", () => {
       id: "a",
       alive: true,
       movePhase: "arrived",
-      moveTurns: 15,
+      moveTurns: DAY8_MAX_TURNS,
       slotTurnsLeft: 0,
     };
     expect(isDay8GameFinished(player, [player])).toBe(true);
@@ -151,7 +153,7 @@ describe("applyGoalArrivalToPlayer", () => {
 
   it("final move goal skips slot waiting", () => {
     const { player, extraLogs } = applyGoalArrivalToPlayer(
-      { id: "a", name: "A", moveTurns: 15 },
+      { id: "a", name: "A", moveTurns: DAY8_MAX_TURNS },
       true,
     );
     expect(player.movePhase).toBe("arrived");
@@ -474,7 +476,7 @@ describe("dead player ghost turn selection", () => {
           name: "Solo",
           alive: true,
           movePhase: "moving",
-          position: 12,
+          position: 5,
           stats: { money: -100 },
         },
       ],
@@ -483,7 +485,7 @@ describe("dead player ghost turn selection", () => {
     const result = resolveDebtTrapTriggered(gs, 0);
     expect(result?.gs.gamePhase).toBe("gameOver");
     expect(result?.gs.gameOverMsg).toContain("借金トラップ");
-    expect(result?.gs.players[0].deathPosition).toBe(12);
+    expect(result?.gs.players[0].deathPosition).toBe(5);
   });
 
   it("snapshotDeathOnBoard records deathPosition on the path", () => {
@@ -595,8 +597,116 @@ describe("dead player ghost turn selection", () => {
     };
     const spinning = buildDay8SlotSpinningGs(gs, ctx);
     expect(spinning?.slotPhase).toBe("spinning");
+    expect(spinning?.players[0].lastSpinResult).toBeNull();
     expect(typeof spinning?.slotSpinSessionId).toBe("string");
     expect(spinning?.slotSpinSessionId.length).toBeGreaterThan(5);
+  });
+
+  it("applyDay8SlotSpinToFreshGameState rejects forged skill-stop jackpot", () => {
+    const gs = {
+      gamePhase: "playing",
+      subPhase: "day8",
+      currentPlayerIdx: 0,
+      slotPhase: "spinning",
+      slotSkillStopActive: true,
+      slotSkillStopMode: SLOT_SKILL_STOP_MODE.full,
+      slotSpinBaseResult: {
+        tier: "miss",
+        payout: 0,
+        message: "ハズレ",
+        reels: ["🍒", "🍒", "🔔"],
+      },
+      slotVisualReels: ["🍒", "🍒", "🔔"],
+      proxySlotTargetIdx: null,
+      players: [
+        {
+          id: "a",
+          name: "A",
+          alive: true,
+          movePhase: "arrived",
+          slotTurnsLeft: 3,
+          slotPullsThisSeat: 0,
+          spinCount: 0,
+          stats: { money: 5000, pon: 0, luck: 50, skill: 50, virtue: 50 },
+        },
+      ],
+      log: [],
+    };
+    const next = applyDay8SlotSpinToFreshGameState(gs, {
+      actorIdx: 0,
+      proxyTargetIdx: null,
+      bet: 100,
+      res: { tier: "jackpot", payout: 9999, message: "不正", pityCounterAfter: 0 },
+      visualReels: ["7", "7", "7"],
+      skillStopScrollRows: 0,
+      newLeft: 2,
+      newPullsSeat: 1,
+      newSpins: 1,
+      newHeat: 1,
+      pityAfter: 0,
+      machine: { key: "standard" },
+      reelMachine: { key: "standard", symbols: ["7", "BAR", "⭐", "🔔", "🍒"] },
+      slotTurnsBefore: 3,
+    });
+    expect(next).toBeNull();
+  });
+
+  it("applyDay8SlotSpinToFreshGameState authorizes skill-stop win from scrollRows", () => {
+    const gs = {
+      gamePhase: "playing",
+      subPhase: "day8",
+      currentPlayerIdx: 0,
+      slotPhase: "spinning",
+      slotSkillStopActive: true,
+      slotSkillStopMode: SLOT_SKILL_STOP_MODE.full,
+      slotSpinBaseResult: {
+        tier: "miss",
+        payout: 0,
+        message: "ハズレ",
+        reels: ["🍒", "🍒", "🔔"],
+      },
+      slotVisualReels: ["🍒", "🍒", "🔔"],
+      slotColumnScrollStrips: [
+        ["7", "BAR", "🍒", "⭐", "🔔"],
+        ["BAR", "🍒", "⭐", "🔔", "7"],
+        ["7", "BAR", "🍒", "⭐", "🔔"],
+      ],
+      proxySlotTargetIdx: null,
+      players: [
+        {
+          id: "a",
+          name: "A",
+          alive: true,
+          movePhase: "arrived",
+          slotTurnsLeft: 3,
+          slotPullsThisSeat: 0,
+          spinCount: 0,
+          stats: { money: 5000, pon: 0, luck: 50, skill: 50, virtue: 50 },
+        },
+      ],
+      log: [],
+    };
+    const next = applyDay8SlotSpinToFreshGameState(gs, {
+      actorIdx: 0,
+      proxyTargetIdx: null,
+      bet: 100,
+      res: { tier: "miss", payout: 0, message: "ハズレ", pityCounterAfter: 1 },
+      visualReels: ["🍒", "🍒", "🔔"],
+      skillStopScrollRows: 1,
+      newLeft: 2,
+      newPullsSeat: 1,
+      newSpins: 1,
+      newHeat: 1,
+      pityAfter: 1,
+      machine: { key: "standard", basePayout: { small: 50 } },
+      reelMachine: { key: "standard", symbols: ["7", "BAR", "⭐", "🔔", "🍒"] },
+      slotTurnsBefore: 3,
+    });
+    expect(next?.slotPhase).toBe("completed");
+    expect(next?.players[0].lastSpinResult.tier).toBe("small");
+    expect(next?.displayReels).toEqual(["🍒", "🍒", "🍒"]);
+    expect(next?.slotSkillStopScrollRows).toBe(1);
+    expect(next?.slotSkillStopActive).toBe(false);
   });
 
   it("skips roundHandoffDone alive players and hands off to dead ghost", () => {
@@ -754,10 +864,11 @@ describe("dead player ghost turn selection", () => {
 });
 
 describe("verify death test tile map", () => {
-  it("places debt trap on first 12 inner squares when verify flag is set", () => {
+  it("places debt trap on first N inner squares when verify flag is set", () => {
     if (SUGOROKU_VERIFY_DEATH_TEST_TRAP_FIRST_N <= 0) return;
+    const trapEnd = Math.min(SUGOROKU_VERIFY_DEATH_TEST_TRAP_FIRST_N, BOARD_GOAL - 1);
     const tiles = generateSugorokuTileEffects();
-    for (let pos = 1; pos <= SUGOROKU_VERIFY_DEATH_TEST_TRAP_FIRST_N; pos++) {
+    for (let pos = 1; pos <= trapEnd; pos++) {
       expect(tiles[pos]?.kind).toBe(TILE_EFFECT_KIND.DEBT_TRAP);
     }
     expect(tiles[0]?.kind).toBe(TILE_EFFECT_KIND.NEUTRAL);

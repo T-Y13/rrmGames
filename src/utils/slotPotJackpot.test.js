@@ -85,14 +85,10 @@ describe("potJackpot tier", () => {
         proxyTargetName: "Carol",
         pullIndex: 1,
         bet: 100,
-        message: "🏆 POT JP!! ポット全額GET！",
+        message: "🏆 ジャックポット!!",
         net: 5000,
-        newMoney: 5100,
-        potPayout: 5000,
       }),
-    ).toBe(
-      "【代理→Carol】Bob 1回目 100G → 🏆 POT JP!! ポット全額GET！ 収支+5000G",
-    );
+    ).toBe("【代理→Carol】Bob 1回目 100G → 🏆 ジャックポット!! 収支+5000G");
   });
 
   it("applyDay8SlotSpin keeps pull counts when live state was already decremented", () => {

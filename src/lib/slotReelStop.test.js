@@ -27,6 +27,28 @@ describe("slotReelStop", () => {
     expect(ctx.mode).toBe(SLOT_SKILL_STOP_MODE.full);
   });
 
+  it("resolveSlotSkillStopContext rolls skill stop on bell gase reach", () => {
+    const ctx = resolveSlotSkillStopContext({
+      visualReels: ["🔔", "🔔", "🍒"],
+      tier: "miss",
+      rng: () => 0.1,
+    });
+    expect(ctx.eligible).toBe(true);
+    expect(ctx.active).toBe(true);
+    expect(ctx.mode).toBe(SLOT_SKILL_STOP_MODE.full);
+  });
+
+  it("resolveSlotSkillStopContext skips non-allowed gase reach", () => {
+    const ctx = resolveSlotSkillStopContext({
+      visualReels: ["💰", "💰", "🔔"],
+      tier: "miss",
+      rng: () => 0.1,
+    });
+    expect(ctx.eligible).toBe(false);
+    expect(ctx.active).toBe(false);
+    expect(ctx.reason).toBe("skill_stop_symbol_not_allowed");
+  });
+
   it("resolveSlotSkillStopContext skips when rng above chance", () => {
     const ctx = resolveSlotSkillStopContext({
       visualReels: ["⭐", "⭐", "🍒"],
@@ -38,20 +60,13 @@ describe("slotReelStop", () => {
     expect(ctx.reason).toBe("gase_reach_skill_skip");
   });
 
-  it("buildSlotSpinVisualPlan can force near-miss layout", () => {
-    let call = 0;
+  it("buildSlotSpinVisualPlan keeps cherry gase reach eligible for skill stop", () => {
     const plan = buildSlotSpinVisualPlan(
-      { tier: "miss", reels: ["?", "?", "?"] },
+      { tier: "miss", reels: ["🍒", "🍒", "🔔"] },
       "standard",
-      {
-        rng: () => {
-          call += 1;
-          return call === 1 ? 0.05 : 0.99;
-        },
-      },
+      { rng: () => 0.99 },
     );
-    expect(plan.visualReels[0]).toBe(plan.visualReels[1]);
-    expect(plan.visualReels[0]).not.toBe(plan.visualReels[2]);
+    expect(plan.visualReels).toEqual(["🍒", "🍒", "🔔"]);
     expect(plan.reachPossible).toBe(true);
     expect(plan.skillStop.eligible).toBe(true);
   });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DAY8_MAX_TURNS, LAST_DAILY_DAY } from "../constants/gameBalance";
 import {
   finalizeDay8AssetHistory,
   mergeAssetHistoryBuckets,
@@ -29,9 +30,9 @@ describe("playerAssetHistory", () => {
 
   it("snapshots all players at day end", () => {
     const players = [mkPlayer("a", "Alice", 1600), mkPlayer("b", "Bob", 2000)];
-    const gs = snapshotDailyEndAllPlayers({ players }, 7, players);
-    expect(gs.assetHistory.daily.a["7"]).toBe(1600);
-    expect(gs.assetHistory.daily.b["7"]).toBe(2000);
+    const gs = snapshotDailyEndAllPlayers({ players }, LAST_DAILY_DAY, players);
+    expect(gs.assetHistory.daily.a[String(LAST_DAILY_DAY)]).toBe(1600);
+    expect(gs.assetHistory.daily.b[String(LAST_DAILY_DAY)]).toBe(2000);
   });
 
   it("snapshots all players on day8 turn end", () => {
@@ -58,9 +59,9 @@ describe("playerAssetHistory", () => {
   });
 
   it("finalizeDay8AssetHistory writes final turn from player stats", () => {
-    const players = [mkPlayer("a", "Alice", 54404, 12)];
+    const players = [mkPlayer("a", "Alice", 54404, DAY8_MAX_TURNS)];
     const gs = finalizeDay8AssetHistory({ players }, players);
-    expect(gs.assetHistory.day8.a["12"]).toBe(54404);
+    expect(gs.assetHistory.day8.a[String(DAY8_MAX_TURNS)]).toBe(54404);
   });
 
   it("mergeAssetHistoryBuckets keeps daily from live when next is stale", () => {

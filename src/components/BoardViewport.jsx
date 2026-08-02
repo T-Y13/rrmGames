@@ -15,6 +15,8 @@ import {
   SUGOROKU_STANDEE_MOBILE_SCALE_CLASS,
   SUGOROKU_TILE_ABS_MIN_W,
   SUGOROKU_DICE_CHARACTER_CLUSTER_CLASS,
+  SUGOROKU_DICE_CHARACTER_CLUSTER_TAXI_CLASS,
+  SUGOROKU_DICE_INLINE_ROW_CLASS,
   SUGOROKU_NAME_ANCHOR_WITH_STANDEE,
   resolveSugorokuTravelStepsRemaining,
   sugorokuCurrentStandeeImgStyle,
@@ -698,6 +700,8 @@ export default function BoardViewport({
     traveling,
     remainingSteps,
   });
+  const diceCharacterClusterClass =
+    taxiPhase != null ? SUGOROKU_DICE_CHARACTER_CLUSTER_TAXI_CLASS : SUGOROKU_DICE_CHARACTER_CLUSTER_CLASS;
 
   return (
     <div
@@ -932,7 +936,7 @@ export default function BoardViewport({
                             traveling,
                           })}
                         >
-                          <div className={SUGOROKU_DICE_CHARACTER_CLUSTER_CLASS}>
+                          <div className={diceCharacterClusterClass}>
                             <BoardCharacterSideDice
                               localDiceItems={localDiceItems}
                               localDiceShowTotal={localDiceShowTotal}

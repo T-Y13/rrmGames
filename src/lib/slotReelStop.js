@@ -30,6 +30,12 @@ export function isGaseReachVisual(visualReels, tier) {
   return a === b && a !== c;
 }
 
+/** 目押しで当たり昇格の対象になる絵柄か（🍒・⭐・🔔） */
+export function isSkillStopMatchSymbol(symbol) {
+  const allowed = BAL.slot.skillStopMatchSymbols ?? ["🍒", "⭐", "🔔"];
+  return allowed.includes(symbol);
+}
+
 /**
  * near-miss 加工込みの演出用リール（8日目・デイリースロット共通）。
  * @param {object} res spinSlot の戻り値
@@ -88,6 +94,11 @@ export function resolveSlotSkillStopContext({ visualReels, tier, rng = Math.rand
 
   if (!isGaseReachVisual(visualReels, tier)) {
     return inactive;
+  }
+
+  const matchSymbol = visualReels[0];
+  if (!isSkillStopMatchSymbol(matchSymbol)) {
+    return { ...inactive, reason: "skill_stop_symbol_not_allowed" };
   }
 
   const { reachPossible } = reachAnimationState(visualReels, tier);

@@ -23,7 +23,7 @@ function StopButton({ reelIdx, stopped, isActive, canPress, waiting, onStopReel,
           "slot-cabinet-vector__stop-btn",
           stopped
             ? "slot-cabinet-vector__stop-btn--stopped"
-            : spinActive && isActive
+            : spinActive && isActive && canPress
               ? "slot-cabinet-vector__stop-btn--active"
               : spinActive
                 ? "slot-cabinet-vector__stop-btn--lit"
@@ -80,6 +80,7 @@ function StopButton({ reelIdx, stopped, isActive, canPress, waiting, onStopReel,
  *   - grid: 旧 vector 3列（非推奨）
  *   - panel: vector 操作台（常時表示・スピン中に点灯）
  * @param {boolean} spinActive リール回転中（panel では全 STOP が点灯）
+ * @param {boolean} buttonsLocked カットイン等で操作不可
  */
 export default function SlotReelStopButtons({
   visible = false,
@@ -90,6 +91,7 @@ export default function SlotReelStopButtons({
   spectatorMode = false,
   layout = "overlay",
   hidden = false,
+  buttonsLocked = false,
 }) {
   if (hidden || spectatorMode) return null;
   if (layout === "overlay" && !visible) return null;
@@ -100,7 +102,7 @@ export default function SlotReelStopButtons({
   const buttons = [0, 1, 2].map((reelIdx) => {
     const stopped = !!stoppedFlags[reelIdx];
     const isActive = activeIdx === reelIdx;
-    const canPress = isActive && canManualStopReel(stoppedFlags, reelIdx);
+    const canPress = !buttonsLocked && isActive && canManualStopReel(stoppedFlags, reelIdx);
     const waiting = lit && !stopped && reelIdx === 0 && activeIdx < 0;
 
     return (

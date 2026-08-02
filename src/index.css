@@ -294,6 +294,22 @@ body,
   color: #f87171;
   animation: pulse 1.2s ease-in-out infinite;
 }
+.slot-cabinet-vector__skill-banner {
+  margin: 0 0 0.35rem;
+  text-align: center;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #fbbf24;
+  animation: pulse 0.85s ease-in-out infinite;
+}
+.slot-bet-btn--selected {
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.55),
+    0 0 16px rgba(251, 191, 36, 0.42),
+    0 0 28px rgba(251, 191, 36, 0.22);
+  transform: scale(1.03);
+}
 .slot-cabinet-vector__reel-stage {
   position: relative;
 }

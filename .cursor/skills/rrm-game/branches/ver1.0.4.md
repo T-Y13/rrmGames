@@ -106,7 +106,7 @@ SlotReelCanvasView     → 両方で共用（変更不要）
 | **A1** | 手動停止（STOP×3・押すまで止まらない） | なし | 中 | **実装済・要コミット** |
 | **A2** | **8日目筐体ベクトル化**（`SlotCabinetShell`） | なし | 中 | 次 |
 | **A3** | 筐体演出フック（リーチランプ・反動・オーラ） | なし | 小〜中 | A2 後 |
-| **B** | チャンス時の完全目押し | **あり** | **大** | 未着手 |
+| **B** | チャンス時の完全目押し | **あり** | **大** | B1 実装済・B2 権威検証済 |
 | **C** | チャンス混入（確率・条件） | チャンス時のみ B | 中 | 未着手 |
 
 **旧 Phase A（1+2 統合）** → **A1（停止ロジック）+ A2（筐体 UI）** に分割。A2 を A1 の直後にやると STOP 配置の手戻りが少ない。
@@ -205,15 +205,15 @@ A2 の vector shell に演出用スロットを足す（ロジックは既存を
 
 ### Phase B — チャンス時の完全目押し
 
-- [ ] 設計確定: `spinSlot` 即確定 vs 停止位置で tier 上書き
-- [ ] `slotSkillStopActive` / `slotSkillStopMode` を Firestore に書き込み
-- [ ] リール停止位置 → tier マッピング（目押し窓・許容誤差）
-- [ ] マルチ: 停止タイミング検証 or サーバー権威
-- [ ] ゴースト／代理: チャンス時は自動停止（ランダム窓内）
-- [ ] vector 筐体上の目押し UI（停止位置フィードバック）
-- [ ] `game-rules.md` 更新
+- [x] 設計確定: `spinSlot` 即確定 + 目押し時のみ tier 上書き（miss→small）
+- [x] `slotSkillStopActive` / `slotSkillStopMode` を Firestore に書き込み
+- [x] リール停止位置 → tier マッピング（`slotSkillStopResolve`）
+- [x] **B2** マルチ: `slotSpinBaseResult` + `skillStopScrollRows` で transaction 内再検証（`slotSkillStopAuthority`）
+- [x] ゴースト／代理: チャンス時は自動停止（ランダム窓内）
+- [x] vector 筐体上の目押し UI（停止位置フィードバック）
+- [x] `game-rules.md` 更新
 
-**分割案:** B1=ソロのみ目押し / B2=マルチ同期
+**分割案:** B1=ソロのみ目押し / B2=マルチ同期 — **B1+B2 完了（未コミット）**
 
 **DoD:** チャンス時のみ、止めた位置で意図した役が出る。
 
@@ -307,6 +307,8 @@ flowchart LR
 
 ## ver1.0.4 での作業ログ
 
+- **SlotReelCanvasView** — STOP 時の逆回転修正（stopTarget を回転方向側の整数へ、2026-08-01）
+- **UIテスト短縮** — 育成1日（`LAST_DAILY_DAY=1`）・盤10マス（`BOARD_GOAL=10`）。8日目ラウンドは15のまま（2026-08-01）
 - **Phase 0（目押し設計）** — ガセ **18%** × 目押し **70%**、`lib/slotReelStop.js` + テスト
 - **Phase A1（手動停止）** — STOP×3、自動タイマー削除（`878de67`）
 - **Phase A2（vector 筐体）** — `SlotCabinetShell`、8日目 PNG 廃止

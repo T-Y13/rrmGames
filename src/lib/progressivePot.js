@@ -2,9 +2,10 @@
 
 import { BAL, PROGRESSIVE_POT_RATE } from "../constants/gameBalance";
 
-/** 8日目突入・POT当選後リセットの初期プール（ランダム） */
+/** 8日目突入・POT当選後リセットの初期プール（固定） */
 export const POT_INIT_MIN = 15000;
-export const POT_INIT_MAX = 20000;
+/** @deprecated 互換用（旧ランダム上限。現在は POT_INIT_MIN 固定） */
+export const POT_INIT_MAX = POT_INIT_MIN;
 /** 1〜12R のターン加算のみの合計（掛け金なし）。12R目以降は加算なし */
 export const POT_TURN_STACK_TOTAL = 15000;
 export const POT_GROWTH_TURNS = 12;
@@ -14,10 +15,8 @@ export const POT_BASE = POT_INIT_MIN;
 /** @deprecated 互換用（旧 POT_MAX 相当は初期＋ターン加算の目安） */
 export const POT_MAX = POT_INIT_MAX + POT_TURN_STACK_TOTAL;
 
-export function rollInitialProgressivePot(randomFn = Math.random) {
-  const span = POT_INIT_MAX - POT_INIT_MIN + 1;
-  const roll = Math.floor(randomFn() * span);
-  return POT_INIT_MIN + Math.min(span - 1, Math.max(0, roll));
+export function rollInitialProgressivePot(_randomFn = Math.random) {
+  return POT_INIT_MIN;
 }
 
 /** ターン加算のみの累計（ベット上乗せなし）。0R=0 / 12R=15000 */
@@ -55,9 +54,9 @@ export function potTurnIncrementPerRound() {
   return potTurnIncrementForCompletedRound(1);
 }
 
-/** POT当選後のプール再設定（15,000〜20,000G） */
-export function rollPotJackpotResetPool(randomFn = Math.random) {
-  return rollInitialProgressivePot(randomFn);
+/** POT当選後のプール再設定（15,000G 固定） */
+export function rollPotJackpotResetPool(_randomFn = Math.random) {
+  return POT_INIT_MIN;
 }
 
 /**

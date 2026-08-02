@@ -30,7 +30,8 @@ import {
   grantDay8StartInventoryToPlayers,
   resetDay8ItemSeatForPlayer,
 } from "../lib/day8Items";
-import { buildSlotSpinVisualPlan } from "../lib/slotReelStop.js";
+import { buildSlotSpinVisualPlan, SLOT_SKILL_STOP_MODE } from "../lib/slotReelStop.js";
+import { pickSlotSpinBaseSnapshot, reconcileSkillStopSpinCommit } from "../lib/slotSkillStopAuthority.js";
 import {
   createEmptyAssetHistory,
   finalizeDay8AssetHistory,
@@ -88,7 +89,7 @@ export function day8SlotGrantSizeForHandoff(player) {
   return day8SlotBurstSize();
 }
 
-/** 最終移動ターン（15T目）でゴール — 次手番がないためスロットなし */
+/** 最終移動ターン（DAY8_MAX_TURNS 目）でゴール — 次手番がないためスロットなし */
 export function isDay8FinalMoveGoal(player) {
   return (Number(player?.moveTurns) || 0) >= BAL.dice.maxTurns;
 }
@@ -165,6 +166,16 @@ export const SLOT_SYNC_DEFAULTS = {
   isReach: false,
   /** 演出用の視覚リール3本（near-miss 加工後）。実際の targetResult と絵柄が異なる場合がある */
   slotVisualReels: null,
+  /** ver1.0.4 目押し：このスピンがスキル停止チャンスか */
+  slotSkillStopActive: false,
+  /** ver1.0.4 目押し: none | visual | full */
+  slotSkillStopMode: "none",
+  /** 目押しスピン開始時の miss 確定結果（B2 権威検証用） */
+  slotSpinBaseResult: null,
+  /** 第3リール停止時の scrollRows（B2 監査・観戦用） */
+  slotSkillStopScrollRows: null,
+  /** スピン演出用の列ストリップ（目押し時の権威検証・観戦同期） */
+  slotColumnScrollStrips: null,
 };
 
 /** 1〜7日目デイリースロット観戦同期（Firestore gameState） */
@@ -279,6 +290,16 @@ export function stripLegacySlotFirestoreFields(gs) {
 /** gameState から idle 表示用の中段3絵柄を拾う（displayReels / slotVisualReels / 直前スピン） */
 export function pickDisplayReelsFromGameState(gs) {
   if (!gs || typeof gs !== "object") return null;
+  const phase = gs.slotPhase ?? "idle";
+
+  /** 確定後は displayReels のみ（slotVisualReels は spinning 用の演出データ） */
+  if (phase === "completed" || phase === "idle") {
+    const settled = gs.displayReels;
+    if (Array.isArray(settled) && settled.length === 3 && !isPlaceholderDisplayReels(settled)) {
+      return [...settled];
+    }
+  }
+
   for (const key of ["displayReels", "slotVisualReels"]) {
     const dr = gs[key];
     if (Array.isArray(dr) && dr.length === 3 && !isPlaceholderDisplayReels(dr)) {
@@ -412,8 +433,60 @@ export function resolveSlotBroadcastSpinContext(gsSnap) {
 /** 観戦スピン：同一プレイヤー・同一 spin 番号のキー */
 export function slotBroadcastSpinAnimKey(gsSnap) {
   const idx = gsSnap?.currentPlayerIdx ?? 0;
-  const spinNum = gsSnap?.players?.[idx]?.lastSpinResult?.spin ?? 0;
+  const spinNum = gsSnap?.players?.[idx]?.spinCount ?? gsSnap?.players?.[idx]?.lastSpinResult?.spin ?? 0;
   return `${idx}:${spinNum}`;
+}
+
+/** lastSpinResult の visualReels / reels が表示用 displayReels と一致するか */
+export function lastSpinResultMatchesDisplayReels(last, displayReels) {
+  if (!last || !Array.isArray(displayReels) || displayReels.length !== 3) return false;
+  const key = displayReels.join(",");
+  for (const candidate of [last.visualReels, last.reels]) {
+    if (Array.isArray(candidate) && candidate.length === 3 && candidate.join(",") === key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** 観戦結果表示：`lastSpinResult` が今回スピン分か（spinCount または絵柄一致） */
+export function isLastSpinResultAuthoritative(actor, last, gsSnap) {
+  if (!last || !actor) return false;
+  const spinCount = actor.spinCount ?? 0;
+  if (typeof last.spin === "number" && last.spin > 0 && last.spin === spinCount) return true;
+  const dr = pickDisplayReelsFromGameState(gsSnap);
+  return dr != null && lastSpinResultMatchesDisplayReels(last, dr);
+}
+
+/**
+ * 観戦オーバーレイ用：配当ポップアップに使う tier / net / gross。
+ * 前スピンの lastSpinResult を参照しないよう spinCount と絵柄で検証する。
+ */
+export function resolveSlotBroadcastWinFx(gsSnap) {
+  const dr = pickDisplayReelsFromGameState(gsSnap);
+  if (!dr) return null;
+
+  const actorIdx = gsSnap?.currentPlayerIdx ?? 0;
+  const actor = gsSnap?.players?.[actorIdx];
+  const last = actor?.lastSpinResult;
+
+  const settledNet =
+    typeof gsSnap?.lastPayout === "number" && Number.isFinite(gsSnap.lastPayout)
+      ? gsSnap.lastPayout
+      : typeof last?.net === "number"
+        ? last.net
+        : null;
+
+  if (!last || !isLastSpinResultAuthoritative(actor, last, gsSnap)) {
+    return null;
+  }
+
+  return {
+    tier: last.tier ?? null,
+    settledNet,
+    payout: Math.max(0, last.grossPayout ?? last.payout ?? 0),
+    potPayout: last.potPayout ?? 0,
+  };
 }
 
 export const genRoomId = () => {
@@ -595,7 +668,7 @@ function buildSlotSpinResult(tier, ctx) {
       return {
         tier: "potJackpot",
         payout: pay(bp.potJackpot ?? 0),
-        message: "🏆 POT JP!! ポット全額GET！",
+        message: "🏆 ジャックポット!!",
         reels: [potSym, potSym, potSym],
         ...meta,
       };
@@ -776,13 +849,14 @@ export function rollReachCutInDisplay() {
   return Math.random() < 0.5;
 }
 
-export function stripTripleForMiddleColumn(middleSym, machine, columnIndex) {
-  const sym = machine.symbols;
-  if (!sym.length) return [middleSym, middleSym, middleSym];
+export function stripTripleForMiddleColumn(middleSym, machine, columnIndex, columnStrip = null) {
+  const sym =
+    Array.isArray(columnStrip) && columnStrip.length ? columnStrip : machine?.symbols;
+  if (!Array.isArray(sym) || !sym.length) return [middleSym, middleSym, middleSym];
   let idx = sym.indexOf(middleSym);
   if (idx < 0) {
     const anchor = sym[Math.min(1, sym.length - 1)] ?? sym[0];
-    return stripTripleForMiddleColumn(anchor, machine, columnIndex);
+    return stripTripleForMiddleColumn(anchor, machine, columnIndex, columnStrip);
   }
   const len = sym.length;
   const prev = sym[(idx - 1 + len) % len];
@@ -799,6 +873,54 @@ export function stripTripleForMiddleColumn(middleSym, machine, columnIndex) {
 export function randomStripTriple(machine) {
   const sym = machine.symbols;
   return [sym[rand(0, sym.length - 1)], sym[rand(0, sym.length - 1)], sym[rand(0, sym.length - 1)]];
+}
+
+/** Fisher–Yates で絵柄ストリップをシャッフル */
+export function shuffleSymbolStrip(symbols) {
+  if (!Array.isArray(symbols) || !symbols.length) return [];
+  const arr = symbols.slice();
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = rand(0, i);
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+}
+
+const stripsEqual = (a, b) =>
+  Array.isArray(a) &&
+  Array.isArray(b) &&
+  a.length === b.length &&
+  a.every((sym, i) => sym === b[i]);
+
+/**
+ * 各リール列ごとに異なる順序の循環ストリップを生成（スピン演出用）。
+ * @returns {string[][]} 長さ columnCount の配列
+ */
+export function buildColumnReelStrips(machine, columnCount = 3) {
+  const base = machine?.symbols;
+  if (!Array.isArray(base) || !base.length) {
+    return Array.from({ length: columnCount }, () => []);
+  }
+  const strips = [];
+  for (let c = 0; c < columnCount; c += 1) {
+    let strip = shuffleSymbolStrip(base);
+    let attempts = 0;
+    while (attempts < 12 && strips.some((existing) => stripsEqual(existing, strip))) {
+      strip = shuffleSymbolStrip(base);
+      attempts += 1;
+    }
+    strips.push(strip);
+  }
+  return strips;
+}
+
+/** 目押し第3リール用ストリップを列ストリップ配列にマージ */
+export function mergeColumnScrollStrips(spinColumnStrips, skillScrollStrip = null) {
+  if (!Array.isArray(spinColumnStrips) || !spinColumnStrips.length) return null;
+  if (!skillScrollStrip?.length) return spinColumnStrips;
+  return [spinColumnStrips[0] ?? null, spinColumnStrips[1] ?? null, skillScrollStrip];
 }
 
 /** `displayReels` プレースホルダ（中段すべて ? → UI 上 777 に見える） */
@@ -1024,7 +1146,7 @@ export function isGhostPickTargetPhase(p) {
 
 /**
  * ゴール到着時の movePhase 決定。スロットは bank せず次手番で都度付与。
- * 最終移動ターン（15T）ゴールはスロットなし。
+ * 最終移動ターン（DAY8_MAX_TURNS）ゴールはスロットなし。
  * @returns {{ player: object, extraLogs: string[] }}
  */
 export function applyGoalArrivalToPlayer(base, autoConfirmMulti = false) {
@@ -1323,15 +1445,11 @@ export function formatDay8SlotSpinLogLine({
   bet,
   message,
   net,
-  potPayout = 0,
 }) {
   const prefix = proxyTargetName
     ? `【代理→${proxyTargetName}】${actorName} `
     : `${actorName} `;
-  let hit = message ?? "？";
-  if (potPayout > 0 && !/POT/i.test(hit)) {
-    hit = `${hit}（POT +${potPayout}G）`;
-  }
+  const hit = message ?? "？";
   const netStr = `${net >= 0 ? "+" : ""}${net}G`;
   return `${prefix}${pullIndex}回目 ${bet}G → ${hit} 収支${netStr}`;
 }
@@ -1372,8 +1490,13 @@ export function buildDay8SlotSpinningGs(freshGs, ctx) {
   const targetResult = slotPaylineMiddlesToTargetIndices(visualReels, rm);
   const { reachPossible } = getSlotReachAnimationState(visualReels, ctx.res?.tier);
 
+  const players = freshGs.players.map((pl, i) =>
+    i === actorIdx ? { ...pl, lastSpinResult: null } : pl,
+  );
+
   return stripLegacySlotFirestoreFields({
     ...freshGs,
+    players,
     slotPhase: "spinning",
     activeBet: bet,
     targetResult,
@@ -1382,6 +1505,14 @@ export function buildDay8SlotSpinningGs(freshGs, ctx) {
     isReach: reachPossible,
     slotReachCutin: false,
     slotVisualReels: visualReels,
+    slotSkillStopActive: Boolean(ctx.skillStop?.active),
+    slotSkillStopMode: ctx.skillStop?.mode ?? "none",
+    slotSpinBaseResult:
+      ctx.skillStop?.active && ctx.skillStop?.mode === SLOT_SKILL_STOP_MODE.full
+        ? pickSlotSpinBaseSnapshot(ctx.res)
+        : null,
+    slotSkillStopScrollRows: null,
+    slotColumnScrollStrips: ctx.columnScrollStrips ?? null,
     displayReels: null,
     showSpinResult: false,
     lastPayout: null,
@@ -1400,15 +1531,16 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
     actorIdx,
     proxyTargetIdx,
     bet,
-    res,
+    res: clientRes,
     newLeft,
     newPullsSeat,
     newSpins,
     newHeat,
     pityAfter,
-    visualReels,
+    visualReels: clientVisualReels,
     emotionLine,
     machine,
+    skillStopScrollRows,
   } = ctx;
   if (!freshGs || freshGs.subPhase !== "day8" || freshGs.gamePhase !== "playing") return null;
   if (!Number.isInteger(actorIdx) || actorIdx < 0 || actorIdx >= freshGs.players.length) return null;
@@ -1416,6 +1548,20 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
   if (actor.movePhase !== "arrived") return null;
   const spinPhase = freshGs.slotPhase ?? "idle";
   if (spinPhase !== "spinning" && spinPhase !== "idle") return null;
+
+  const reconciled = reconcileSkillStopSpinCommit({
+    freshGs,
+    clientRes,
+    clientVisualReels,
+    skillStopScrollRows,
+    bet,
+    machineKey: machine?.key ?? freshGs.slotMirrorMachineKey ?? "standard",
+    reelMachine: ctx.reelMachine ?? machine,
+  });
+  if (!reconciled.ok) return null;
+  const res = reconciled.res;
+  const visualReels = reconciled.visualReels;
+  const appliedPity = res.pityCounterAfter ?? pityAfter;
   const before = ctx.slotTurnsBefore;
   const liveLeft = actor.slotTurnsLeft ?? 0;
   if (liveLeft !== before && liveLeft !== before - 1) return null;
@@ -1474,7 +1620,6 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
       bet,
       message: res.message,
       net,
-      potPayout,
     }),
   );
   const logs = batch;
@@ -1492,7 +1637,7 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
         slotPullsThisSeat: appliedPulls,
         spinCount: appliedSpins,
         slotHeat: newHeat,
-        slotPityCounter: pityAfter,
+        slotPityCounter: appliedPity,
         lastSpinResult: { ...res, net, spin: appliedSpins, potPayout, grossPayout, visualReels },
       };
     }
@@ -1511,7 +1656,7 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
         slotPullsThisSeat: appliedPulls,
         spinCount: appliedSpins,
         slotHeat: newHeat,
-        slotPityCounter: pityAfter,
+        slotPityCounter: appliedPity,
         lastSpinResult: { ...res, net, spin: appliedSpins, potPayout, grossPayout, visualReels },
       };
     }
@@ -1527,12 +1672,18 @@ export function applyDay8SlotSpinToFreshGameState(freshGs, ctx) {
     lastPayout: net,
     slotResultSettledAt: Date.now(),
     activeBet: null,
+    slotVisualReels: null,
     targetResult: slotPaylineMiddlesToTargetIndices(visualReels, ctx.reelMachine ?? machine),
     slotSpinSessionId:
       spinPhase === "spinning"
         ? freshGs.slotSpinSessionId ?? null
         : createSlotSpinSessionId(),
     slotMirrorMachineKey: machine?.key ?? "standard",
+    slotSkillStopScrollRows: reconciled.skillStopScrollRows,
+    slotColumnScrollStrips: null,
+    slotSpinBaseResult: null,
+    slotSkillStopActive: false,
+    slotSkillStopMode: SLOT_SKILL_STOP_MODE.none,
     log: prependLogs(logs, freshGs.log),
   });
 }

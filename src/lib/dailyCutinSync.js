@@ -115,6 +115,26 @@ export function readDailyCutinBroadcast(roomData, gameState) {
   };
 }
 
+/**
+ * 最終育成日の楽観的 write 待ち中、操作者は isMyTurn=false になるが
+ * 観戦同期を有効にすると idle broadcast がローカルカットインを即消してしまう。
+ */
+export function shouldEnableDailyCutinSpectatorSync({
+  isDailyPhase,
+  isMultiplayerRoom,
+  isMyTurn,
+  showDailySlotSpectatorMirror,
+  operatorPendingDailyCutinSession,
+}) {
+  return (
+    isDailyPhase &&
+    isMultiplayerRoom &&
+    !isMyTurn &&
+    !showDailySlotSpectatorMirror &&
+    !operatorPendingDailyCutinSession
+  );
+}
+
 export function dailyCutinSpectatorStatusLabel(phase, playerName) {
   const n = playerName ?? "他プレイヤー";
   switch (phase) {
