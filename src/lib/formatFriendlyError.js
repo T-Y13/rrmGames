@@ -11,6 +11,9 @@ export function formatFriendlyError(error, fallbackMessage) {
   if (code === "permission-denied") {
     return "権限または接続の問題で処理できませんでした。広告ブロッカー等の拡張機能で Firebase がブロックされていないか、ログイン状態とネットワークをご確認ください。";
   }
+  if (code === "failed-precondition") {
+    return "他の操作と同期がぶつかりました。そのまま待つか、もう一度お試しください。";
+  }
   if (code === "unavailable" || code === "deadline-exceeded") {
     return "サーバーに接続できませんでした。しばらくしてから再度お試しください。";
   }

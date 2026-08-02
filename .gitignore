@@ -8,3 +8,4 @@ node_modules
 
 # Vite production build output (rebuild with npm run build)
 dist/
+firestore-debug.log

@@ -113,9 +113,13 @@ if (!ok) setDay8ItemOptimisticGs(null);
 - `dailyCutinSync.js` — stale cutin 復旧、フィールド merge
 - `useDailyCutinSpectatorSync.js` — 観戦側フック
 - `WorkCutin.jsx` — 解除 UI
-- `firestore.rules` — `dailyCutinStaleClearValid()`（**rules deploy 必須**）
+- `firestore.rules` — `dailyCutinRoomBroadcastValid()` / `dailyCutinStaleClearValid()`（**rules deploy 必須**）
 
-`performGameStateUpdate` は `pendingDailyCutinBroadcastRef` を merge してから書き込む。
+`performGameStateUpdate` / `writeGS` は `pendingDailyCutinBroadcastRef` を merge してから書き込む。
+
+**手番同期とカットイン解除:** `playGameStatePatchValid` は `gameState`(+status/pot…) のみ許可。ルーム直下 `dailyCutin*` を同一 Commit に載せると **permission-denied**。クライアントは **gameState transaction 成功後に順次** `updateRoom(DAILY_CUTIN_SYNC_DEFAULTS)` する。並列の先行 clear は `failed-precondition` 競合の原因になるので禁止。
+
+**dailyActionFx 解除:** マルチ遅延手番 write のあとは非手番になるため、旧 rules では clear が 403 になる。遅延 write には fx を載せない（観戦はカットイン同期）。rules の `dailyFxClearValid` は deploy 後に手番外クリアを許可。
 
 ## プレイヤー存在・再接続
 

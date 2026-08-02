@@ -490,6 +490,12 @@ export default function App() {
   /** マルチ日常：カットイン終了後にターン進行 writeGS を送る */
   const pendingDailyTurnWriteRef = useRef(null);
   const dailyTurnWriteTimerRef = useRef(null);
+  /**
+   * 仕事／配信カットイン画像の onReady 後に呼ぶアーム（PON連鎖・マルチ write 遅延）。
+   * setWorkCutin が先でも、画像キャッシュ即 ready でも取りこぼさない。
+   */
+  const dailyCutinImageReadyArmRef = useRef(null);
+  const dailyCutinImageReadyPendingRef = useRef(false);
   const lastSelfGhostClearAttemptRef = useRef(0);
   const [turnChangeBannerTurns, setTurnChangeBannerTurns] = useState(null);
   const [pendingTurnBannerTurns, setPendingTurnBannerTurns] = useState(null);
@@ -891,6 +897,8 @@ export default function App() {
     pendingDailyTurnWriteRef.current = null;
     dailyCutinSessionIdRef.current = null;
     pendingDailyCutinBroadcastRef.current = null;
+    dailyCutinImageReadyArmRef.current = null;
+    dailyCutinImageReadyPendingRef.current = false;
     clearDailyCutinLocalState();
   }, [clearDailyCutinLocalState]);
 
@@ -1818,6 +1826,7 @@ export default function App() {
           (authG?.subPhase === SUB_PHASE.day8 || authG?.subPhase === SUB_PHASE.daily)
         ) {
           const ref = doc(db, "rooms", roomId);
+          let clearRoomCutinAfterWrite = false;
           await runTransaction(db, async (transaction) => {
             const snap = await transaction.get(ref);
             if (!snap.exists()) throw new Error("ROOM_MISSING");
@@ -1884,11 +1893,28 @@ export default function App() {
               return;
             }
             const updates = { gameState: resolvedGS };
+            // ルーム直下 dailyCutin* は gameState と同一 Commit に載せない。
+            // playGameStatePatchValid は gameState(+status/pot…) のみ許可するため、同梱すると permission-denied になる。
+            // 解除は transaction 成功後に順次 updateRoom する（並列だと failed-precondition 競合）。
+            if (
+              liveGs?.subPhase === SUB_PHASE.daily &&
+              (resolvedGS.dailyCutinPhase ?? DAILY_CUTIN_PHASE.idle) === DAILY_CUTIN_PHASE.idle &&
+              (resolvedGS.dailyCutinSessionId ?? null) === null
+            ) {
+              clearRoomCutinAfterWrite = true;
+            }
             if (typeof setStatus === "string") updates.status = setStatus;
             else if (resolvedGS.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
             else if (resolvedGS.gamePhase === GAME_PHASE.results) updates.status = "completed";
             transaction.update(ref, updates);
           });
+          if (clearRoomCutinAfterWrite) {
+            try {
+              await updateRoom(DAILY_CUTIN_SYNC_DEFAULTS);
+            } catch (_) {
+              /* best-effort: 手番同期は成功済み */
+            }
+          }
           return true;
         }
         const pendingCutin = pickDailyCutinBroadcastFields(pendingDailyCutinBroadcastRef.current);
@@ -1918,6 +1944,14 @@ export default function App() {
         else if (mergedGS.gamePhase === GAME_PHASE.finalBattle) updates.status = "FINAL_BATTLE";
         else if (mergedGS.gamePhase === GAME_PHASE.results) updates.status = "completed";
         await updateRoom(updates);
+        // gameState と dailyCutin* を同一 update に載せると rules が deny するため、解除は直後に分離
+        if (clearsCutinFields && roomId && !roomDataRef.current?.isSolo) {
+          try {
+            await updateRoom(DAILY_CUTIN_SYNC_DEFAULTS);
+          } catch (_) {
+            /* best-effort */
+          }
+        }
         return true;
       } catch (e) {
         setUiError(formatFriendlyError(e, "処理に失敗しました。しばらくしてから再度お試しください。"));
@@ -1971,6 +2005,9 @@ export default function App() {
     const mayClear = myId === fx.playerId || isHost;
     const clearFxFromLive = () => {
       if (!mayClear) return;
+      // マルチでは手番 write 後に currentPlayerIdx が進むため、旧 rules の isActorTurn だけだと 403。
+      // dailyFxClearValid 未 deploy では非手番 clear を送らず console を汚さない（次アクションで上書き）。
+      if (!isActorTurnOnGameState(gsRef.current, myId)) return;
       void commitClearDailyActionFxFromLive().catch(() => {});
     };
     if (staleDailyFx) {
@@ -3419,13 +3456,33 @@ export default function App() {
     }
   }, [roomId, roomData?.isSolo, updateRoom, writeGS]);
 
-  const dismissStuckDailyCutin = useCallback(() => {
-    resetDailyOutgoingFxState();
-    setUiError("");
-    if (roomId && !roomData?.isSolo) {
-      void clearDailyCutinBroadcast();
+  /** 仕事／配信カットイン：画像デコード完了後に PON 連鎖を開始 */
+  const handleDailyImageCutinReady = useCallback(() => {
+    const arm = dailyCutinImageReadyArmRef.current;
+    if (arm) {
+      dailyCutinImageReadyArmRef.current = null;
+      dailyCutinImageReadyPendingRef.current = false;
+      arm();
+      return;
     }
-  }, [resetDailyOutgoingFxState, roomId, roomData?.isSolo, clearDailyCutinBroadcast]);
+    dailyCutinImageReadyPendingRef.current = true;
+  }, []);
+
+  const handleWorkCutinVisibleComplete = useCallback(() => {
+    setWorkCutin(null);
+    if (workCutinTimerRef.current) {
+      clearTimeout(workCutinTimerRef.current);
+      workCutinTimerRef.current = null;
+    }
+  }, []);
+
+  const handleStreamCutinVisibleComplete = useCallback(() => {
+    setStreamTypeCutin(null);
+    if (streamCutinTimerRef.current) {
+      clearTimeout(streamCutinTimerRef.current);
+      streamCutinTimerRef.current = null;
+    }
+  }, []);
 
   const beginDailyCutinSession = useCallback(() => {
     const sid = buildDailyCutinSessionId();
@@ -3460,7 +3517,10 @@ export default function App() {
     pendingDailyTurnWriteRef.current = null;
     if (!pending) return;
     if (gsRef.current?.subPhase !== SUB_PHASE.daily) return;
-    finishDailyCutinSession();
+    // 先に clearDailyCutinBroadcast (updateRoom) すると手番 writeGS transaction と競合して
+    // failed-precondition になる。ローカルだけ消し、ルーム直下 cutin は writeGS 成功後に順次解除する。
+    dailyCutinSessionIdRef.current = null;
+    pendingDailyCutinBroadcastRef.current = null;
     const ok = await writeGS({
       ...pending.nextGsWithFx,
       ...pending.cutinClearPatch,
@@ -3469,9 +3529,35 @@ export default function App() {
     if (!ok) {
       setDay7DailyOptimisticGs(null);
       resetDailyOutgoingFxState();
-      finishDailyCutinSession();
+      if (isMultiplayerRoom) void clearDailyCutinBroadcast();
     }
-  }, [writeGS, finishDailyCutinSession, resetDailyOutgoingFxState]);
+  }, [writeGS, resetDailyOutgoingFxState, isMultiplayerRoom, clearDailyCutinBroadcast]);
+
+  const dismissStuckDailyCutin = useCallback(() => {
+    // stale 解除時に pending の手番 write を捨てると手番が止まるため、先に flush する
+    if (pendingDailyTurnWriteRef.current) {
+      if (dailyTurnWriteTimerRef.current) {
+        clearTimeout(dailyTurnWriteTimerRef.current);
+        dailyTurnWriteTimerRef.current = null;
+      }
+      void flushPendingDailyTurnWrite().finally(() => {
+        resetDailyOutgoingFxState();
+        setUiError("");
+      });
+      return;
+    }
+    resetDailyOutgoingFxState();
+    setUiError("");
+    if (roomId && !roomData?.isSolo) {
+      void clearDailyCutinBroadcast();
+    }
+  }, [
+    flushPendingDailyTurnWrite,
+    resetDailyOutgoingFxState,
+    roomId,
+    roomData?.isSolo,
+    clearDailyCutinBroadcast,
+  ]);
 
   /** 8日目以降：日常カットイン state が残ると盤面が出ず移動不能になるため強制解除 */
   useEffect(() => {
@@ -3846,10 +3932,7 @@ export default function App() {
         stat: workVirtueGain ? { label: "善行", delta: workVirtueGain } : null,
         characterType: p.characterType,
       });
-      workCutinTimerRef.current = window.setTimeout(() => {
-        setWorkCutin(null);
-        workCutinTimerRef.current = null;
-      }, DAILY_WORK_CUTIN_MS);
+      // 表示時間は画像 ready 後（WorkCutin onVisibleComplete）に計測
       actionLabel = "仕事";
       actionLines.push(
         ...workActionLines({
@@ -3927,10 +4010,7 @@ export default function App() {
         gold: streamCutinGold,
         stat: streamCutinStat,
       });
-      streamCutinTimerRef.current = setTimeout(() => {
-        setStreamTypeCutin(null);
-        streamCutinTimerRef.current = null;
-      }, DAILY_STREAM_CUTIN_MS);
+      // 表示時間は画像 ready 後（StreamTypeCutin onVisibleComplete）に計測
     } else {
       return;
     }
@@ -3985,12 +4065,11 @@ export default function App() {
       statusLines.push(ponNoFireLine(s.pon, BAL.pon.fireThreshold));
     }
 
-    // 配信：カットイン終了後 → PON発火（時）→ 失敗（時）の順でオーバーレイを並べる
-    if (actionType === "stream") {
+    // 配信／仕事：画像 ready 後にカットイン表示時間＋PON／失敗オーバーレイを開始
+    const scheduleStreamFxFromImageReady = () => {
       streamFxChainTimeoutsRef.current.forEach(clearTimeout);
       streamFxChainTimeoutsRef.current = [];
       let overlayCursorMs = DAILY_STREAM_CUTIN_MS;
-      let streamChainTotalMs = DAILY_STREAM_CUTIN_MS;
       if (deferStreamPonOverlay) {
         const idPon = window.setTimeout(() => {
           emitDailyCutin(DAILY_CUTIN_PHASE.streamPon, null);
@@ -4008,7 +4087,6 @@ export default function App() {
         }, overlayCursorMs);
         streamFxChainTimeoutsRef.current.push(idPon);
         overlayCursorMs += DAILY_STREAM_PON_OVERLAY_MS;
-        streamChainTotalMs += DAILY_STREAM_PON_OVERLAY_MS;
       }
       if (streamRollFailed) {
         const idFail = window.setTimeout(() => {
@@ -4024,37 +4102,38 @@ export default function App() {
           }, DAILY_STREAM_FAIL_HOLD_MS);
         }, overlayCursorMs);
         streamFxChainTimeoutsRef.current.push(idFail);
-        streamChainTotalMs += DAILY_STREAM_FAIL_HOLD_MS;
       }
-    }
+    };
 
-    if (actionType === "work") {
+    const scheduleWorkFxFromImageReady = () => {
       workFxChainTimeoutsRef.current.forEach(clearTimeout);
       workFxChainTimeoutsRef.current = [];
-      if (deferWorkPonOverlay) {
-        const turnDelta =
-          workIncomeForHud - workPenaltyForHud;
-        const hudPayload = {
-          penalty: workPenaltyForHud,
-          workIncome: workIncomeForHud,
-          balanceAfter: s.money,
-          turnDelta,
-          moneyBefore: moneyBeforeAction,
-        };
-        const idWorkPon = window.setTimeout(() => {
-          emitDailyCutin(DAILY_CUTIN_PHASE.workPon, hudPayload);
-          setWorkPonHud(hudPayload);
-          try {
-            soundRef.current?.playWorkPonPlateBreak?.();
-          } catch (_) {}
-          if (workPonFireOverlayTimerRef.current) clearTimeout(workPonFireOverlayTimerRef.current);
-          workPonFireOverlayTimerRef.current = window.setTimeout(() => {
-            setWorkPonHud(null);
-            workPonFireOverlayTimerRef.current = null;
-          }, DAILY_WORK_PON_OVERLAY_MS);
-        }, DAILY_WORK_CUTIN_MS);
-        workFxChainTimeoutsRef.current.push(idWorkPon);
-      }
+      if (!deferWorkPonOverlay) return;
+      const turnDelta = workIncomeForHud - workPenaltyForHud;
+      const hudPayload = {
+        penalty: workPenaltyForHud,
+        workIncome: workIncomeForHud,
+        balanceAfter: s.money,
+        turnDelta,
+        moneyBefore: moneyBeforeAction,
+      };
+      const idWorkPon = window.setTimeout(() => {
+        emitDailyCutin(DAILY_CUTIN_PHASE.workPon, hudPayload);
+        setWorkPonHud(hudPayload);
+        try {
+          soundRef.current?.playWorkPonPlateBreak?.();
+        } catch (_) {}
+        if (workPonFireOverlayTimerRef.current) clearTimeout(workPonFireOverlayTimerRef.current);
+        workPonFireOverlayTimerRef.current = window.setTimeout(() => {
+          setWorkPonHud(null);
+          workPonFireOverlayTimerRef.current = null;
+        }, DAILY_WORK_PON_OVERLAY_MS);
+      }, DAILY_WORK_CUTIN_MS);
+      workFxChainTimeoutsRef.current.push(idWorkPon);
+    };
+
+    if (actionType === "stream" || actionType === "work") {
+      // PON／失敗オーバーレイは画像 ready アーム（下）で開始
     }
 
     let newPlayers = gs.players.map((pl, i) =>
@@ -4115,6 +4194,26 @@ export default function App() {
         streamRollFailed,
         deferWorkPonOverlay,
       });
+      // 画像待ちで手番進行が止まらないよう、演出 hold は従来どおり開始時刻から計測。
+      // PON 連鎖だけ画像 ready 後に開始する。
+      if (actionType === "work" || actionType === "stream") {
+        const armFx = () => {
+          if (actionType === "stream") scheduleStreamFxFromImageReady();
+          if (actionType === "work") scheduleWorkFxFromImageReady();
+        };
+        if (dailyCutinImageReadyPendingRef.current) {
+          dailyCutinImageReadyPendingRef.current = false;
+          armFx();
+        } else {
+          dailyCutinImageReadyArmRef.current = armFx;
+          window.setTimeout(() => {
+            if (dailyCutinImageReadyArmRef.current === armFx) {
+              dailyCutinImageReadyArmRef.current = null;
+              armFx();
+            }
+          }, 10000);
+        }
+      }
       await new Promise((r) => setTimeout(r, Math.max(FINAL_BATTLE_SPLASH_MS, fxHoldMs)));
       resetDailyOutgoingFxState();
       finishDailyCutinSession();
@@ -4139,12 +4238,57 @@ export default function App() {
       if (dailyTurnWriteTimerRef.current) {
         clearTimeout(dailyTurnWriteTimerRef.current);
       }
-      pendingDailyTurnWriteRef.current = { nextGsWithFx, cutinClearPatch };
+      pendingDailyTurnWriteRef.current = {
+        // 手番 write 時点で currentPlayerIdx が進むため、dailyActionFx を載せると
+        // 後続の dailyFxClear が isActorTurn に弾かれて 403 になる。フロートはカットイン同期に任せる。
+        nextGsWithFx: clearDailyActionFx(nextGsWithFx),
+        cutinClearPatch,
+      };
+      // 手番 write は画像ロードに依存させない（ロード遅延・stale clear で止まっていた）
       dailyTurnWriteTimerRef.current = window.setTimeout(() => {
         dailyTurnWriteTimerRef.current = null;
         void flushPendingDailyTurnWrite();
       }, holdMs);
+
+      if (actionType === "work" || actionType === "stream") {
+        const armFx = () => {
+          if (actionType === "stream") scheduleStreamFxFromImageReady();
+          if (actionType === "work") scheduleWorkFxFromImageReady();
+        };
+        if (dailyCutinImageReadyPendingRef.current) {
+          dailyCutinImageReadyPendingRef.current = false;
+          armFx();
+        } else {
+          dailyCutinImageReadyArmRef.current = armFx;
+          window.setTimeout(() => {
+            if (dailyCutinImageReadyArmRef.current === armFx) {
+              dailyCutinImageReadyArmRef.current = null;
+              armFx();
+            }
+          }, 10000);
+        }
+      }
       return;
+    }
+
+    // ソロ：write は即時。PON 連鎖のみ画像 ready 後
+    if (!advancesToSugoroku && (actionType === "work" || actionType === "stream")) {
+      const armFx = () => {
+        if (actionType === "stream") scheduleStreamFxFromImageReady();
+        if (actionType === "work") scheduleWorkFxFromImageReady();
+      };
+      if (dailyCutinImageReadyPendingRef.current) {
+        dailyCutinImageReadyPendingRef.current = false;
+        armFx();
+      } else {
+        dailyCutinImageReadyArmRef.current = armFx;
+        window.setTimeout(() => {
+          if (dailyCutinImageReadyArmRef.current === armFx) {
+            dailyCutinImageReadyArmRef.current = null;
+            armFx();
+          }
+        }, 10000);
+      }
     }
 
     const ok = await writeGS({
@@ -5239,6 +5383,9 @@ export default function App() {
           mode={streamTypeCutin.mode}
           gold={streamTypeCutin.gold}
           stat={streamTypeCutin.stat}
+          visibleMs={DAILY_STREAM_CUTIN_MS}
+          onReady={spectatorCutinSyncEnabled ? undefined : handleDailyImageCutinReady}
+          onVisibleComplete={handleStreamCutinVisibleComplete}
         />
       )}
       {workCutin && (
@@ -5247,6 +5394,9 @@ export default function App() {
           stat={workCutin.stat}
           characterType={workCutin.characterType}
           onDismiss={dismissStuckDailyCutin}
+          visibleMs={DAILY_WORK_CUTIN_MS}
+          onReady={spectatorCutinSyncEnabled ? undefined : handleDailyImageCutinReady}
+          onVisibleComplete={handleWorkCutinVisibleComplete}
         />
       )}
 
