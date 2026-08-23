@@ -43,9 +43,10 @@ ver1.0.4（作業） → develop（検証） → main（本番）
 |------|------|
 | コード差分 | `develop` と同一（作業開始直後） |
 | マルチ実機 | **未** |
-| Firestore rules deploy | **未** |
-| 検証 Hosting deploy | **未** |
+| Firestore rules deploy | **未**（要ローカル `firebase login`） |
+| 検証 Hosting deploy | **未**（2026-08-23 Cloud から試行 → Firebase 未認証で不可。ローカルで `npm run deploy`） |
 | 本番 `deploy:prod` | **明示依頼まで禁止** |
+| Phase C（チャンス混入） | **実装済**（`resolveSlotSkillStopContext` + FS `slotSkillStopActive`） |
 
 ---
 
@@ -221,10 +222,10 @@ A2 の vector shell に演出用スロットを足す（ロジックは既存を
 
 ### Phase C — チャンス混入
 
-- [ ] スピン開始時に `slotSkillChance`（または `resolveSlotSkillStopContext` 結果を FS へ）
-- [ ] 非チャンス → A1 と同じ（結果確定済み・手動停止は演出のみ）
-- [ ] チャンス → Phase B
-- [ ] バランス調整・テスト
+- [x] スピン開始時に `resolveSlotSkillStopContext` → FS `slotSkillStopActive` / `slotSkillStopMode`
+- [x] 非チャンス → A1 と同じ（結果確定済み・手動停止は演出のみ）
+- [x] チャンス → Phase B（停止位置で tier 上書き）
+- [x] バランス定数・テスト（`nearMissReachChance` 18% × `gaseReachSkillStopChance` 70%）
 
 ---
 
@@ -317,6 +318,7 @@ flowchart LR
 - **2026-08-01** — `dailyFxClear` 403: 手番交代後のラベル解除が `isActorTurn` に弾かれていた。マルチ遅延 write では fx を載せない + 非手番 clear 抑止。rules に `dailyFxClearValid`（**deploy 推奨**）
 - **2026-08-01** — `SlotReelCanvasView`: slot_only 方式の滑らかなリール（等速回転・SNAP 滑走停止・バウンス・subpixelSnap・円筒ワープ）。見た目デザインは既存筐体のまま
 - **2026-08-01** — Cloud Agent は `slot_only` マルチルートを読めない。ローカル Agent で定数突合せが必要 → 下節「ローカル引き継ぎ」
+- **2026-08-23** — 検証 deploy 依頼: Cloud Agent に Firebase 認証なし（`Failed to authenticate`）。ビルド／`npm run test:run`（279）は成功。**ローカルで** `npm run deploy` と `npx firebase-tools deploy --only firestore:rules` を実行する必要あり。Phase C はコード上完了済みと確認。
 
 ---
 
