@@ -43,8 +43,8 @@ ver1.0.4（作業） → develop（検証） → main（本番）
 |------|------|
 | コード差分 | `develop` と同一（作業開始直後） |
 | マルチ実機 | **未** |
-| Firestore rules deploy | **未**（要ローカル `firebase login`） |
-| 検証 Hosting deploy | **未**（2026-08-23 Cloud から試行 → Firebase 未認証で不可。ローカルで `npm run deploy`） |
+| Firestore rules deploy | **済**（2026-08-23 ローカル） |
+| 検証 Hosting deploy | **済**（2026-08-23 → https://rrmgame-7df52.web.app） |
 | 本番 `deploy:prod` | **明示依頼まで禁止** |
 | Phase C（チャンス混入） | **実装済**（`resolveSlotSkillStopContext` + FS `slotSkillStopActive`） |
 
@@ -52,8 +52,8 @@ ver1.0.4（作業） → develop（検証） → main（本番）
 
 ## 未デプロイ / 未確認（ver1.0.3 から継続）
 
-- [ ] Firestore rules deploy（stale cutin 等）
-- [ ] Hosting 検証 `npm run deploy`
+- [x] Firestore rules deploy（stale cutin / dailyFxClear 等）— 2026-08-23
+- [x] Hosting 検証 `npm run deploy` — 2026-08-23
 - [ ] **大家マルチ実機**（2人以上・家賃・日跨ぎ・ゴースト）
 - [ ] Hosting 本番 `deploy:prod` — 明示依頼まで出さない
 
@@ -318,7 +318,7 @@ flowchart LR
 - **2026-08-01** — `dailyFxClear` 403: 手番交代後のラベル解除が `isActorTurn` に弾かれていた。マルチ遅延 write では fx を載せない + 非手番 clear 抑止。rules に `dailyFxClearValid`（**deploy 推奨**）
 - **2026-08-01** — `SlotReelCanvasView`: slot_only 方式の滑らかなリール（等速回転・SNAP 滑走停止・バウンス・subpixelSnap・円筒ワープ）。見た目デザインは既存筐体のまま
 - **2026-08-01** — Cloud Agent は `slot_only` マルチルートを読めない。ローカル Agent で定数突合せが必要 → 下節「ローカル引き継ぎ」
-- **2026-08-23** — 検証 deploy 依頼: Cloud Agent に Firebase 認証なし（`Failed to authenticate`）。ビルド／`npm run test:run`（279）は成功。**ローカルで** `npm run deploy` と `npx firebase-tools deploy --only firestore:rules` を実行する必要あり。Phase C はコード上完了済みと確認。
+- **2026-08-23** — 検証 deploy 依頼: Cloud Agent に Firebase 認証なし。ローカル切替後に **Hosting + rules deploy 完了**（279 tests green）。Phase C はコード上完了済み。
 
 ---
 
