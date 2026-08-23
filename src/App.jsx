@@ -215,7 +215,12 @@ import {
   DAILY_WORK_PON_OVERLAY_MS,
   isDailyOutgoingFxActive,
 } from "./lib/day7TransitionFx";
-import { GAME_ASSET_PRELOAD_PATHS, preloadImages } from "./utils/assetLoader";
+import {
+  BOOT_ASSET_PRELOAD_PATHS,
+  DAILY_ASSET_PRELOAD_PATHS,
+  DAY8_ASSET_PRELOAD_PATHS,
+  preloadImages,
+} from "./utils/assetLoader";
 /* 筐体が消えない組み合わせ: PNG は SlotMachine import、マスクは index.css の data URL、
    drop-shadow／オーラは .slot-cabinet-img-wrap の filter のみ（img に mask+filter 併用しない） */
 
@@ -377,17 +382,26 @@ export default function App() {
   // モード選択画面
   const [multiAction, setMultiAction]     = useState(null); // null|"create"|"join"
   const [assetsReady, setAssetsReady] = useState(false);
-  const [assetsProgress, setAssetsProgress] = useState({ loaded: 0, total: GAME_ASSET_PRELOAD_PATHS.length });
+  const [assetsProgress, setAssetsProgress] = useState({
+    loaded: 0,
+    total: BOOT_ASSET_PRELOAD_PATHS.length,
+  });
 
   useEffect(() => {
     let cancelled = false;
-    void preloadImages(GAME_ASSET_PRELOAD_PATHS, ({ loaded, total }) => {
+    // 起動ゲートは BOOT のみ。日常／8日目の大画像は背後で段階プリロード。
+    void preloadImages(BOOT_ASSET_PRELOAD_PATHS, ({ loaded, total }) => {
       if (cancelled) return;
       setAssetsProgress({ loaded, total });
-    }).finally(() => {
-      if (cancelled) return;
-      setAssetsReady(true);
-    });
+    })
+      .finally(() => {
+        if (cancelled) return;
+        setAssetsReady(true);
+        void preloadImages(DAILY_ASSET_PRELOAD_PATHS).then(() => {
+          if (cancelled) return;
+          void preloadImages(DAY8_ASSET_PRELOAD_PATHS);
+        });
+      });
     return () => {
       cancelled = true;
     };

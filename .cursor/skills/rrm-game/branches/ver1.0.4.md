@@ -319,6 +319,8 @@ flowchart LR
 - **2026-08-01** — `SlotReelCanvasView`: slot_only 方式の滑らかなリール（等速回転・SNAP 滑走停止・バウンス・subpixelSnap・円筒ワープ）。見た目デザインは既存筐体のまま
 - **2026-08-01** — Cloud Agent は `slot_only` マルチルートを読めない。ローカル Agent で定数突合せが必要 → 下節「ローカル引き継ぎ」
 - **2026-08-23** — 検証 deploy 依頼: Cloud Agent に Firebase 認証なし。ローカル切替後に **Hosting + rules deploy 完了**（279 tests green）。Phase C はコード上完了済み。
+- **2026-08-23** — 起動アセット軽量化: BOOT（ロゴ+アイコン）のみゲート。日常／8日目画像と重いBGMは遅延プリロード（`assetLoader.js` / `slotSound.js`）
+
 
 ---
 

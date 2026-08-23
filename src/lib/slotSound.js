@@ -331,13 +331,8 @@ export function createSlotSoundManager() {
 
   return {
     async init() {
-      await Promise.allSettled([
-        // NOTE: public/sounds/ に存在しない SFX mp3 はプリロードしない（404 ノイズ防止）。
-        // SFX は playFile が失敗したら synth/arp のフォールバックで鳴るので問題なし。
-        preloadUrl("daily_bgm", "View_from_the_Fifth_Floor.mp3"),
-        preloadUrl("day8_bgm", "Morning_of_the_Stand.mp3"),
-        preloadUrl("menu_bgm", "Velvet_Current.mp3"),
-      ]);
+      // メニューBGMのみ先行。日常／8日目の重いMP3は再生要求時にロード（起動待ち短縮）。
+      await Promise.allSettled([preloadUrl("menu_bgm", "Velvet_Current.mp3")]);
       if (day8BgmDesired && cache.day8_bgm && !muted) tryStartDay8BgmPlayback();
       else if (dailyBgmDesired && cache.daily_bgm && !muted) tryStartDailyBgmPlayback();
       else if (menuBgmDesired && cache.menu_bgm && !muted) tryStartMenuBgmPlayback();
@@ -361,7 +356,13 @@ export function createSlotSoundManager() {
       stopDay8BgmInternal();
       dailyBgmDesired = true;
       if (muted) return;
-      tryStartDailyBgmPlayback();
+      if (cache.daily_bgm) {
+        tryStartDailyBgmPlayback();
+        return;
+      }
+      void preloadUrl("daily_bgm", "View_from_the_Fifth_Floor.mp3").then(() => {
+        if (dailyBgmDesired && !muted) tryStartDailyBgmPlayback();
+      });
     },
 
     stopDailyBgm() {
@@ -374,7 +375,13 @@ export function createSlotSoundManager() {
       stopDailyBgmInternal();
       day8BgmDesired = true;
       if (muted) return;
-      tryStartDay8BgmPlayback();
+      if (cache.day8_bgm) {
+        tryStartDay8BgmPlayback();
+        return;
+      }
+      void preloadUrl("day8_bgm", "Morning_of_the_Stand.mp3").then(() => {
+        if (day8BgmDesired && !muted) tryStartDay8BgmPlayback();
+      });
     },
 
     stopDay8Bgm() {
